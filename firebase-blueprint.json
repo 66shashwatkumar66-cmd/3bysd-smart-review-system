@@ -1,0 +1,67 @@
+{
+  "entities": {
+    "Card": {
+      "title": "Card",
+      "description": "Represents an NFC and Dynamic QR Review Card",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_-]+$",
+          "description": "Card unique identifier, e.g. 0001"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["available", "assigned", "disabled"],
+          "description": "Deployment status of the card"
+        },
+        "businessName": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Assigned business name"
+        },
+        "category": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Business cuisine or category"
+        },
+        "googleReviewUrl": {
+          "type": "string",
+          "maxLength": 1000,
+          "description": "Destination Google Review URL"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Physical stand location notes"
+        },
+        "aiReviewEnabled": {
+          "type": "boolean",
+          "description": "Whether AI review draft assistant is enabled (true) or direct redirect (false)"
+        },
+        "scansCount": {
+          "type": "integer",
+          "description": "Total customer scans"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Card creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Card last updated timestamp"
+        }
+      },
+      "required": ["id", "status"]
+    }
+  },
+  "firestore": {
+    "/cards/{cardId}": {
+      "schema": "Card",
+      "description": "Collection of all dynamic QR cards"
+    }
+  }
+}

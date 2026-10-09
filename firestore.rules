@@ -1,0 +1,57 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 64 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidCard(data) {
+      return data.id is string &&
+        data.id.size() > 0 &&
+        data.id.size() <= 64 &&
+        data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.status is string &&
+        (data.status == 'available' || data.status == 'assigned' || data.status == 'disabled') &&
+        (!('businessName' in data) || (data.businessName is string && data.businessName.size() <= 200)) &&
+        (!('category' in data) || (data.category is string && data.category.size() <= 100)) &&
+        (!('googleReviewUrl' in data) || (data.googleReviewUrl is string && data.googleReviewUrl.size() <= 1000)) &&
+        (!('notes' in data) || (data.notes is string && data.notes.size() <= 500)) &&
+        (!('aiReviewEnabled' in data) || data.aiReviewEnabled is bool) &&
+        (!('scansCount' in data) || (data.scansCount is int && data.scansCount >= 0));
+    }
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Dynamic QR Cards Collection
+    match /cards/{cardId} {
+      // Public read so customer phones scanning QR / NFC cards can resolve the business profile
+      allow get: if isValidId(cardId);
+      allow list: if true;
+
+      // Card Creation
+      allow create: if isValidId(cardId) &&
+        isValidCard(incoming()) &&
+        incoming().id == cardId;
+
+      // Card Update (assignment, editing, or scan increment)
+      allow update: if isValidId(cardId) &&
+        isValidCard(incoming()) &&
+        incoming().id == existing().id;
+
+      // Card Deletion
+      allow delete: if isValidId(cardId);
+    }
+  }
+}

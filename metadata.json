@@ -1,0 +1,6 @@
+{
+  "name": "3DBYSD Smart Reviews - Dynamic QR & AI Review Platform",
+  "description": "Generate sequential dynamic QR codes in bulk, assign them dynamically to businesses, export printable card sheets, and provide a mobile AI review generator that routes to Google reviews.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
