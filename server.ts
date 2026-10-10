@@ -12,6 +12,7 @@ const PORT = Number(process.env.PORT) || 3000;
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const DATA_FILE = path.join(DATA_DIR, 'cards.json');
 const ADMINS_FILE = path.join(DATA_DIR, 'admins.json');
+const USERS_FILE = path.join(DATA_DIR, 'users.json');
 
 app.use(express.json());
 
@@ -165,9 +166,70 @@ function writeAdmins(admins: AdminUser[]): void {
   }
 }
 
+export interface UserProfile {
+  uid: string;
+  email: string;
+  displayName: string;
+  photoURL?: string;
+  provider: string;
+  role: 'master' | 'restricted' | 'member';
+  emailVerified: boolean;
+  lastLoginAt: string;
+  createdAt: string;
+  loginCount: number;
+  device?: string;
+  assignedCardIds?: string[];
+}
+
+function ensureUsersFile(): void {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  if (!fs.existsSync(USERS_FILE)) {
+    const initialUsers: UserProfile[] = [
+      {
+        uid: 'google-user-66shashwatkumar66',
+        email: '66shashwatkumar66@gmail.com',
+        displayName: 'Shashwat Kumar',
+        photoURL: 'https://api.dicebear.com/7.x/initials/svg?seed=SK&backgroundColor=1a73e8&textColor=ffffff',
+        provider: 'google.com',
+        role: 'master',
+        emailVerified: true,
+        lastLoginAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        loginCount: 1,
+        device: 'Web Browser (Google Verified)',
+        assignedCardIds: [],
+      },
+    ];
+    fs.writeFileSync(USERS_FILE, JSON.stringify(initialUsers, null, 2), 'utf-8');
+  }
+}
+
+function readUsers(): UserProfile[] {
+  try {
+    ensureUsersFile();
+    const data = fs.readFileSync(USERS_FILE, 'utf-8');
+    return JSON.parse(data) as UserProfile[];
+  } catch (err) {
+    console.error('Error reading users file:', err);
+    return [];
+  }
+}
+
+function writeUsers(users: UserProfile[]): void {
+  try {
+    ensureUsersFile();
+    fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Error saving users file:', err);
+  }
+}
+
 // In-memory + file-backed persistent card store
 function ensureDataFile(): void {
   ensureAdminsFile();
+  ensureUsersFile();
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
@@ -482,6 +544,127 @@ app.delete('/api/admins/:id', (req: Request, res: Response) => {
     res.json({ success: true, message: 'Admin removed successfully' });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message || 'Failed to delete admin' });
+  }
+});
+
+// ================= User Profiles & Google Verified Logins API =================
+
+// REST API: Get all recorded users
+app.get('/api/users', (_req: Request, res: Response) => {
+  try {
+    const users = readUsers();
+    res.json({ success: true, users });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message || 'Failed to fetch users' });
+  }
+});
+
+// REST API: Save or Update User Profile on Google Login/Verification
+app.post('/api/users', (req: Request, res: Response) => {
+  try {
+    const { uid, email, displayName, photoURL, provider, role, emailVerified, device } = req.body;
+    if (!email || !uid) {
+      return res.status(400).json({ success: false, message: 'Email and UID are required' });
+    }
+
+    const users = readUsers();
+    const cleanEmail = String(email).trim().toLowerCase();
+    const idx = users.findIndex((u) => u.uid === uid || u.email.toLowerCase() === cleanEmail);
+
+    const now = new Date().toISOString();
+    let updatedUser: UserProfile;
+
+    // The primary account 66shashwatkumar66@gmail.com is always master
+    const isMasterEmail = cleanEmail === '66shashwatkumar66@gmail.com';
+    const computedRole = isMasterEmail ? 'master' : (role || (idx !== -1 ? users[idx].role : 'member'));
+
+    if (idx !== -1) {
+      updatedUser = {
+        ...users[idx],
+        uid: uid || users[idx].uid,
+        email: cleanEmail,
+        displayName: displayName ? String(displayName).trim() : users[idx].displayName,
+        photoURL: photoURL || users[idx].photoURL,
+        provider: provider || users[idx].provider || 'google.com',
+        role: computedRole,
+        emailVerified: emailVerified !== undefined ? Boolean(emailVerified) : true,
+        lastLoginAt: now,
+        loginCount: (users[idx].loginCount || 0) + 1,
+        device: device || users[idx].device || 'Web Browser',
+      };
+      users[idx] = updatedUser;
+    } else {
+      updatedUser = {
+        uid: String(uid).trim(),
+        email: cleanEmail,
+        displayName: displayName ? String(displayName).trim() : cleanEmail.split('@')[0],
+        photoURL:
+          photoURL ||
+          `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(cleanEmail)}&backgroundColor=1a73e8&textColor=ffffff`,
+        provider: provider || 'google.com',
+        role: computedRole,
+        emailVerified: emailVerified !== undefined ? Boolean(emailVerified) : true,
+        lastLoginAt: now,
+        createdAt: now,
+        loginCount: 1,
+        device: device || 'Web Browser',
+        assignedCardIds: [],
+      };
+      users.push(updatedUser);
+    }
+
+    writeUsers(users);
+
+    // If master or sub-admin, also keep admins.json synchronized
+    if (computedRole === 'master' || computedRole === 'restricted') {
+      const admins = readAdmins();
+      const adminIdx = admins.findIndex((a) => a.email.toLowerCase() === cleanEmail || a.id === uid);
+      if (adminIdx !== -1) {
+        admins[adminIdx].name = updatedUser.displayName;
+        admins[adminIdx].updatedAt = now;
+      } else {
+        admins.push({
+          id: updatedUser.uid,
+          email: updatedUser.email,
+          name: updatedUser.displayName,
+          role: computedRole,
+          assignedCardIds: [],
+          permissions: {
+            canEditCards: true,
+            canToggleAi: true,
+            canExportCsv: computedRole === 'master',
+            canCreateCards: computedRole === 'master',
+          },
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+      writeAdmins(admins);
+    }
+
+    res.json({ success: true, user: updatedUser });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message || 'Failed to save user' });
+  }
+});
+
+// REST API: Delete user
+app.delete('/api/users/:uid', (req: Request, res: Response) => {
+  try {
+    const { uid } = req.params;
+    const users = readUsers();
+    const target = users.find((u) => u.uid === uid || u.email.toLowerCase() === uid.toLowerCase());
+    if (!target) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    if (target.email.toLowerCase() === '66shashwatkumar66@gmail.com') {
+      return res.status(400).json({ success: false, message: 'Cannot delete primary master account' });
+    }
+    const filtered = users.filter((u) => u.uid !== target.uid);
+    writeUsers(filtered);
+    res.json({ success: true, message: 'User removed successfully' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message || 'Failed to delete user' });
   }
 });
 

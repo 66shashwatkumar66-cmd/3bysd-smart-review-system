@@ -1,4 +1,4 @@
-import { CardRecord, AdminUser, GenerateReviewRequest, GenerateReviewResponse } from '../types';
+import { CardRecord, AdminUser, UserProfile, GenerateReviewRequest, GenerateReviewResponse } from '../types';
 import {
   db,
   handleFirestoreError,
@@ -472,4 +472,153 @@ export async function deleteAdmin(id: string): Promise<boolean> {
   localStorage.setItem(ADMINS_STORAGE_KEY, JSON.stringify(updated));
   return true;
 }
+
+// ---------------- Users & Google Verified Logins Layer ----------------
+const USERS_COLLECTION = 'users';
+const USERS_STORAGE_KEY = '3dbysd_smart_reviews_users';
+
+export async function fetchUsers(): Promise<UserProfile[]> {
+  try {
+    // 1. Try Firestore
+    const snapshot = await getDocs(collection(db, USERS_COLLECTION));
+    if (!snapshot.empty) {
+      const list: UserProfile[] = [];
+      snapshot.forEach((d) => {
+        list.push(d.data() as UserProfile);
+      });
+      localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(list));
+      return list;
+    }
+  } catch (err) {
+    console.warn('Firestore fetchUsers notice:', err);
+  }
+
+  // 2. Try REST backend /api/users
+  try {
+    const res = await fetch('/api/users');
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && Array.isArray(data.users) && data.users.length > 0) {
+        localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(data.users));
+        return data.users;
+      }
+    }
+  } catch {
+    // fallback
+  }
+
+  // 3. Fallback to localStorage
+  const saved = localStorage.getItem(USERS_STORAGE_KEY);
+  if (saved) {
+    try {
+      return JSON.parse(saved) as UserProfile[];
+    } catch {
+      // ignore
+    }
+  }
+
+  return [
+    {
+      uid: 'google-user-66shashwatkumar66',
+      email: '66shashwatkumar66@gmail.com',
+      displayName: 'Shashwat Kumar',
+      photoURL: 'https://api.dicebear.com/7.x/initials/svg?seed=SK&backgroundColor=1a73e8&textColor=ffffff',
+      provider: 'google.com',
+      role: 'master',
+      emailVerified: true,
+      lastLoginAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+      loginCount: 1,
+      device: 'Web Browser (Google Verified)',
+      assignedCardIds: [],
+    },
+  ];
+}
+
+export async function saveUser(user: Partial<UserProfile> & { uid: string; email: string }): Promise<UserProfile> {
+  const cleanEmail = user.email.trim().toLowerCase();
+  const now = new Date().toISOString();
+  const isMaster = cleanEmail === '66shashwatkumar66@gmail.com';
+
+  const fullUser: UserProfile = {
+    uid: user.uid,
+    email: cleanEmail,
+    displayName: user.displayName || cleanEmail.split('@')[0],
+    photoURL:
+      user.photoURL ||
+      `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(cleanEmail)}&backgroundColor=1a73e8&textColor=ffffff`,
+    provider: user.provider || 'google.com',
+    role: isMaster ? 'master' : (user.role || 'member'),
+    emailVerified: user.emailVerified !== undefined ? user.emailVerified : true,
+    lastLoginAt: now,
+    createdAt: user.createdAt || now,
+    loginCount: (user.loginCount || 1),
+    device: user.device || navigator.userAgent.slice(0, 50) || 'Web Browser',
+    assignedCardIds: user.assignedCardIds || [],
+  };
+
+  // 1. Save to Firestore
+  try {
+    await setDoc(doc(db, USERS_COLLECTION, fullUser.uid), fullUser);
+  } catch (err) {
+    console.warn('Firestore saveUser notice:', err);
+  }
+
+  // 2. Save to Backend Server
+  try {
+    await fetch('/api/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(fullUser),
+    });
+  } catch {
+    // ignore
+  }
+
+  // 3. Save to localStorage cache
+  try {
+    const existing = await fetchUsers();
+    const idx = existing.findIndex((u) => u.uid === fullUser.uid || u.email.toLowerCase() === cleanEmail);
+    let updated: UserProfile[];
+    if (idx !== -1) {
+      updated = [...existing];
+      updated[idx] = { ...updated[idx], ...fullUser, loginCount: (updated[idx].loginCount || 0) + 1 };
+    } else {
+      updated = [fullUser, ...existing];
+    }
+    localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(updated));
+  } catch {
+    // ignore
+  }
+
+  return fullUser;
+}
+
+export async function deleteUser(uid: string): Promise<boolean> {
+  // 1. Delete in Firestore
+  try {
+    await deleteDoc(doc(db, USERS_COLLECTION, uid));
+  } catch (err) {
+    console.warn('Firestore deleteUser notice:', err);
+  }
+
+  // 2. Delete on backend
+  try {
+    await fetch(`/api/users/${encodeURIComponent(uid)}`, { method: 'DELETE' });
+  } catch {
+    // ignore
+  }
+
+  // 3. Local storage
+  try {
+    const existing = await fetchUsers();
+    const updated = existing.filter((u) => u.uid !== uid);
+    localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(updated));
+  } catch {
+    // ignore
+  }
+
+  return true;
+}
+
 

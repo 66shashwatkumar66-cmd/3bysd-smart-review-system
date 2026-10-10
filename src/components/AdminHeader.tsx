@@ -12,13 +12,17 @@ import {
   ShieldCheck,
   Lock,
   ChevronDown,
+  Users,
+  CheckCircle,
 } from 'lucide-react';
-import { auth, googleProvider, signInWithPopup, signOut, onAuthStateChanged, User } from '../firebase';
-import { AdminUser } from '../types';
+import { auth, signOut, onAuthStateChanged, User } from '../firebase';
+import { AdminUser, UserProfile } from '../types';
+import { GoogleAuthModal } from './GoogleAuthModal';
+import { saveUser } from '../utils/api';
 
 interface AdminHeaderProps {
-  currentTab: 'cards' | 'print' | 'nfc' | 'simulator' | 'admins';
-  onSelectTab: (tab: 'cards' | 'print' | 'nfc' | 'simulator' | 'admins') => void;
+  currentTab: 'cards' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users';
+  onSelectTab: (tab: 'cards' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users') => void;
   onOpenBatchModal: () => void;
   totalCards: number;
   assignedCount: number;
@@ -40,29 +44,59 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
   onSelectActiveAdmin,
 }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [isSigningIn, setIsSigningIn] = useState<boolean>(false);
+  const [isGoogleModalOpen, setIsGoogleModalOpen] = useState<boolean>(false);
+  const [verifiedGoogleProfile, setVerifiedGoogleProfile] = useState<UserProfile | null>(() => {
+    try {
+      const saved = localStorage.getItem('3dbysd_current_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setCurrentUser(user);
+      if (user && user.email) {
+        // Automatically save user to persistence
+        try {
+          const profile = await saveUser({
+            uid: user.uid,
+            email: user.email,
+            displayName: user.displayName || user.email.split('@')[0],
+            photoURL: user.photoURL || undefined,
+            provider: 'google.com',
+            emailVerified: user.emailVerified,
+            role: user.email.toLowerCase() === '66shashwatkumar66@gmail.com' ? 'master' : 'member',
+          });
+          setVerifiedGoogleProfile(profile);
+          localStorage.setItem('3dbysd_current_user', JSON.stringify(profile));
+        } catch {
+          // ignore
+        }
+      }
     });
     return () => unsubscribe();
   }, []);
 
-  const handleSignIn = async () => {
-    setIsSigningIn(true);
-    try {
-      await signInWithPopup(auth, googleProvider);
-    } catch (err: any) {
-      console.warn('Google Sign-in failed or cancelled:', err?.message);
-    } finally {
-      setIsSigningIn(false);
+  const handleSignInClick = () => {
+    setIsGoogleModalOpen(true);
+  };
+
+  const handleGoogleSuccess = (user: UserProfile) => {
+    setVerifiedGoogleProfile(user);
+    localStorage.setItem('3dbysd_current_user', JSON.stringify(user));
+    if (user.role === 'master' || user.email === '66shashwatkumar66@gmail.com') {
+      const master = admins.find((a) => a.role === 'master') || admins[0];
+      if (master) onSelectActiveAdmin(master);
     }
   };
 
   const handleSignOut = async () => {
     try {
       await signOut(auth);
+      setVerifiedGoogleProfile(null);
+      localStorage.removeItem('3dbysd_current_user');
     } catch (err: any) {
       console.warn('Sign-out failed:', err?.message);
     }
@@ -153,6 +187,19 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
               <span>Mobile Simulator</span>
             </button>
 
+            {/* Google Verified Users & Logins Tab */}
+            <button
+              onClick={() => onSelectTab('users')}
+              className={`flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-full transition-all whitespace-nowrap ${
+                currentTab === 'users'
+                  ? 'bg-blue-50 text-[#1A73E8] font-bold shadow-2xs ring-1 ring-blue-300'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+            >
+              <Users className="w-4 h-4 text-[#4285F4]" />
+              <span>Users & Logins</span>
+            </button>
+
             {/* Master Admin Panel Tab (Only accessible if active admin is Master Admin) */}
             {isMaster && (
               <button
@@ -198,36 +245,43 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
             </div>
 
             {/* Google Authentication Control */}
-            {currentUser ? (
+            {currentUser || verifiedGoogleProfile ? (
               <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 pl-1.5 pr-2 py-1 rounded-full text-xs">
-                {currentUser.photoURL ? (
+                <div className="relative">
                   <img
-                    src={currentUser.photoURL}
-                    alt={currentUser.displayName || 'User'}
+                    src={
+                      currentUser?.photoURL ||
+                      verifiedGoogleProfile?.photoURL ||
+                      `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(
+                        currentUser?.email || verifiedGoogleProfile?.email || 'User'
+                      )}&backgroundColor=1a73e8&textColor=ffffff`
+                    }
+                    alt={currentUser?.displayName || verifiedGoogleProfile?.displayName || 'User'}
                     className="w-5 h-5 rounded-full object-cover"
                     referrerPolicy="no-referrer"
                   />
-                ) : (
-                  <div className="w-5 h-5 rounded-full bg-[#4285F4] text-white flex items-center justify-center text-[10px] font-bold">
-                    {currentUser.displayName?.charAt(0) || 'U'}
-                  </div>
-                )}
-                <span className="hidden xl:inline text-[11px] font-semibold text-slate-700 max-w-[90px] truncate">
-                  {currentUser.displayName || currentUser.email}
-                </span>
+                  <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-[#34A853] ring-1 ring-white" />
+                </div>
+                <div className="hidden xl:flex flex-col text-left">
+                  <span className="text-[11px] font-bold text-slate-800 max-w-[100px] truncate leading-tight">
+                    {currentUser?.displayName || verifiedGoogleProfile?.displayName || 'Google User'}
+                  </span>
+                  <span className="text-[9px] text-[#34A853] font-semibold flex items-center gap-0.5">
+                    <CheckCircle className="w-2.5 h-2.5" /> Verified
+                  </span>
+                </div>
                 <button
                   onClick={handleSignOut}
-                  title="Sign out of Firebase"
-                  className="p-1 rounded-full text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                  title="Sign out of Google"
+                  className="p-1 rounded-full text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors ml-0.5"
                 >
                   <LogOut className="w-3.5 h-3.5" />
                 </button>
               </div>
             ) : (
               <button
-                onClick={handleSignIn}
-                disabled={isSigningIn}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 shadow-2xs transition-colors"
+                onClick={handleSignInClick}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-300 bg-white hover:bg-slate-50 text-xs font-bold text-slate-700 shadow-2xs transition-all hover:border-blue-400"
                 title="Sign in with Google Account"
               >
                 <svg className="w-3.5 h-3.5" viewBox="0 0 24 24">
@@ -248,7 +302,7 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
                     d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.34 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"
                   />
                 </svg>
-                <span className="hidden sm:inline">{isSigningIn ? 'Connecting...' : 'Sign in'}</span>
+                <span className="hidden sm:inline">Google Login</span>
               </button>
             )}
 
@@ -304,6 +358,15 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
             <Smartphone className="w-3.5 h-3.5" />
             <span>Simulator</span>
           </button>
+          <button
+            onClick={() => onSelectTab('users')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full whitespace-nowrap ${
+              currentTab === 'users' ? 'bg-blue-600 text-white' : 'text-blue-700 bg-blue-50'
+            }`}
+          >
+            <Users className="w-3.5 h-3.5" />
+            <span>Users</span>
+          </button>
           {isMaster && (
             <button
               onClick={() => onSelectTab('admins')}
@@ -317,6 +380,14 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
           )}
         </div>
       </div>
+
+      {/* Google Authentication Modal */}
+      <GoogleAuthModal
+        isOpen={isGoogleModalOpen}
+        onClose={() => setIsGoogleModalOpen(false)}
+        onSuccess={handleGoogleSuccess}
+        defaultEmail={activeAdmin.email || '66shashwatkumar66@gmail.com'}
+      />
     </header>
   );
 };

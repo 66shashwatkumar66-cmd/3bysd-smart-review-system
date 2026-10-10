@@ -37,6 +37,15 @@ service cloud.firestore {
         (data.role == 'master' || data.role == 'restricted');
     }
 
+    function isValidUser(data) {
+      return data.uid is string &&
+        data.uid.size() > 0 &&
+        data.uid.size() <= 128 &&
+        data.email is string &&
+        data.email.size() > 0 &&
+        data.email.size() <= 256;
+    }
+
     // Default deny catch-all
     match /{document=**} {
       allow read, write: if false;
@@ -59,6 +68,13 @@ service cloud.firestore {
     match /admins/{adminId} {
       allow get, list: if true;
       allow create, update, delete: if isValidId(adminId) && isValidAdmin(incoming());
+    }
+
+    // Google Verified Users Collection
+    match /users/{userId} {
+      allow get, list: if true;
+      allow create, update: if isValidId(userId) && isValidUser(incoming());
+      allow delete: if isValidId(userId);
     }
   }
 }

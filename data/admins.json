@@ -1,0 +1,35 @@
+[
+  {
+    "id": "master-admin-01",
+    "email": "66shashwatkumar66@gmail.com",
+    "name": "Shashwat Kumar (Master)",
+    "role": "master",
+    "assignedCardIds": [],
+    "permissions": {
+      "canEditCards": true,
+      "canToggleAi": true,
+      "canExportCsv": true,
+      "canCreateCards": true
+    },
+    "createdAt": "2026-10-10T21:36:13.801Z",
+    "updatedAt": "2026-10-10T23:13:00.866Z"
+  },
+  {
+    "id": "sub-admin-01",
+    "email": "branch.manager@example.com",
+    "name": "Branch Manager (Restricted)",
+    "role": "restricted",
+    "assignedCardIds": [
+      "0001",
+      "0002"
+    ],
+    "permissions": {
+      "canEditCards": true,
+      "canToggleAi": true,
+      "canExportCsv": false,
+      "canCreateCards": false
+    },
+    "createdAt": "2026-10-10T21:36:13.801Z",
+    "updatedAt": "2026-10-10T21:36:13.801Z"
+  }
+]

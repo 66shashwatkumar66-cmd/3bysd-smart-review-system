@@ -21,6 +21,7 @@ import { MobileSimulatorModal } from './components/MobileSimulatorModal';
 import { AdminStatsWidget } from './components/AdminStatsWidget';
 import { NfcGeneratorView } from './components/NfcGeneratorView';
 import { MasterAdminView } from './components/MasterAdminView';
+import { UsersManagementView } from './components/UsersManagementView';
 import { exportCardsToCsv } from './utils/csv';
 import {
   QrCode,
@@ -36,7 +37,7 @@ import {
 export default function App() {
   const [cards, setCards] = useState<CardRecord[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
-  const [currentTab, setCurrentTab] = useState<'cards' | 'print' | 'nfc' | 'simulator' | 'admins'>('cards');
+  const [currentTab, setCurrentTab] = useState<'cards' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users'>('cards');
 
   // Admin Management State
   const [admins, setAdmins] = useState<AdminUser[]>([]);
@@ -431,6 +432,14 @@ export default function App() {
             onSaveAdmin={handleSaveAdmin}
             onDeleteAdmin={handleDeleteAdmin}
             onRefreshCards={loadCards}
+          />
+        )}
+
+        {/* Tab 5: Google Verified Users & Logins */}
+        {currentTab === 'users' && (
+          <UsersManagementView
+            activeAdmin={effectiveActiveAdmin}
+            onRefreshAdmins={loadAdminsData}
           />
         )}
       </main>

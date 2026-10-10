@@ -43,3 +43,18 @@ export interface GenerateReviewResponse {
   reviewText?: string;
   message?: string;
 }
+
+export interface UserProfile {
+  uid: string;
+  email: string;
+  displayName: string;
+  photoURL?: string;
+  provider: string; // 'google.com' | 'google-verified'
+  role: 'master' | 'restricted' | 'member';
+  emailVerified: boolean;
+  lastLoginAt: string;
+  createdAt: string;
+  loginCount: number;
+  device?: string;
+  assignedCardIds?: string[];
+}

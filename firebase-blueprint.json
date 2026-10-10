@@ -110,6 +110,62 @@
         }
       },
       "required": ["id", "email", "role"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile storing Google verified authentication details and metadata",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Unique user ID"
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "User email address"
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "User display name"
+        },
+        "photoURL": {
+          "type": "string",
+          "maxLength": 1000,
+          "description": "User profile image URL"
+        },
+        "provider": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Authentication provider e.g. google.com"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["master", "restricted", "member"],
+          "description": "User role"
+        },
+        "emailVerified": {
+          "type": "boolean",
+          "description": "Whether user email is verified"
+        },
+        "lastLoginAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp of the most recent login"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "User account creation timestamp"
+        },
+        "loginCount": {
+          "type": "integer",
+          "description": "Number of times user logged in"
+        }
+      },
+      "required": ["uid", "email"]
     }
   },
   "firestore": {
@@ -120,6 +176,10 @@
     "/admins/{adminId}": {
       "schema": "AdminUser",
       "description": "Collection of master and restricted administrators"
+    },
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Collection of all users and their Google verified login data"
     }
   }
 }

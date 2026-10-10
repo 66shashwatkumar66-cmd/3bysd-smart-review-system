@@ -1,0 +1,30 @@
+[
+  {
+    "uid": "google-user-66shashwatkumar66",
+    "email": "66shashwatkumar66@gmail.com",
+    "displayName": "Shashwat Kumar (Master)",
+    "photoURL": "https://api.dicebear.com/7.x/initials/svg?seed=SK&backgroundColor=1a73e8&textColor=ffffff",
+    "provider": "google.com",
+    "role": "master",
+    "emailVerified": true,
+    "lastLoginAt": "2026-10-10T23:13:00.866Z",
+    "createdAt": "2026-10-10T21:30:00.000Z",
+    "loginCount": 4,
+    "device": "Web Browser (Chrome)",
+    "assignedCardIds": []
+  },
+  {
+    "uid": "google-uid-test-user",
+    "email": "test.customer@gmail.com",
+    "displayName": "Test Customer",
+    "photoURL": "https://api.dicebear.com/7.x/initials/svg?seed=TC",
+    "provider": "google.com",
+    "role": "member",
+    "emailVerified": true,
+    "lastLoginAt": "2026-10-10T23:13:00.857Z",
+    "createdAt": "2026-10-10T23:13:00.857Z",
+    "loginCount": 1,
+    "device": "Chrome on Android",
+    "assignedCardIds": []
+  }
+]
