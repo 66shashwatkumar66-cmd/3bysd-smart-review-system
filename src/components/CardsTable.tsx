@@ -1,5 +1,5 @@
 import React, { useState, useId } from 'react';
-import { CardRecord } from '../types';
+import { CardRecord, AdminUser } from '../types';
 import {
   Search,
   ExternalLink,
@@ -19,6 +19,7 @@ import {
   Sparkles,
   Radio,
   Zap,
+  Lock,
 } from 'lucide-react';
 import { downloadCardPng, downloadCardSvg } from '../utils/qr';
 import { exportCardsToCsv } from '../utils/csv';
@@ -30,6 +31,7 @@ interface CardsTableProps {
   onPreviewCard: (card: CardRecord) => void;
   onOpenBatchModal: () => void;
   onToggleAiReview?: (id: string, enabled: boolean) => void;
+  activeAdmin?: AdminUser;
 }
 
 export const CardsTable: React.FC<CardsTableProps> = ({
@@ -39,11 +41,18 @@ export const CardsTable: React.FC<CardsTableProps> = ({
   onPreviewCard,
   onOpenBatchModal,
   onToggleAiReview,
+  activeAdmin,
 }) => {
   const searchInputId = useId();
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'assigned' | 'available' | 'disabled'>('all');
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [cardToDelete, setCardToDelete] = useState<CardRecord | null>(null);
+
+  const isMaster = !activeAdmin || activeAdmin.role === 'master';
+  const canEditCards = isMaster || (activeAdmin?.permissions?.canEditCards ?? true);
+  const canToggleAi = isMaster || (activeAdmin?.permissions?.canToggleAi ?? true);
+  const canExportCsv = isMaster || (activeAdmin?.permissions?.canExportCsv ?? false);
 
   // Filter cards based on search and status
   const filteredCards = cards.filter((card) => {
@@ -436,30 +445,30 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                           </button>
 
                           {/* Assign / Edit */}
-                          <button
-                            onClick={() => onAssignCard(card)}
-                            className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors ml-1 ${
-                              isAssigned
-                                ? 'text-slate-800 bg-slate-100 hover:bg-slate-200'
-                                : 'text-white bg-[#1A73E8] hover:bg-[#1557B0] shadow-2xs'
-                            }`}
-                          >
-                            <Edit3 className="w-3 h-3" />
-                            <span>{isAssigned ? 'Edit' : 'Assign'}</span>
-                          </button>
+                          {canEditCards && (
+                            <button
+                              onClick={() => onAssignCard(card)}
+                              className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors ml-1 ${
+                                isAssigned
+                                  ? 'text-slate-800 bg-slate-100 hover:bg-slate-200'
+                                  : 'text-white bg-[#1A73E8] hover:bg-[#1557B0] shadow-2xs'
+                              }`}
+                            >
+                              <Edit3 className="w-3 h-3" />
+                              <span>{isAssigned ? 'Edit' : 'Assign'}</span>
+                            </button>
+                          )}
 
-                          {/* Delete */}
-                          <button
-                            onClick={() => {
-                              if (confirm(`Are you sure you want to delete card #${card.id}?`)) {
-                                onDeleteCard(card.id);
-                              }
-                            }}
-                            title="Delete card"
-                            className="p-1.5 rounded-lg text-slate-400 hover:text-[#EA4335] hover:bg-red-50 transition-colors"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          {/* Delete (Master Admin Only) */}
+                          {isMaster && (
+                            <button
+                              onClick={() => setCardToDelete(card)}
+                              title="Delete card"
+                              className="p-1.5 rounded-lg text-slate-400 hover:text-[#EA4335] hover:bg-red-50 transition-colors"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -470,6 +479,46 @@ export const CardsTable: React.FC<CardsTableProps> = ({
           </div>
         )}
       </div>
+
+      {/* In-App Delete Confirmation Modal */}
+      {cardToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-xl border border-slate-200 space-y-4">
+            <div className="w-12 h-12 rounded-2xl bg-red-50 text-[#EA4335] flex items-center justify-center mx-auto border border-red-100">
+              <Trash2 className="w-6 h-6" />
+            </div>
+            <div className="text-center">
+              <h3 className="text-sm font-bold text-slate-900">
+                Delete Card #{cardToDelete.id}?
+              </h3>
+              <p className="text-xs text-slate-500 mt-1">
+                {cardToDelete.businessName
+                  ? `This will remove the assignment for "${cardToDelete.businessName}". Customers scanning this QR will see available stock.`
+                  : 'This QR card will be removed from your active inventory.'}
+              </p>
+            </div>
+            <div className="flex items-center gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setCardToDelete(null)}
+                className="flex-1 py-2 px-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onDeleteCard(cardToDelete.id);
+                  setCardToDelete(null);
+                }}
+                className="flex-1 py-2 px-3 rounded-xl bg-[#EA4335] text-white text-xs font-bold hover:bg-red-700 transition-colors shadow-sm"
+              >
+                Confirm Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

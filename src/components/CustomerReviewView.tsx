@@ -14,9 +14,7 @@ import {
   Clock,
   DollarSign,
   Sparkle,
-  ArrowRight,
   Store,
-  Zap,
   Globe,
   Radio,
 } from 'lucide-react';
@@ -26,6 +24,7 @@ interface CustomerReviewViewProps {
   cardId: string;
   onBackToAdmin?: () => void;
   isSimulator?: boolean;
+  isLoading?: boolean;
 }
 
 const EXPERIENCE_TAGS = [
@@ -50,6 +49,7 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
   cardId,
   onBackToAdmin,
   isSimulator = false,
+  isLoading = false,
 }) => {
   const notesInputId = useId();
   const reviewDraftId = useId();
@@ -60,7 +60,7 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
   const effectiveAiReviewEnabled =
     simulatorOverrideAi !== null
       ? simulatorOverrideAi
-      : (card?.aiReviewEnabled !== false);
+      : (card?.aiReviewEnabled === true);
 
   const [rating, setRating] = useState<number>(5);
   const [selectedTags, setSelectedTags] = useState<string[]>([
@@ -72,9 +72,18 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [copied, setCopied] = useState<boolean>(false);
   const [redirected, setRedirected] = useState<boolean>(false);
-  const [directRedirectCountdown, setDirectRedirectCountdown] = useState<number>(2);
 
-  // Auto-generate starter review only if AI Review is enabled
+  // If AI review is disabled on this QR and NOT in simulator:
+  // Redirect IMMEDIATELY to Google Reviews without ANY delay or intermediate screen!
+  useEffect(() => {
+    if (card && card.status === 'assigned' && !effectiveAiReviewEnabled && card.googleReviewUrl) {
+      if (!isSimulator) {
+        window.location.replace(card.googleReviewUrl);
+      }
+    }
+  }, [card?.id, effectiveAiReviewEnabled, isSimulator, card?.googleReviewUrl]);
+
+  // Auto-generate starter review draft when AI review assistant is active
   useEffect(() => {
     if (
       card &&
@@ -86,26 +95,6 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
       handleGenerate();
     }
   }, [card?.id, effectiveAiReviewEnabled]);
-
-  // Handle auto-redirect if AI review is OFF and not in simulator
-  useEffect(() => {
-    if (card && card.status === 'assigned' && !effectiveAiReviewEnabled && card.googleReviewUrl) {
-      if (!isSimulator) {
-        const timer = setTimeout(() => {
-          window.location.href = card.googleReviewUrl;
-        }, 1500);
-
-        const countInterval = setInterval(() => {
-          setDirectRedirectCountdown((prev) => (prev > 1 ? prev - 1 : 1));
-        }, 800);
-
-        return () => {
-          clearTimeout(timer);
-          clearInterval(countInterval);
-        };
-      }
-    }
-  }, [card?.id, effectiveAiReviewEnabled, isSimulator, card?.googleReviewUrl]);
 
   const toggleTag = (tagId: string) => {
     setSelectedTags((prev) =>
@@ -153,57 +142,119 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
 
     // Open target Google Review URL
     if (card.googleReviewUrl) {
-      setTimeout(() => {
+      if (isSimulator) {
         window.open(card.googleReviewUrl, '_blank', 'noopener,noreferrer');
-      }, 350);
+      } else {
+        // Direct location navigation on mobile ensures mobile browsers don't block popup
+        window.location.href = card.googleReviewUrl;
+      }
     }
   };
 
-  // State 1: Card not found or unassigned stock
-  if (!card || card.status !== 'assigned') {
+  // State 0: Loading in-progress
+  // For real customers in Direct Mode: Show clean blank screen while redirecting - zero intermediate UI!
+  if (!isSimulator && !effectiveAiReviewEnabled) {
+    return <div className="fixed inset-0 bg-white" />;
+  }
+
+  if (isLoading || (!card && !isSimulator)) {
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col justify-between p-4 sm:p-6 text-slate-900">
-        <div className="max-w-md w-full mx-auto my-auto bg-white rounded-3xl p-6 sm:p-8 shadow-sm border border-slate-200 text-center">
-          <div className="w-14 h-14 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto mb-4 border border-amber-200">
-            <Store className="w-7 h-7" />
+      <div className="min-h-screen bg-[#FDFCFB] flex flex-col justify-center items-center p-6 text-slate-900 antialiased">
+        <div className="max-w-sm w-full bg-white rounded-3xl p-8 border border-slate-200/90 shadow-sm text-center space-y-4 animate-fadeIn">
+          {/* Google 4-Color Pulse Ring */}
+          <div className="relative mx-auto w-16 h-16 rounded-2xl bg-gradient-to-tr from-[#4285F4] via-[#EA4335] via-[#FBBC05] to-[#34A853] p-0.5 shadow-md shadow-blue-500/10">
+            <div className="w-full h-full bg-white rounded-[14px] flex items-center justify-center">
+              <div className="w-6 h-6 border-2 border-[#1A73E8] border-t-transparent rounded-full animate-spin" />
+            </div>
           </div>
 
-          <div className="inline-block px-3 py-1 rounded-full bg-slate-100 font-mono text-xs font-bold text-slate-800 mb-2">
-            Card #{cardId}
+          <div>
+            <h1 className="text-base sm:text-lg font-extrabold text-slate-900">
+              Connecting to Google Reviews
+            </h1>
+            <p className="text-xs text-slate-500 mt-1">
+              Opening your review experience...
+            </p>
           </div>
-
-          <h2 className="text-xl font-bold text-slate-900 mb-2">
-            Card Ready for Assignment
-          </h2>
-          <p className="text-xs sm:text-sm text-slate-600 mb-6 leading-relaxed">
-            This 3DBYSD Smart Review card is currently unassigned stock. In your admin dashboard, you can connect this card to any café, restaurant, or business Google Review profile with one click.
-          </p>
-
-          {onBackToAdmin && (
-            <button
-              onClick={onBackToAdmin}
-              className="w-full py-3 px-4 rounded-xl bg-[#1A73E8] text-white font-semibold text-xs sm:text-sm hover:bg-[#1557B0] transition-colors shadow-sm"
-            >
-              Open Admin Dashboard to Assign
-            </button>
-          )}
-        </div>
-
-        <div className="text-center text-[11px] text-slate-400 py-4">
-          3DBYSD Smart Reviews · NFC & Dynamic QR Card
         </div>
       </div>
     );
   }
 
-  // State 2: Card Assigned, but Admin Turned OFF AI Review (Direct Google Mode)
+  // State 1: Card unassigned or not found
+  if (!card || card.status !== 'assigned') {
+    if (isSimulator) {
+      // Admin testing in simulator
+      return (
+        <div className="min-h-screen bg-slate-50 flex flex-col justify-between p-4 sm:p-6 text-slate-900">
+          <div className="max-w-md w-full mx-auto my-auto bg-white rounded-3xl p-6 sm:p-8 shadow-sm border border-slate-200 text-center space-y-3">
+            <div className="w-14 h-14 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto border border-amber-200">
+              <Store className="w-7 h-7" />
+            </div>
+
+            <div className="inline-block px-3 py-1 rounded-full bg-slate-100 font-mono text-xs font-bold text-slate-800">
+              Card #{cardId} (Unassigned Stock)
+            </div>
+
+            <h2 className="text-lg font-bold text-slate-900">
+              Simulator: Unassigned Stock
+            </h2>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              This card is currently available in inventory. Assign a business name and Google Review URL in the admin dashboard to activate it.
+            </p>
+
+            {onBackToAdmin && (
+              <button
+                onClick={onBackToAdmin}
+                className="w-full py-2.5 px-4 rounded-xl bg-[#1A73E8] text-white font-semibold text-xs hover:bg-[#1557B0] transition-colors shadow-sm"
+              >
+                Open Admin Dashboard to Assign
+              </button>
+            )}
+          </div>
+
+          <div className="text-center text-[11px] text-slate-400 py-4">
+            Simulator Preview
+          </div>
+        </div>
+      );
+    }
+
+    // Real Customer View for unassigned card - Clean, polite hospitality greeting
+    return (
+      <div className="min-h-screen bg-[#FDFCFB] flex flex-col justify-between p-4 sm:p-6 text-slate-900 antialiased">
+        <div className="max-w-md w-full mx-auto my-auto bg-white rounded-3xl p-6 sm:p-8 shadow-sm border border-slate-200 text-center space-y-4">
+          <div className="w-14 h-14 rounded-2xl bg-blue-50 text-[#1A73E8] flex items-center justify-center mx-auto border border-blue-100">
+            <Store className="w-7 h-7" />
+          </div>
+
+          <div>
+            <h2 className="text-xl font-bold text-slate-900 mb-1">
+              Welcome to our Review Portal!
+            </h2>
+            <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
+              Thank you for visiting us today. We would love your feedback! Please ask our staff to help you leave a review.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // State 2: Card Assigned, but AI Review is OFF (Direct Google Review Mode)
+  // For real mobile customers: The browser redirects immediately without showing any intermediate page!
   if (!effectiveAiReviewEnabled) {
+    if (!isSimulator) {
+      // Completely silent instant transition for real customers
+      return <div className="fixed inset-0 bg-white" />;
+    }
+
+    // Admin testing in simulator - Show preview of Direct Mode
     return (
       <div className="min-h-screen bg-[#FDFCFB] flex flex-col justify-between text-slate-900 antialiased">
-        {/* Top Mobile Bar */}
         <div className="sticky top-0 z-20 bg-white/90 backdrop-blur-md border-b border-slate-100 px-4 py-3">
           <div className="max-w-md mx-auto flex items-center justify-between">
-            {onBackToAdmin ? (
+            {onBackToAdmin && (
               <button
                 onClick={onBackToAdmin}
                 className="flex items-center gap-1 text-xs font-semibold text-slate-600 hover:text-slate-900"
@@ -211,95 +262,69 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
                 <ChevronLeft className="w-4 h-4" />
                 <span>Admin</span>
               </button>
-            ) : (
-              <span className="text-xs font-bold tracking-tight text-slate-900 flex items-center gap-1">
-                <span>3DBYSD Smart Reviews</span>
-              </span>
             )}
-
-            <div className="flex items-center gap-1.5 font-mono text-[11px] font-semibold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-full">
-              <span>Card #{card.id}</span>
-            </div>
+            <span className="text-xs font-bold text-slate-900">Direct Google Review Mode (Simulator)</span>
           </div>
         </div>
 
-        {/* Content Area for Direct Mode */}
         <div className="max-w-md w-full mx-auto px-4 py-8 space-y-6 flex-1 flex flex-col justify-center">
           <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200/90 shadow-sm text-center space-y-4">
-            {/* Google 4-color Ring & Business Initial */}
             <div className="relative mx-auto w-16 h-16 rounded-2xl bg-gradient-to-tr from-[#4285F4] to-[#34A853] p-0.5 shadow-md shadow-blue-500/10">
               <div className="w-full h-full bg-white rounded-[14px] flex items-center justify-center font-bold text-2xl text-slate-900">
-                {card.businessName.charAt(0)}
+                {card.businessName ? card.businessName.charAt(0) : 'G'}
               </div>
             </div>
 
             <div>
-              <div className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 text-[11px] font-semibold mb-2">
-                <Zap className="w-3 h-3 text-[#FBBC05]" />
-                <span>Direct Google Review Mode</span>
+              <div className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-50 text-amber-800 text-[11px] font-semibold mb-2 border border-amber-200">
+                <Globe className="w-3 h-3 text-amber-600" />
+                <span>AI Review Generator: BYPASSED (OFF)</span>
               </div>
               <h1 className="text-xl sm:text-2xl font-extrabold text-slate-900 leading-tight">
                 {card.businessName}
               </h1>
               <p className="text-xs text-slate-500 font-medium mt-1">
-                {card.category || 'Specialty Business'}
+                {card.category || 'Local Business'}
               </p>
             </div>
 
-            {/* Direct Redirect Message */}
-            <div className="p-4 bg-blue-50/70 border border-blue-100 rounded-2xl space-y-2">
-              <div className="flex items-center justify-center gap-2 text-xs font-bold text-[#1A73E8]">
-                <Globe className="w-4 h-4 animate-spin text-[#4285F4]" />
-                <span>
-                  {isSimulator
-                    ? 'Direct Mode: AI generator bypassed for this QR'
-                    : `Redirecting you to Google Reviews...`}
-                </span>
-              </div>
+            <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-1.5 text-center">
+              <p className="text-xs font-bold text-slate-800">
+                Real customer scan behavior:
+              </p>
               <p className="text-[11px] text-slate-600 leading-relaxed">
-                The administrator has configured this QR code to transfer customers straight to your Google Business Review profile.
+                When AI is OFF, customers scanning or tapping NFC are redirected immediately via HTTP 302 straight to Google Reviews with 0ms delay and zero intermediate screens.
               </p>
             </div>
 
-            {/* Direct Link Button */}
             <a
               href={card.googleReviewUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="w-full h-12 rounded-2xl bg-[#1A73E8] hover:bg-[#1557B0] text-white font-bold text-sm flex items-center justify-center gap-2 shadow-md shadow-blue-500/20 active:scale-[0.98] transition-all"
             >
-              <span>Leave a Review on Google</span>
+              <span>Test Google Review Link</span>
               <ExternalLink className="w-4 h-4" />
             </a>
 
-            {/* Simulator Toggle Test */}
-            {isSimulator && (
-              <div className="pt-2 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setSimulatorOverrideAi(true)}
-                  className="w-full py-2 px-3 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-700 font-bold text-xs flex items-center justify-center gap-1.5 transition-colors border border-purple-200"
-                >
-                  <Sparkles className="w-3.5 h-3.5 text-purple-600" />
-                  <span>Preview with AI Review Generator Active (ON)</span>
-                </button>
-              </div>
-            )}
+            <div className="pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setSimulatorOverrideAi(true)}
+                className="w-full py-2 px-3 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-700 font-bold text-xs flex items-center justify-center gap-1.5 transition-colors border border-purple-200"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-purple-600" />
+                <span>Preview with AI Review Generator Active (ON)</span>
+              </button>
+            </div>
           </div>
         </div>
-
-        {/* Footer */}
-        <footer className="text-center py-4 text-[11px] text-slate-400 border-t border-slate-100 bg-white/60">
-          <div className="max-w-md mx-auto px-4 flex items-center justify-between">
-            <span>Powered by 3DBYSD Smart Reviews</span>
-            <span>Google Business Hand-off</span>
-          </div>
-        </footer>
       </div>
     );
   }
 
   // State 3: Card Assigned with AI Review Generator ON
+  // High-trust Google-styled review concierge experience
   return (
     <div className="min-h-screen bg-[#FDFCFB] flex flex-col justify-between text-slate-900 antialiased selection:bg-amber-100 selection:text-amber-900">
       {/* Top Mobile Bar */}
@@ -311,44 +336,53 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
               className="flex items-center gap-1 text-xs font-semibold text-slate-600 hover:text-slate-900"
             >
               <ChevronLeft className="w-4 h-4" />
-              <span>Admin</span>
+              <span>Back</span>
             </button>
           ) : (
             <span className="text-xs font-bold tracking-tight text-slate-900 flex items-center gap-1.5">
-              <span>3DBYSD Smart Reviews</span>
+              <div className="flex items-center gap-0.5">
+                <span className="w-2 h-2 rounded-full bg-[#4285F4]" />
+                <span className="w-2 h-2 rounded-full bg-[#EA4335]" />
+                <span className="w-2 h-2 rounded-full bg-[#FBBC05]" />
+                <span className="w-2 h-2 rounded-full bg-[#34A853]" />
+              </div>
+              <span>Google Review Assistant</span>
             </span>
           )}
 
-          <div className="flex items-center gap-1.5">
-            {/* AI Review Active Badge */}
-            <span className="flex items-center gap-1 text-[10px] font-bold text-[#1A73E8] bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-full">
-              <Sparkles className="w-2.5 h-2.5 text-[#1A73E8]" />
-              <span>AI Review: ON</span>
-            </span>
-            <span className="font-mono text-[11px] font-semibold text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">
-              #{card.id}
-            </span>
-          </div>
+          {card.googleReviewUrl && (
+            <a
+              href={card.googleReviewUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[11px] font-semibold text-[#1A73E8] hover:underline flex items-center gap-1"
+            >
+              <span>Skip to Google</span>
+              <ExternalLink className="w-3 h-3" />
+            </a>
+          )}
         </div>
       </div>
 
       {/* Main Content Area */}
-      <div className="max-w-md w-full mx-auto px-4 py-6 space-y-6 flex-1">
+      <div className="max-w-md w-full mx-auto px-4 py-6 space-y-5 flex-1">
         {/* Business Branding Card */}
         <div className="bg-white rounded-3xl p-5 border border-slate-200/80 shadow-xs text-center space-y-2">
-          <div className="w-14 h-14 rounded-2xl bg-amber-500/10 text-amber-600 mx-auto flex items-center justify-center font-bold text-xl border border-amber-500/20">
-            {card.businessName.charAt(0)}
+          <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-[#4285F4] to-[#34A853] p-0.5 mx-auto shadow-sm">
+            <div className="w-full h-full bg-white rounded-[14px] flex items-center justify-center font-bold text-xl text-slate-900">
+              {card.businessName.charAt(0)}
+            </div>
           </div>
           <div>
             <h1 className="text-lg sm:text-xl font-extrabold text-slate-900 leading-tight">
               {card.businessName}
             </h1>
             <p className="text-xs text-slate-500 font-medium mt-0.5">
-              {card.category || 'Specialty Café & Dining'}
+              {card.category || 'Customer Review'}
             </p>
           </div>
           <p className="text-xs text-slate-600 pt-1">
-            Tap a rating below to generate your Google review draft in seconds.
+            Tap your rating below to craft your 5-star review in seconds.
           </p>
         </div>
 
@@ -445,7 +479,7 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
             className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-900 text-xs font-bold transition-all disabled:opacity-50"
           >
             <Sparkles className={`w-3.5 h-3.5 text-amber-500 ${isGenerating ? 'animate-spin' : ''}`} />
-            <span>{isGenerating ? 'Drafting with Gemini...' : 'Update Review Draft'}</span>
+            <span>{isGenerating ? 'Drafting review...' : 'Update Review Draft'}</span>
           </button>
         </div>
 
@@ -473,7 +507,7 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
                 rows={4}
                 value={generatedReview}
                 onChange={(e) => setGeneratedReview(e.target.value)}
-                placeholder="Click 'Generate Review' above to create draft..."
+                placeholder="Click 'Update Review Draft' above to generate..."
                 className="w-full p-3.5 text-xs sm:text-sm bg-slate-50/70 border border-slate-200 rounded-2xl text-slate-900 leading-relaxed focus:outline-none focus:ring-2 focus:ring-[#1A73E8] focus:bg-white resize-none"
               />
             )}
@@ -500,11 +534,11 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
             )}
           </button>
 
-          {/* Fallback button if popup blocker intercepted the redirect */}
+          {/* Fallback button if browser popup blocker or mobile tab didn't navigate */}
           {redirected && card.googleReviewUrl && (
             <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-center space-y-1.5 animate-fadeIn">
               <p className="text-xs text-emerald-900 font-semibold">
-                Draft copied to your clipboard! Paste it into Google:
+                Draft copied to your clipboard! Paste into Google:
               </p>
               <a
                 href={card.googleReviewUrl}
@@ -535,11 +569,11 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
         </div>
       </div>
 
-      {/* Footer */}
+      {/* Clean Footer */}
       <footer className="text-center py-4 text-[11px] text-slate-400 border-t border-slate-100 bg-white/60">
         <div className="max-w-md mx-auto px-4 flex items-center justify-between">
-          <span>Powered by 3DBYSD Smart Reviews</span>
-          <span>Google Business Hand-off</span>
+          <span>{card.businessName}</span>
+          <span>Google Review Assistant</span>
         </div>
       </footer>
     </div>

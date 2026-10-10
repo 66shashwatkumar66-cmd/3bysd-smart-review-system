@@ -56,12 +56,70 @@
         }
       },
       "required": ["id", "status"]
+    },
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "System admin profile with role-based card assignment permissions",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Admin UID or email identifier"
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "Admin user email address"
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Display name of the admin"
+        },
+        "role": {
+          "type": "string",
+          "enum": ["master", "restricted"],
+          "description": "Master admin with full powers or restricted admin for specific cards"
+        },
+        "assignedCardIds": {
+          "type": "string",
+          "description": "Comma-separated or list of card IDs this admin is authorized to edit"
+        },
+        "canEditCards": {
+          "type": "boolean",
+          "description": "Whether admin is permitted to edit assigned cards"
+        },
+        "canToggleAi": {
+          "type": "boolean",
+          "description": "Whether admin can toggle AI review feature"
+        },
+        "canExportCsv": {
+          "type": "boolean",
+          "description": "Whether admin can export CSV"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Admin registration timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Admin last updated timestamp"
+        }
+      },
+      "required": ["id", "email", "role"]
     }
   },
   "firestore": {
     "/cards/{cardId}": {
       "schema": "Card",
       "description": "Collection of all dynamic QR cards"
+    },
+    "/admins/{adminId}": {
+      "schema": "AdminUser",
+      "description": "Collection of master and restricted administrators"
     }
   }
 }

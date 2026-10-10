@@ -11,6 +11,24 @@ export interface CardRecord {
   updatedAt: string;
 }
 
+export interface AdminPermissions {
+  canEditCards: boolean;
+  canToggleAi: boolean;
+  canExportCsv: boolean;
+  canCreateCards: boolean;
+}
+
+export interface AdminUser {
+  id: string;
+  email: string;
+  name: string;
+  role: 'master' | 'restricted';
+  assignedCardIds: string[]; // List of card IDs this sub-admin is restricted to managing
+  permissions: AdminPermissions;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface GenerateReviewRequest {
   businessName: string;
   rating: number;
@@ -22,5 +40,6 @@ export interface GenerateReviewRequest {
 export interface GenerateReviewResponse {
   success: boolean;
   review?: string;
+  reviewText?: string;
   message?: string;
 }

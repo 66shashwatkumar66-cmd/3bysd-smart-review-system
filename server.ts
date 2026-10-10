@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
+import { createClient } from '@supabase/supabase-js';
 
 dotenv.config();
 
@@ -10,8 +11,54 @@ const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const DATA_FILE = path.join(DATA_DIR, 'cards.json');
+const ADMINS_FILE = path.join(DATA_DIR, 'admins.json');
 
 app.use(express.json());
+
+// Initialize Supabase Client for Cloud Database Sync
+function resolveSupabaseUrl(): string {
+  const candidates = [
+    process.env.VITE_SUPABASE_URL,
+    process.env.NEXT_PUBLIC_SUPABASE_URL,
+    process.env.SUPABASE_URL,
+    'https://lebpkfffdygcwqagjart.supabase.co',
+  ];
+  for (const c of candidates) {
+    if (typeof c === 'string' && (c.startsWith('https://') || c.startsWith('http://'))) {
+      return c.trim();
+    }
+  }
+  return 'https://lebpkfffdygcwqagjart.supabase.co';
+}
+
+function resolveSupabaseKey(): string {
+  const candidates = [
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
+    process.env.VITE_SUPABASE_ANON_KEY,
+    process.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+    process.env.SUPABASE_ANON_KEY,
+    process.env.SUPABASE_KEY,
+    'sb_publishable_v6EEzqWTb7je2mQSL1X8Mw_3skO31Gr',
+  ];
+  for (const c of candidates) {
+    if (typeof c === 'string' && !c.startsWith('http://') && !c.startsWith('https://') && c.length > 10) {
+      return c.trim();
+    }
+  }
+  return 'sb_publishable_v6EEzqWTb7je2mQSL1X8Mw_3skO31Gr';
+}
+
+const SUPABASE_URL = resolveSupabaseUrl();
+const SUPABASE_KEY = resolveSupabaseKey();
+
+let supabaseClient: any = null;
+try {
+  supabaseClient = createClient(SUPABASE_URL, SUPABASE_KEY);
+  console.log('✅ Supabase Client initialized with endpoint:', SUPABASE_URL);
+} catch (e) {
+  console.warn('⚠️ Supabase could not be initialized:', e);
+}
+
 
 // Initialize Gemini SDK with telemetry header
 const geminiApiKey = process.env.GEMINI_API_KEY;
@@ -27,6 +74,7 @@ if (geminiApiKey) {
   });
 }
 
+
 export interface CardRecord {
   id: string; // e.g. "0001", "0002"
   status: 'available' | 'assigned' | 'disabled';
@@ -40,8 +88,86 @@ export interface CardRecord {
   updatedAt: string;
 }
 
+export interface AdminUser {
+  id: string;
+  email: string;
+  name: string;
+  role: 'master' | 'restricted';
+  assignedCardIds: string[];
+  permissions: {
+    canEditCards: boolean;
+    canToggleAi: boolean;
+    canExportCsv: boolean;
+    canCreateCards: boolean;
+  };
+  createdAt: string;
+  updatedAt: string;
+}
+
+function ensureAdminsFile(): void {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  if (!fs.existsSync(ADMINS_FILE)) {
+    const initialAdmins: AdminUser[] = [
+      {
+        id: 'master-admin-01',
+        email: '66shashwatkumar66@gmail.com',
+        name: 'Master Admin',
+        role: 'master',
+        assignedCardIds: [],
+        permissions: {
+          canEditCards: true,
+          canToggleAi: true,
+          canExportCsv: true,
+          canCreateCards: true,
+        },
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+      {
+        id: 'sub-admin-01',
+        email: 'branch.manager@example.com',
+        name: 'Branch Manager (Restricted)',
+        role: 'restricted',
+        assignedCardIds: ['0001', '0002'],
+        permissions: {
+          canEditCards: true,
+          canToggleAi: true,
+          canExportCsv: false,
+          canCreateCards: false,
+        },
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    ];
+    fs.writeFileSync(ADMINS_FILE, JSON.stringify(initialAdmins, null, 2), 'utf-8');
+  }
+}
+
+function readAdmins(): AdminUser[] {
+  try {
+    ensureAdminsFile();
+    const data = fs.readFileSync(ADMINS_FILE, 'utf-8');
+    return JSON.parse(data) as AdminUser[];
+  } catch (err) {
+    console.error('Error reading admins file:', err);
+    return [];
+  }
+}
+
+function writeAdmins(admins: AdminUser[]): void {
+  try {
+    ensureAdminsFile();
+    fs.writeFileSync(ADMINS_FILE, JSON.stringify(admins, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Error saving admins file:', err);
+  }
+}
+
 // In-memory + file-backed persistent card store
 function ensureDataFile(): void {
+  ensureAdminsFile();
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
@@ -204,6 +330,22 @@ app.put('/api/cards/:id/assign', (req: Request, res: Response) => {
       return res.status(404).json({ success: false, message: `Card ${id} not found` });
     }
 
+    // Sub-admin permission validation: restricted admins can only edit registered cards
+    const requesterAdminId = req.headers['x-admin-id'] as string || req.body.adminId;
+    if (requesterAdminId) {
+      const admins = readAdmins();
+      const admin = admins.find((a) => a.id === requesterAdminId || a.email.toLowerCase() === requesterAdminId.toLowerCase());
+      if (admin && admin.role === 'restricted') {
+        const canEdit = admin.assignedCardIds.some((cid) => cid.toLowerCase() === id.toLowerCase());
+        if (!canEdit) {
+          return res.status(403).json({
+            success: false,
+            message: `Restricted Access: Sub-admin ${admin.name} is only authorized to edit assigned cards [${admin.assignedCardIds.join(', ')}].`,
+          });
+        }
+      }
+    }
+
     cards[index] = {
       ...cards[index],
       businessName: businessName !== undefined ? businessName.trim() : cards[index].businessName,
@@ -213,7 +355,7 @@ app.put('/api/cards/:id/assign', (req: Request, res: Response) => {
       aiReviewEnabled:
         aiReviewEnabled !== undefined
           ? Boolean(aiReviewEnabled)
-          : (cards[index].aiReviewEnabled ?? true),
+          : (cards[index].aiReviewEnabled ?? false),
       status:
         status !== undefined
           ? status
@@ -222,6 +364,7 @@ app.put('/api/cards/:id/assign', (req: Request, res: Response) => {
     };
 
     writeCards(cards);
+    syncCardToSupabase(cards[index]);
     res.json({ success: true, card: cards[index] });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message || 'Assignment failed' });
@@ -243,6 +386,102 @@ app.delete('/api/cards/:id', (req: Request, res: Response) => {
     res.json({ success: true, message: `Card ${id} deleted` });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message || 'Deletion failed' });
+  }
+});
+
+// REST API: Get all admins
+app.get('/api/admins', (_req: Request, res: Response) => {
+  const admins = readAdmins();
+  res.json({ success: true, admins });
+});
+
+// REST API: Create or register new sub-admin
+app.post('/api/admins', (req: Request, res: Response) => {
+  try {
+    const { email, name, role = 'restricted', assignedCardIds = [], permissions } = req.body;
+    if (!email || !name) {
+      return res.status(400).json({ success: false, message: 'Email and name are required' });
+    }
+
+    const admins = readAdmins();
+    const existing = admins.find((a) => a.email.toLowerCase() === email.toLowerCase().trim());
+    if (existing) {
+      return res.status(400).json({ success: false, message: `Admin with email ${email} already exists` });
+    }
+
+    const newAdmin: AdminUser = {
+      id: `admin-${Date.now()}`,
+      email: email.trim().toLowerCase(),
+      name: name.trim(),
+      role: role === 'master' ? 'master' : 'restricted',
+      assignedCardIds: Array.isArray(assignedCardIds) ? assignedCardIds : [],
+      permissions: {
+        canEditCards: permissions?.canEditCards ?? true,
+        canToggleAi: permissions?.canToggleAi ?? true,
+        canExportCsv: permissions?.canExportCsv ?? false,
+        canCreateCards: permissions?.canCreateCards ?? false,
+      },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    admins.push(newAdmin);
+    writeAdmins(admins);
+    res.json({ success: true, admin: newAdmin });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message || 'Failed to create admin' });
+  }
+});
+
+// REST API: Update sub-admin permissions and assigned cards
+app.put('/api/admins/:id', (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { name, role, assignedCardIds, permissions } = req.body;
+
+    const admins = readAdmins();
+    const idx = admins.findIndex((a) => a.id === id || a.email.toLowerCase() === id.toLowerCase());
+
+    if (idx === -1) {
+      return res.status(404).json({ success: false, message: 'Admin not found' });
+    }
+
+    admins[idx] = {
+      ...admins[idx],
+      name: name !== undefined ? name.trim() : admins[idx].name,
+      role: role !== undefined ? role : admins[idx].role,
+      assignedCardIds: assignedCardIds !== undefined ? assignedCardIds : admins[idx].assignedCardIds,
+      permissions: permissions !== undefined ? { ...admins[idx].permissions, ...permissions } : admins[idx].permissions,
+      updatedAt: new Date().toISOString(),
+    };
+
+    writeAdmins(admins);
+    res.json({ success: true, admin: admins[idx] });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message || 'Failed to update admin' });
+  }
+});
+
+// REST API: Delete sub-admin
+app.delete('/api/admins/:id', (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const admins = readAdmins();
+    const target = admins.find((a) => a.id === id || a.email.toLowerCase() === id.toLowerCase());
+
+    if (!target) {
+      return res.status(404).json({ success: false, message: 'Admin not found' });
+    }
+
+    if (target.role === 'master' && admins.filter((a) => a.role === 'master').length <= 1) {
+      return res.status(400).json({ success: false, message: 'Cannot delete the primary Master Admin' });
+    }
+
+    const filtered = admins.filter((a) => a.id !== target.id);
+    writeAdmins(filtered);
+    res.json({ success: true, message: 'Admin removed successfully' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message || 'Failed to delete admin' });
   }
 });
 
@@ -290,7 +529,7 @@ CRITICAL RULES:
         const response = await Promise.race([geminiPromise, timeoutPromise]);
         const generatedText = response.text ? response.text.trim() : '';
         if (generatedText) {
-          return res.json({ success: true, review: generatedText });
+          return res.json({ success: true, review: generatedText, reviewText: generatedText });
         }
       } catch (geminiError: any) {
         console.warn('Gemini API call skipped or timed out, using fallback:', geminiError.message);
@@ -299,7 +538,7 @@ CRITICAL RULES:
 
     // High quality fallback generator if API key is not configured yet or fails
     const fallbackReview = generateSmartFallbackReview(safeBusinessName, ratingNum, tagsList, safeNotes);
-    return res.json({ success: true, review: fallbackReview });
+    return res.json({ success: true, review: fallbackReview, reviewText: fallbackReview });
   } catch (error: any) {
     console.error('Error generating review:', error);
     res.status(500).json({ success: false, message: error.message || 'Failed to generate review' });
@@ -354,6 +593,187 @@ function generateSmartFallbackReview(
     return text.trim();
   }
 }
+
+// Helper to sync card changes to Supabase public.cards table
+async function syncCardToSupabase(card: CardRecord) {
+  if (!supabaseClient) return;
+  try {
+    const row = {
+      card_id: card.id,
+      business_name: card.businessName || '',
+      google_review_url: card.googleReviewUrl || '',
+      status: card.status,
+      updated_at: new Date().toISOString(),
+    };
+    const { data: existing } = await supabaseClient
+      .from('cards')
+      .select('id')
+      .eq('card_id', card.id)
+      .limit(1);
+
+    if (existing && existing.length > 0) {
+      await supabaseClient.from('cards').update(row).eq('card_id', card.id);
+    } else {
+      await supabaseClient.from('cards').insert([row]);
+    }
+  } catch (err) {
+    console.warn('Supabase card sync notice:', err);
+  }
+}
+
+async function syncCardScanToSupabase(cardId: string, _count: number) {
+  if (!supabaseClient) return;
+  try {
+    supabaseClient
+      .from('analytics_scans')
+      .insert([{ card_id: cardId, scanned_at: new Date().toISOString() }])
+      .then(() => {});
+  } catch {
+    // ignore
+  }
+}
+
+// Supabase Status & Cloud Diagnostics API
+app.get('/api/supabase/status', async (_req: Request, res: Response) => {
+  try {
+    if (!supabaseClient) {
+      return res.json({
+        connected: false,
+        url: SUPABASE_URL,
+        message: 'Supabase client not initialized',
+      });
+    }
+
+    const { data, error } = await supabaseClient.from('cards').select('*').limit(10);
+    if (error) {
+      return res.json({
+        connected: false,
+        url: SUPABASE_URL,
+        error: error.message,
+      });
+    }
+
+    return res.json({
+      connected: true,
+      url: SUPABASE_URL,
+      cardsCount: data ? data.length : 0,
+      cardsSample: data,
+    });
+  } catch (err: any) {
+    res.status(500).json({ connected: false, error: err.message });
+  }
+});
+
+// Supabase Two-Way Sync API
+app.post('/api/supabase/sync', async (req: Request, res: Response) => {
+  try {
+    const { direction } = req.body; // 'push' or 'pull'
+    if (!supabaseClient) {
+      return res.status(500).json({ success: false, message: 'Supabase client not ready' });
+    }
+
+    if (direction === 'pull') {
+      const { data, error } = await supabaseClient.from('cards').select('*');
+      if (error) return res.status(500).json({ success: false, error: error.message });
+
+      const localCards = readCards();
+      for (const row of data || []) {
+        const found = localCards.find((c) => c.id.toLowerCase() === row.card_id?.toLowerCase());
+        if (found) {
+          found.businessName = row.business_name || found.businessName;
+          found.googleReviewUrl = row.google_review_url || found.googleReviewUrl;
+          found.status = row.status || found.status;
+          found.updatedAt = row.updated_at || new Date().toISOString();
+        } else if (row.card_id) {
+          localCards.push({
+            id: row.card_id,
+            businessName: row.business_name || '',
+            googleReviewUrl: row.google_review_url || '',
+            category: 'Local Business',
+            status: row.status || 'available',
+            notes: '',
+            aiReviewEnabled: false,
+            scansCount: 0,
+            createdAt: row.created_at || new Date().toISOString(),
+            updatedAt: row.updated_at || new Date().toISOString(),
+          });
+        }
+      }
+      writeCards(localCards);
+      return res.json({ success: true, message: 'Successfully imported cards from Supabase', count: (data || []).length });
+    } else {
+      const localCards = readCards();
+      let pushed = 0;
+      for (const card of localCards) {
+        await syncCardToSupabase(card);
+        pushed++;
+      }
+      return res.json({ success: true, message: 'Successfully exported local cards to Supabase', count: pushed });
+    }
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Root URL handler: If opened with ?card=... or ?r=..., immediately redirect if assigned!
+app.get('/', (req: Request, res: Response, next) => {
+  try {
+    const queryCard = req.query.card || req.query.r;
+    if (typeof queryCard === 'string' && queryCard.trim()) {
+      const cardId = queryCard.trim();
+      const cards = readCards();
+      const card = cards.find((c) => c.id.toLowerCase() === cardId.toLowerCase());
+      if (card && card.googleReviewUrl && (card.status === 'assigned' || card.businessName)) {
+        card.scansCount = (card.scansCount || 0) + 1;
+        card.updatedAt = new Date().toISOString();
+        writeCards(cards);
+        syncCardScanToSupabase(card.id, card.scansCount);
+
+        const isDirect = card.aiReviewEnabled !== true || req.query.direct === 'true' || req.query.direct === '1';
+        if (isDirect) {
+          return res.redirect(302, card.googleReviewUrl);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Error handling root query redirect:', err);
+  }
+  next();
+});
+
+// Customer Short URL Route: /r/:id
+app.get('/r/:id', (req: Request, res: Response, next) => {
+  try {
+    const { id } = req.params;
+    const cards = readCards();
+    const card = cards.find((c) => c.id.toLowerCase() === id.toLowerCase());
+
+    if (card) {
+      // Record scan analytics count
+      card.scansCount = (card.scansCount || 0) + 1;
+      card.updatedAt = new Date().toISOString();
+      writeCards(cards);
+
+      // Async sync scan count
+      syncCardScanToSupabase(card.id, card.scansCount);
+
+      // Instant Zero-Delay Direct Google Review Redirect:
+      // If AI Review is NOT explicitly true (default mode) or ?direct=true is requested:
+      // Redirect IMMEDIATELY with HTTP 302 directly to the Google Review page!
+      // Customers will NEVER see any intermediate loading, assignment, or transition screen!
+      const isDirectOnly = card.aiReviewEnabled !== true || req.query.direct === 'true' || req.query.direct === '1';
+      if (isDirectOnly && card.googleReviewUrl && (card.status === 'assigned' || card.businessName)) {
+        return res.redirect(302, card.googleReviewUrl);
+      }
+    }
+  } catch (err) {
+    console.error('Error handling /r/:id route:', err);
+  }
+
+  // If AI review is enabled (ON) or card needs the AI assistant page, hand over to SPA
+  next();
+});
+
 
 // Development mode with Vite middleware vs Production static serving
 async function startServer() {

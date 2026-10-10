@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useId } from 'react';
 import { X, ExternalLink, HelpCircle, Check, MapPin, Store, Sparkles } from 'lucide-react';
-import { CardRecord } from '../types';
+import { CardRecord, AdminUser } from '../types';
 
 interface AssignCardModalProps {
   card: CardRecord | null;
   isOpen: boolean;
   onClose: () => void;
   onSave: (id: string, updates: Partial<CardRecord>) => Promise<void>;
+  activeAdmin?: AdminUser;
 }
 
 export const AssignCardModal: React.FC<AssignCardModalProps> = ({
@@ -14,6 +15,7 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
   isOpen,
   onClose,
   onSave,
+  activeAdmin,
 }) => {
   const businessNameId = useId();
   const categoryId = useId();

@@ -3,7 +3,7 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     function isValidId(id) {
-      return id is string && id.size() > 0 && id.size() <= 64 && id.matches('^[a-zA-Z0-9_\\-]+$');
+      return id is string && id.size() > 0 && id.size() <= 128;
     }
 
     function incoming() {
@@ -18,7 +18,6 @@ service cloud.firestore {
       return data.id is string &&
         data.id.size() > 0 &&
         data.id.size() <= 64 &&
-        data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
         data.status is string &&
         (data.status == 'available' || data.status == 'assigned' || data.status == 'disabled') &&
         (!('businessName' in data) || (data.businessName is string && data.businessName.size() <= 200)) &&
@@ -29,6 +28,15 @@ service cloud.firestore {
         (!('scansCount' in data) || (data.scansCount is int && data.scansCount >= 0));
     }
 
+    function isValidAdmin(data) {
+      return data.id is string &&
+        data.id.size() > 0 &&
+        data.email is string &&
+        data.email.size() > 0 &&
+        data.role is string &&
+        (data.role == 'master' || data.role == 'restricted');
+    }
+
     // Default deny catch-all
     match /{document=**} {
       allow read, write: if false;
@@ -36,22 +44,21 @@ service cloud.firestore {
 
     // Dynamic QR Cards Collection
     match /cards/{cardId} {
-      // Public read so customer phones scanning QR / NFC cards can resolve the business profile
-      allow get: if isValidId(cardId);
-      allow list: if true;
+      allow get, list: if true;
 
-      // Card Creation
       allow create: if isValidId(cardId) &&
-        isValidCard(incoming()) &&
-        incoming().id == cardId;
+        isValidCard(incoming());
 
-      // Card Update (assignment, editing, or scan increment)
       allow update: if isValidId(cardId) &&
-        isValidCard(incoming()) &&
-        incoming().id == existing().id;
+        isValidCard(incoming());
 
-      // Card Deletion
       allow delete: if isValidId(cardId);
+    }
+
+    // Master and Restricted Admins Collection
+    match /admins/{adminId} {
+      allow get, list: if true;
+      allow create, update, delete: if isValidId(adminId) && isValidAdmin(incoming());
     }
   }
 }

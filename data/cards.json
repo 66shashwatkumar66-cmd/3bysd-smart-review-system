@@ -1,0 +1,48 @@
+[
+  {
+    "id": "0001",
+    "status": "assigned",
+    "businessName": "3dbysd.in",
+    "category": "3D Printing & Tech",
+    "googleReviewUrl": "https://g.page/r/CYvsiHP1cYR3EBM/review",
+    "notes": "Main Counter NFC & QR Stand",
+    "scansCount": 63,
+    "createdAt": "2026-10-03T19:08:29.393Z",
+    "updatedAt": "2026-10-10T22:58:21.883Z",
+    "aiReviewEnabled": false
+  },
+  {
+    "id": "0002",
+    "status": "assigned",
+    "businessName": "SD Wood-Fired Pizzeria",
+    "category": "Italian Restaurant",
+    "googleReviewUrl": "https://search.google.com/local/writereview?placeid=ChIJN1t_tDeuEmsRUsoyG83frY4",
+    "notes": "Host stand entrance",
+    "scansCount": 25,
+    "createdAt": "2026-10-05T19:08:29.393Z",
+    "updatedAt": "2026-10-10T22:58:21.863Z",
+    "aiReviewEnabled": false
+  },
+  {
+    "id": "0003",
+    "status": "available",
+    "businessName": "",
+    "category": "",
+    "googleReviewUrl": "",
+    "notes": "Batch #1 - Unassigned acrylic stand",
+    "scansCount": 2,
+    "createdAt": "2026-10-07T19:08:29.393Z",
+    "updatedAt": "2026-10-10T22:57:41.903Z"
+  },
+  {
+    "id": "0004",
+    "status": "available",
+    "businessName": "",
+    "category": "",
+    "googleReviewUrl": "",
+    "notes": "Batch #1 - Unassigned keychain badge",
+    "scansCount": 0,
+    "createdAt": "2026-10-08T19:08:29.393Z",
+    "updatedAt": "2026-10-10T19:08:29.393Z"
+  }
+]

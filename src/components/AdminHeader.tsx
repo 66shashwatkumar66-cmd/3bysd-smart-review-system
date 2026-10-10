@@ -1,14 +1,31 @@
 import React, { useState, useEffect } from 'react';
-import { QrCode, Plus, Printer, Smartphone, Layers, LogIn, LogOut, User as UserIcon, Radio } from 'lucide-react';
+import {
+  QrCode,
+  Plus,
+  Printer,
+  Smartphone,
+  Layers,
+  LogIn,
+  LogOut,
+  User as UserIcon,
+  Radio,
+  ShieldCheck,
+  Lock,
+  ChevronDown,
+} from 'lucide-react';
 import { auth, googleProvider, signInWithPopup, signOut, onAuthStateChanged, User } from '../firebase';
+import { AdminUser } from '../types';
 
 interface AdminHeaderProps {
-  currentTab: 'cards' | 'print' | 'nfc' | 'simulator';
-  onSelectTab: (tab: 'cards' | 'print' | 'nfc' | 'simulator') => void;
+  currentTab: 'cards' | 'print' | 'nfc' | 'simulator' | 'admins';
+  onSelectTab: (tab: 'cards' | 'print' | 'nfc' | 'simulator' | 'admins') => void;
   onOpenBatchModal: () => void;
   totalCards: number;
   assignedCount: number;
   availableCount: number;
+  activeAdmin: AdminUser;
+  admins: AdminUser[];
+  onSelectActiveAdmin: (admin: AdminUser) => void;
 }
 
 export const AdminHeader: React.FC<AdminHeaderProps> = ({
@@ -18,6 +35,9 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
   totalCards,
   assignedCount,
   availableCount,
+  activeAdmin,
+  admins,
+  onSelectActiveAdmin,
 }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isSigningIn, setIsSigningIn] = useState<boolean>(false);
@@ -48,13 +68,16 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
     }
   };
 
+  const masterAdmin = admins.find((a) => a.role === 'master') || admins[0];
+  const isMaster = activeAdmin.role === 'master';
+
   return (
     <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200">
       {/* Google 4-Color Gradient Stripe */}
       <div className="h-1 w-full bg-gradient-to-r from-[#4285F4] via-[#EA4335] via-[#FBBC05] to-[#34A853]" />
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between gap-6 h-16">
+        <div className="flex items-center justify-between gap-4 h-16">
           {/* Zone 1: Brand Wordmark with Google 4-Color Dots */}
           <div className="flex items-center gap-3 shrink-0">
             <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#1A73E8] to-[#1557B0] flex items-center justify-center text-white shadow-sm shadow-blue-500/20">
@@ -81,7 +104,7 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
           </div>
 
           {/* Zone 2: Navigation Links */}
-          <nav className="hidden md:flex items-center gap-1 shrink-0">
+          <nav className="hidden lg:flex items-center gap-1 shrink-0">
             <button
               onClick={() => onSelectTab('cards')}
               className={`flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-full transition-all whitespace-nowrap ${
@@ -129,10 +152,51 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
               <Smartphone className="w-4 h-4 text-[#34A853]" />
               <span>Mobile Simulator</span>
             </button>
+
+            {/* Master Admin Panel Tab (Only accessible if active admin is Master Admin) */}
+            {isMaster && (
+              <button
+                onClick={() => onSelectTab('admins')}
+                className={`flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-full transition-all whitespace-nowrap ${
+                  currentTab === 'admins'
+                    ? 'bg-purple-50 text-purple-900 font-bold shadow-2xs ring-1 ring-purple-300'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                <ShieldCheck className="w-4 h-4 text-purple-600" />
+                <span>Master Admin ({admins.length})</span>
+              </button>
+            )}
           </nav>
 
-          {/* Zone 3: Primary Action, Google Auth & Counts */}
-          <div className="flex items-center gap-3 shrink-0">
+          {/* Zone 3: Primary Action, Role Switcher, Google Auth & Counts */}
+          <div className="flex items-center gap-2.5 shrink-0">
+            {/* Active Admin Role Pill & Quick Switcher */}
+            <div className="hidden sm:flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-2 py-1 rounded-full text-xs">
+              {isMaster ? (
+                <div className="flex items-center gap-1 text-purple-700 font-bold text-[11px]">
+                  <ShieldCheck className="w-3.5 h-3.5 text-purple-600" />
+                  <span>👑 Master</span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1 text-amber-800 font-bold text-[11px]">
+                  <Lock className="w-3.5 h-3.5 text-amber-600" />
+                  <span className="truncate max-w-[90px]">{activeAdmin.name}</span>
+                </div>
+              )}
+
+              {/* Quick switch button if restricted */}
+              {!isMaster && masterAdmin && (
+                <button
+                  onClick={() => onSelectActiveAdmin(masterAdmin)}
+                  title="Switch back to Master Admin mode"
+                  className="px-2 py-0.5 rounded-full bg-blue-50 hover:bg-blue-100 text-[#1A73E8] text-[10px] font-extrabold transition-colors border border-blue-200"
+                >
+                  Exit Sub-Admin
+                </button>
+              )}
+            </div>
+
             {/* Google Authentication Control */}
             {currentUser ? (
               <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 pl-1.5 pr-2 py-1 rounded-full text-xs">
@@ -148,7 +212,7 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
                     {currentUser.displayName?.charAt(0) || 'U'}
                   </div>
                 )}
-                <span className="hidden xl:inline text-[11px] font-semibold text-slate-700 max-w-[100px] truncate">
+                <span className="hidden xl:inline text-[11px] font-semibold text-slate-700 max-w-[90px] truncate">
                   {currentUser.displayName || currentUser.email}
                 </span>
                 <button
@@ -188,18 +252,22 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
               </button>
             )}
 
-            <button
-              onClick={onOpenBatchModal}
-              className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-[#1A73E8] hover:bg-[#1557B0] rounded-full shadow-sm shadow-blue-500/20 transition-all whitespace-nowrap shrink-0 active:scale-95"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Generate Batch QRs</span>
-            </button>
+            {/* Generate Batch QRs button (visible only if admin has creation power) */}
+            {(isMaster || activeAdmin.permissions?.canCreateCards) && (
+              <button
+                onClick={onOpenBatchModal}
+                className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-[#1A73E8] hover:bg-[#1557B0] rounded-full shadow-sm shadow-blue-500/20 transition-all whitespace-nowrap shrink-0 active:scale-95"
+              >
+                <Plus className="w-4 h-4" />
+                <span className="hidden sm:inline">Generate Batch</span>
+                <span className="sm:hidden">Batch</span>
+              </button>
+            )}
           </div>
         </div>
 
         {/* Mobile Navigation bar for small screens */}
-        <div className="flex md:hidden items-center justify-between border-t border-slate-100 py-2 overflow-x-auto gap-2">
+        <div className="flex lg:hidden items-center border-t border-slate-100 py-2 overflow-x-auto gap-2">
           <button
             onClick={() => onSelectTab('cards')}
             className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full whitespace-nowrap ${
@@ -234,8 +302,19 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
             }`}
           >
             <Smartphone className="w-3.5 h-3.5" />
-            <span>Mobile Review</span>
+            <span>Simulator</span>
           </button>
+          {isMaster && (
+            <button
+              onClick={() => onSelectTab('admins')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full whitespace-nowrap ${
+                currentTab === 'admins' ? 'bg-purple-600 text-white' : 'text-purple-700 bg-purple-50'
+              }`}
+            >
+              <ShieldCheck className="w-3.5 h-3.5" />
+              <span>Master Admin</span>
+            </button>
+          )}
         </div>
       </div>
     </header>

@@ -1,4 +1,4 @@
-import { CardRecord, GenerateReviewRequest, GenerateReviewResponse } from '../types';
+import { CardRecord, AdminUser, GenerateReviewRequest, GenerateReviewResponse } from '../types';
 import {
   db,
   handleFirestoreError,
@@ -212,7 +212,8 @@ export async function createBatchCards(payload: {
 
 export async function assignCard(
   id: string,
-  updates: Partial<CardRecord>
+  updates: Partial<CardRecord>,
+  adminId?: string
 ): Promise<CardRecord | null> {
   const docRef = doc(db, CARDS_COLLECTION, id);
 
@@ -250,8 +251,11 @@ export async function assignCard(
   try {
     const res = await fetch(`/api/cards/${encodeURIComponent(id)}/assign`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updates),
+      headers: {
+        'Content-Type': 'application/json',
+        ...(adminId ? { 'x-admin-id': adminId } : {}),
+      },
+      body: JSON.stringify({ ...updates, adminId }),
     });
     if (res.ok) {
       const data = await res.json();
@@ -300,3 +304,172 @@ export async function generateAiReview(payload: GenerateReviewRequest): Promise<
     };
   }
 }
+
+// ---------------- Admin Management Layer ----------------
+const ADMINS_COLLECTION = 'admins';
+const ADMINS_STORAGE_KEY = '3dbysd_smart_reviews_admins';
+
+const DEFAULT_ADMINS: AdminUser[] = [
+  {
+    id: 'master-admin-01',
+    email: '66shashwatkumar66@gmail.com',
+    name: 'Master Admin',
+    role: 'master',
+    assignedCardIds: [],
+    permissions: {
+      canEditCards: true,
+      canToggleAi: true,
+      canExportCsv: true,
+      canCreateCards: true,
+    },
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+  {
+    id: 'sub-admin-01',
+    email: 'artisan.manager@example.com',
+    name: 'Artisan Branch Manager',
+    role: 'restricted',
+    assignedCardIds: ['0001', '0002'],
+    permissions: {
+      canEditCards: true,
+      canToggleAi: true,
+      canExportCsv: false,
+      canCreateCards: false,
+    },
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
+];
+
+export async function fetchAdmins(): Promise<AdminUser[]> {
+  try {
+    const colRef = collection(db, ADMINS_COLLECTION);
+    const snapshot = await getDocs(colRef);
+    if (!snapshot.empty) {
+      const list: AdminUser[] = [];
+      snapshot.forEach((d) => list.push(d.data() as AdminUser));
+      localStorage.setItem(ADMINS_STORAGE_KEY, JSON.stringify(list));
+      return list;
+    }
+  } catch (err) {
+    console.warn('Firestore fetch admins failed, falling back to server/cache:', err);
+  }
+
+  try {
+    const res = await fetch('/api/admins');
+    if (res.ok) {
+      const data = await res.json();
+      if (data.admins && data.admins.length > 0) {
+        localStorage.setItem(ADMINS_STORAGE_KEY, JSON.stringify(data.admins));
+        return data.admins;
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  const cached = localStorage.getItem(ADMINS_STORAGE_KEY);
+  if (cached) {
+    try {
+      return JSON.parse(cached) as AdminUser[];
+    } catch {
+      // ignore
+    }
+  }
+
+  localStorage.setItem(ADMINS_STORAGE_KEY, JSON.stringify(DEFAULT_ADMINS));
+  return DEFAULT_ADMINS;
+}
+
+export async function createAdmin(payload: Partial<AdminUser>): Promise<AdminUser | null> {
+  const newAdmin: AdminUser = {
+    id: payload.id || `admin-${Date.now()}`,
+    email: payload.email?.toLowerCase().trim() || '',
+    name: payload.name?.trim() || 'Sub-Admin',
+    role: payload.role === 'master' ? 'master' : 'restricted',
+    assignedCardIds: Array.isArray(payload.assignedCardIds) ? payload.assignedCardIds : [],
+    permissions: {
+      canEditCards: payload.permissions?.canEditCards ?? true,
+      canToggleAi: payload.permissions?.canToggleAi ?? true,
+      canExportCsv: payload.permissions?.canExportCsv ?? false,
+      canCreateCards: payload.permissions?.canCreateCards ?? false,
+    },
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  try {
+    await setDoc(doc(db, ADMINS_COLLECTION, newAdmin.id), newAdmin);
+  } catch (err) {
+    console.warn(`Firestore create admin failed:`, err);
+  }
+
+  try {
+    await fetch('/api/admins', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newAdmin),
+    });
+  } catch {
+    // ignore
+  }
+
+  const current = await fetchAdmins();
+  const updated = [...current.filter((a) => a.id !== newAdmin.id), newAdmin];
+  localStorage.setItem(ADMINS_STORAGE_KEY, JSON.stringify(updated));
+  return newAdmin;
+}
+
+export async function updateAdmin(id: string, updates: Partial<AdminUser>): Promise<AdminUser | null> {
+  const current = await fetchAdmins();
+  const existing = current.find((a) => a.id === id || a.email.toLowerCase() === id.toLowerCase());
+  if (!existing) return null;
+
+  const merged: AdminUser = {
+    ...existing,
+    ...updates,
+    id: existing.id,
+    updatedAt: new Date().toISOString(),
+  };
+
+  try {
+    await setDoc(doc(db, ADMINS_COLLECTION, merged.id), merged);
+  } catch (err) {
+    console.warn(`Firestore update admin failed:`, err);
+  }
+
+  try {
+    await fetch(`/api/admins/${encodeURIComponent(merged.id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    });
+  } catch {
+    // ignore
+  }
+
+  const updated = current.map((a) => (a.id === merged.id ? merged : a));
+  localStorage.setItem(ADMINS_STORAGE_KEY, JSON.stringify(updated));
+  return merged;
+}
+
+export async function deleteAdmin(id: string): Promise<boolean> {
+  try {
+    await deleteDoc(doc(db, ADMINS_COLLECTION, id));
+  } catch (err) {
+    console.warn(`Firestore delete admin failed:`, err);
+  }
+
+  try {
+    await fetch(`/api/admins/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  } catch {
+    // ignore
+  }
+
+  const current = await fetchAdmins();
+  const updated = current.filter((a) => a.id !== id);
+  localStorage.setItem(ADMINS_STORAGE_KEY, JSON.stringify(updated));
+  return true;
+}
+
