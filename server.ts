@@ -433,6 +433,49 @@ app.put('/api/cards/:id/assign', (req: Request, res: Response) => {
   }
 });
 
+// REST API: Bulk update card statuses (Available / Assigned)
+app.put('/api/cards/bulk-status', (req: Request, res: Response) => {
+  try {
+    const { ids, status } = req.body;
+    if (!Array.isArray(ids) || !ids.length || !['available', 'assigned', 'disabled'].includes(status)) {
+      return res.status(400).json({ success: false, message: 'Invalid bulk update parameters' });
+    }
+
+    const cards = readCards();
+    const requesterAdminId = (req.headers['x-admin-id'] as string) || req.body.adminId;
+
+    let allowedIds = new Set(ids.map((id: string) => id.toLowerCase()));
+    if (requesterAdminId) {
+      const admins = readAdmins();
+      const admin = admins.find(
+        (a) => a.id === requesterAdminId || a.email.toLowerCase() === requesterAdminId.toLowerCase()
+      );
+      if (admin && admin.role === 'restricted') {
+        const authorizedSet = new Set(admin.assignedCardIds.map((cid) => cid.toLowerCase()));
+        allowedIds = new Set([...allowedIds].filter((id) => authorizedSet.has(id)));
+      }
+    }
+
+    const updatedCards: CardRecord[] = [];
+    for (let i = 0; i < cards.length; i++) {
+      if (allowedIds.has(cards[i].id.toLowerCase())) {
+        cards[i] = {
+          ...cards[i],
+          status,
+          updatedAt: new Date().toISOString(),
+        };
+        updatedCards.push(cards[i]);
+        syncCardToSupabase(cards[i]);
+      }
+    }
+
+    writeCards(cards);
+    res.json({ success: true, count: updatedCards.length, cards: updatedCards });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message || 'Bulk update failed' });
+  }
+});
+
 // REST API: Delete card
 app.delete('/api/cards/:id', (req: Request, res: Response) => {
   try {
@@ -906,14 +949,14 @@ app.get('/', (req: Request, res: Response, next) => {
       const cardId = queryCard.trim();
       const cards = readCards();
       const card = cards.find((c) => c.id.toLowerCase() === cardId.toLowerCase());
-      if (card && card.googleReviewUrl && (card.status === 'assigned' || card.businessName)) {
+      if (card) {
         card.scansCount = (card.scansCount || 0) + 1;
         card.updatedAt = new Date().toISOString();
         writeCards(cards);
         syncCardScanToSupabase(card.id, card.scansCount);
 
-        const isDirect = card.aiReviewEnabled !== true || req.query.direct === 'true' || req.query.direct === '1';
-        if (isDirect) {
+        // Only redirect directly if ?direct=true is explicitly provided
+        if ((req.query.direct === 'true' || req.query.direct === '1') && card.googleReviewUrl) {
           return res.redirect(302, card.googleReviewUrl);
         }
       }
@@ -940,12 +983,8 @@ app.get('/r/:id', (req: Request, res: Response, next) => {
       // Async sync scan count
       syncCardScanToSupabase(card.id, card.scansCount);
 
-      // Instant Zero-Delay Direct Google Review Redirect:
-      // If AI Review is NOT explicitly true (default mode) or ?direct=true is requested:
-      // Redirect IMMEDIATELY with HTTP 302 directly to the Google Review page!
-      // Customers will NEVER see any intermediate loading, assignment, or transition screen!
-      const isDirectOnly = card.aiReviewEnabled !== true || req.query.direct === 'true' || req.query.direct === '1';
-      if (isDirectOnly && card.googleReviewUrl && (card.status === 'assigned' || card.businessName)) {
+      // Only redirect directly to Google if ?direct=true is requested
+      if ((req.query.direct === 'true' || req.query.direct === '1') && card.googleReviewUrl) {
         return res.redirect(302, card.googleReviewUrl);
       }
     }
@@ -953,7 +992,7 @@ app.get('/r/:id', (req: Request, res: Response, next) => {
     console.error('Error handling /r/:id route:', err);
   }
 
-  // If AI review is enabled (ON) or card needs the AI assistant page, hand over to SPA
+  // Hand over to the client SPA so the customer lands on the AI Review Generation Page
   next();
 });
 

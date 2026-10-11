@@ -247,132 +247,181 @@ export const UsersManagementView: React.FC<UsersManagementViewProps> = ({
         </div>
       </div>
 
-      {/* Users Table */}
+      {/* Users Display Container - Responsive Table on PC, Responsive Cards on Mobile */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead>
-              <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
-                <th className="py-3 px-4">User & Identity</th>
-                <th className="py-3 px-4">Google Verification</th>
-                <th className="py-3 px-4">Access Role</th>
-                <th className="py-3 px-4">Logins Count</th>
-                <th className="py-3 px-4">Last Login</th>
-                <th className="py-3 px-4">Device</th>
-                <th className="py-3 px-4 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 text-slate-700">
-              {filteredUsers.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="py-8 text-center text-slate-400">
-                    No users matching criteria found
-                  </td>
-                </tr>
-              ) : (
-                filteredUsers.map((user) => (
-                  <tr key={user.uid} className="hover:bg-slate-50/70 transition-colors">
-                    {/* User & Identity */}
-                    <td className="py-3.5 px-4">
-                      <div className="flex items-center gap-3">
-                        <div className="relative">
+        {filteredUsers.length === 0 ? (
+          <div className="py-8 text-center text-slate-400 text-xs">
+            No users matching criteria found
+          </div>
+        ) : (
+          <>
+            {/* Mobile View: Stacked User Cards (Zero horizontal scrollbar) */}
+            <div className="block md:hidden divide-y divide-slate-100">
+              {filteredUsers.map((user) => (
+                <div key={user.uid} className="p-3.5 space-y-2.5 hover:bg-slate-50/50 transition-colors">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <img
+                        src={user.photoURL || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(user.email)}`}
+                        alt={user.displayName}
+                        className="w-8 h-8 rounded-full border border-slate-200 object-cover shrink-0"
+                        referrerPolicy="no-referrer"
+                      />
+                      <div className="min-w-0">
+                        <div className="font-bold text-slate-900 text-xs truncate flex items-center gap-1.5">
+                          <span>{user.displayName}</span>
+                          {user.role === 'master' && (
+                            <span className="text-[9px] font-black text-purple-700 bg-purple-50 px-1 py-0.2 rounded border border-purple-200">
+                              👑 MASTER
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-slate-500 font-mono truncate">
+                          {user.email}
+                        </div>
+                      </div>
+                    </div>
+
+                    {user.email !== '66shashwatkumar66@gmail.com' && (
+                      <button
+                        onClick={() => handleDeleteUser(user)}
+                        title="Delete user"
+                        className="p-1 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 shrink-0"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-100/80 text-xs">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10px] bg-emerald-50 text-emerald-700 font-bold px-1.5 py-0.5 rounded-full border border-emerald-200 flex items-center gap-1">
+                        <CheckCircle className="w-2.5 h-2.5" /> Verified
+                      </span>
+                      <span className="text-[10px] text-slate-500 font-mono">
+                        {user.loginCount || 1} logins
+                      </span>
+                    </div>
+
+                    <select
+                      value={user.role}
+                      disabled={user.email === '66shashwatkumar66@gmail.com'}
+                      onChange={(e) => handleRoleChange(user, e.target.value as any)}
+                      className={`text-[11px] font-semibold px-2 py-0.5 rounded-lg border focus:outline-none ${
+                        user.role === 'master'
+                          ? 'bg-purple-50 text-purple-900 border-purple-200'
+                          : user.role === 'restricted'
+                          ? 'bg-amber-50 text-amber-900 border-amber-200'
+                          : 'bg-slate-50 text-slate-700 border-slate-200'
+                      }`}
+                    >
+                      <option value="master">Master</option>
+                      <option value="restricted">Sub-Admin</option>
+                      <option value="member">Viewer</option>
+                    </select>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Desktop PC View: Streamlined Fitted Table */}
+            <div className="hidden md:block w-full overflow-hidden">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
+                    <th className="py-3 px-4">User & Identity</th>
+                    <th className="py-3 px-3">Google Verification</th>
+                    <th className="py-3 px-3">Access Role</th>
+                    <th className="py-3 px-3">Logins</th>
+                    <th className="py-3 px-3">Last Login</th>
+                    <th className="py-3 px-4 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-slate-700">
+                  {filteredUsers.map((user) => (
+                    <tr key={user.uid} className="hover:bg-slate-50/70 transition-colors">
+                      {/* User & Identity */}
+                      <td className="py-3 px-4">
+                        <div className="flex items-center gap-2.5">
                           <img
                             src={user.photoURL || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(user.email)}`}
                             alt={user.displayName}
-                            className="w-8 h-8 rounded-full border border-slate-200 object-cover"
+                            className="w-7 h-7 rounded-full border border-slate-200 object-cover shrink-0"
                             referrerPolicy="no-referrer"
                           />
-                          <div className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-white rounded-full flex items-center justify-center shadow-2xs">
-                            <span className="w-2 h-2 rounded-full bg-[#34A853]" />
+                          <div className="min-w-0">
+                            <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                              <span className="truncate">{user.displayName}</span>
+                              {user.role === 'master' && (
+                                <span className="text-[9px] font-black text-purple-700 bg-purple-50 px-1 py-0.2 rounded border border-purple-200 shrink-0">
+                                  👑 MASTER
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[11px] text-slate-500 font-mono truncate">
+                              {user.email}
+                            </div>
                           </div>
                         </div>
-                        <div>
-                          <div className="font-bold text-slate-900 flex items-center gap-1.5">
-                            <span>{user.displayName}</span>
-                            {user.role === 'master' && (
-                              <span className="text-[10px] font-black text-purple-700 bg-purple-50 px-1.5 py-0.2 rounded border border-purple-200">
-                                👑 MASTER
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-[11px] text-slate-500 font-mono">
-                            {user.email}
-                          </div>
+                      </td>
+
+                      {/* Google Verification Status */}
+                      <td className="py-3 px-3">
+                        <div className="flex items-center gap-1 text-emerald-700 font-semibold text-[11px] bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 w-fit">
+                          <CheckCircle className="w-3 h-3 text-emerald-600 shrink-0" />
+                          <span>Verified</span>
                         </div>
-                      </div>
-                    </td>
+                      </td>
 
-                    {/* Google Verification Status */}
-                    <td className="py-3.5 px-4">
-                      <div className="flex items-center gap-1.5 text-emerald-700 font-semibold text-[11px] bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 w-fit">
-                        <CheckCircle className="w-3.5 h-3.5 text-emerald-600" />
-                        <span>Google Verified</span>
-                      </div>
-                    </td>
+                      {/* Role Selector */}
+                      <td className="py-3 px-3">
+                        <select
+                          value={user.role}
+                          disabled={user.email === '66shashwatkumar66@gmail.com'}
+                          onChange={(e) => handleRoleChange(user, e.target.value as any)}
+                          className={`text-xs font-semibold px-2 py-1 rounded-lg border focus:outline-none ${
+                            user.role === 'master'
+                              ? 'bg-purple-50 text-purple-900 border-purple-200'
+                              : user.role === 'restricted'
+                              ? 'bg-amber-50 text-amber-900 border-amber-200'
+                              : 'bg-slate-50 text-slate-700 border-slate-200'
+                          }`}
+                        >
+                          <option value="master">Master Admin</option>
+                          <option value="restricted">Sub-Admin</option>
+                          <option value="member">Viewer</option>
+                        </select>
+                      </td>
 
-                    {/* Role Selector */}
-                    <td className="py-3.5 px-4">
-                      <select
-                        value={user.role}
-                        disabled={user.email === '66shashwatkumar66@gmail.com'}
-                        onChange={(e) => handleRoleChange(user, e.target.value as any)}
-                        className={`text-xs font-semibold px-2 py-1 rounded-lg border focus:outline-none ${
-                          user.role === 'master'
-                            ? 'bg-purple-50 text-purple-900 border-purple-200'
-                            : user.role === 'restricted'
-                            ? 'bg-amber-50 text-amber-900 border-amber-200'
-                            : 'bg-slate-50 text-slate-700 border-slate-200'
-                        }`}
-                      >
-                        <option value="master">Master Admin</option>
-                        <option value="restricted">Sub-Admin</option>
-                        <option value="member">Viewer / Member</option>
-                      </select>
-                    </td>
+                      {/* Login Count */}
+                      <td className="py-3 px-3 font-mono font-bold text-slate-800 text-xs">
+                        {user.loginCount || 1}
+                      </td>
 
-                    {/* Login Count */}
-                    <td className="py-3.5 px-4">
-                      <span className="font-mono font-bold text-slate-800 bg-slate-100 px-2 py-0.5 rounded-md">
-                        {user.loginCount || 1} logins
-                      </span>
-                    </td>
+                      {/* Last Login */}
+                      <td className="py-3 px-3 text-slate-600 text-[11px]">
+                        <div>{new Date(user.lastLoginAt).toLocaleDateString()}</div>
+                      </td>
 
-                    {/* Last Login */}
-                    <td className="py-3.5 px-4 text-slate-600 text-[11px]">
-                      <div>{new Date(user.lastLoginAt).toLocaleDateString()}</div>
-                      <div className="text-slate-400 text-[10px]">
-                        {new Date(user.lastLoginAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </div>
-                    </td>
-
-                    {/* Device / Client */}
-                    <td className="py-3.5 px-4 text-slate-500 text-[11px] max-w-[150px] truncate">
-                      <div className="flex items-center gap-1" title={user.device}>
-                        <Smartphone className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                        <span className="truncate">{user.device || 'Web Browser'}</span>
-                      </div>
-                    </td>
-
-                    {/* Actions */}
-                    <td className="py-3.5 px-4 text-right">
-                      <div className="flex items-center justify-end gap-1">
+                      {/* Actions */}
+                      <td className="py-3 px-4 text-right">
                         {user.email !== '66shashwatkumar66@gmail.com' && (
                           <button
                             onClick={() => handleDeleteUser(user)}
-                            title="Delete user data"
+                            title="Delete user"
                             className="p-1 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         )}
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
       </div>
 
       {/* Google Auth Modal */}

@@ -60,7 +60,7 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
   const effectiveAiReviewEnabled =
     simulatorOverrideAi !== null
       ? simulatorOverrideAi
-      : (card?.aiReviewEnabled === true);
+      : (card?.aiReviewEnabled !== false);
 
   const [rating, setRating] = useState<number>(5);
   const [selectedTags, setSelectedTags] = useState<string[]>([
@@ -72,16 +72,6 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [copied, setCopied] = useState<boolean>(false);
   const [redirected, setRedirected] = useState<boolean>(false);
-
-  // If AI review is disabled on this QR and NOT in simulator:
-  // Redirect IMMEDIATELY to Google Reviews without ANY delay or intermediate screen!
-  useEffect(() => {
-    if (card && card.status === 'assigned' && !effectiveAiReviewEnabled && card.googleReviewUrl) {
-      if (!isSimulator) {
-        window.location.replace(card.googleReviewUrl);
-      }
-    }
-  }, [card?.id, effectiveAiReviewEnabled, isSimulator, card?.googleReviewUrl]);
 
   // Auto-generate starter review draft when AI review assistant is active
   useEffect(() => {
@@ -152,10 +142,6 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
   };
 
   // State 0: Loading in-progress
-  // For real customers in Direct Mode: Show clean blank screen while redirecting - zero intermediate UI!
-  if (!isSimulator && !effectiveAiReviewEnabled) {
-    return <div className="fixed inset-0 bg-white" />;
-  }
 
   if (isLoading || (!card && !isSimulator)) {
     return (
@@ -241,90 +227,7 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
     );
   }
 
-  // State 2: Card Assigned, but AI Review is OFF (Direct Google Review Mode)
-  // For real mobile customers: The browser redirects immediately without showing any intermediate page!
-  if (!effectiveAiReviewEnabled) {
-    if (!isSimulator) {
-      // Completely silent instant transition for real customers
-      return <div className="fixed inset-0 bg-white" />;
-    }
-
-    // Admin testing in simulator - Show preview of Direct Mode
-    return (
-      <div className="min-h-screen bg-[#FDFCFB] flex flex-col justify-between text-slate-900 antialiased">
-        <div className="sticky top-0 z-20 bg-white/90 backdrop-blur-md border-b border-slate-100 px-4 py-3">
-          <div className="max-w-md mx-auto flex items-center justify-between">
-            {onBackToAdmin && (
-              <button
-                onClick={onBackToAdmin}
-                className="flex items-center gap-1 text-xs font-semibold text-slate-600 hover:text-slate-900"
-              >
-                <ChevronLeft className="w-4 h-4" />
-                <span>Admin</span>
-              </button>
-            )}
-            <span className="text-xs font-bold text-slate-900">Direct Google Review Mode (Simulator)</span>
-          </div>
-        </div>
-
-        <div className="max-w-md w-full mx-auto px-4 py-8 space-y-6 flex-1 flex flex-col justify-center">
-          <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200/90 shadow-sm text-center space-y-4">
-            <div className="relative mx-auto w-16 h-16 rounded-2xl bg-gradient-to-tr from-[#4285F4] to-[#34A853] p-0.5 shadow-md shadow-blue-500/10">
-              <div className="w-full h-full bg-white rounded-[14px] flex items-center justify-center font-bold text-2xl text-slate-900">
-                {card.businessName ? card.businessName.charAt(0) : 'G'}
-              </div>
-            </div>
-
-            <div>
-              <div className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-50 text-amber-800 text-[11px] font-semibold mb-2 border border-amber-200">
-                <Globe className="w-3 h-3 text-amber-600" />
-                <span>AI Review Generator: BYPASSED (OFF)</span>
-              </div>
-              <h1 className="text-xl sm:text-2xl font-extrabold text-slate-900 leading-tight">
-                {card.businessName}
-              </h1>
-              <p className="text-xs text-slate-500 font-medium mt-1">
-                {card.category || 'Local Business'}
-              </p>
-            </div>
-
-            <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-1.5 text-center">
-              <p className="text-xs font-bold text-slate-800">
-                Real customer scan behavior:
-              </p>
-              <p className="text-[11px] text-slate-600 leading-relaxed">
-                When AI is OFF, customers scanning or tapping NFC are redirected immediately via HTTP 302 straight to Google Reviews with 0ms delay and zero intermediate screens.
-              </p>
-            </div>
-
-            <a
-              href={card.googleReviewUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="w-full h-12 rounded-2xl bg-[#1A73E8] hover:bg-[#1557B0] text-white font-bold text-sm flex items-center justify-center gap-2 shadow-md shadow-blue-500/20 active:scale-[0.98] transition-all"
-            >
-              <span>Test Google Review Link</span>
-              <ExternalLink className="w-4 h-4" />
-            </a>
-
-            <div className="pt-2 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => setSimulatorOverrideAi(true)}
-                className="w-full py-2 px-3 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-700 font-bold text-xs flex items-center justify-center gap-1.5 transition-colors border border-purple-200"
-              >
-                <Sparkles className="w-3.5 h-3.5 text-purple-600" />
-                <span>Preview with AI Review Generator Active (ON)</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // State 3: Card Assigned with AI Review Generator ON
-  // High-trust Google-styled review concierge experience
+  // State 2: Card Assigned -> High-trust Google-styled review concierge experience
   return (
     <div className="min-h-screen bg-[#FDFCFB] flex flex-col justify-between text-slate-900 antialiased selection:bg-amber-100 selection:text-amber-900">
       {/* Top Mobile Bar */}

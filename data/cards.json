@@ -6,10 +6,10 @@
     "category": "3D Printing & Tech",
     "googleReviewUrl": "https://g.page/r/CYvsiHP1cYR3EBM/review",
     "notes": "Main Counter NFC & QR Stand",
-    "scansCount": 64,
+    "scansCount": 67,
     "createdAt": "2026-10-03T19:08:29.393Z",
-    "updatedAt": "2026-10-10T23:13:06.395Z",
-    "aiReviewEnabled": false
+    "updatedAt": "2026-10-11T10:02:03.287Z",
+    "aiReviewEnabled": true
   },
   {
     "id": "0002",
@@ -21,7 +21,7 @@
     "scansCount": 25,
     "createdAt": "2026-10-05T19:08:29.393Z",
     "updatedAt": "2026-10-10T22:58:21.863Z",
-    "aiReviewEnabled": false
+    "aiReviewEnabled": true
   },
   {
     "id": "0003",
@@ -30,9 +30,9 @@
     "category": "",
     "googleReviewUrl": "",
     "notes": "Batch #1 - Unassigned acrylic stand",
-    "scansCount": 2,
+    "scansCount": 6,
     "createdAt": "2026-10-07T19:08:29.393Z",
-    "updatedAt": "2026-10-10T22:57:41.903Z"
+    "updatedAt": "2026-10-11T09:51:02.440Z"
   },
   {
     "id": "0004",

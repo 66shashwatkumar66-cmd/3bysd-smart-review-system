@@ -5,6 +5,7 @@ import {
   fetchCardById,
   createBatchCards,
   assignCard,
+  bulkUpdateCardsStatus,
   deleteCard,
   fetchAdmins,
   createAdmin,
@@ -22,6 +23,7 @@ import { AdminStatsWidget } from './components/AdminStatsWidget';
 import { NfcGeneratorView } from './components/NfcGeneratorView';
 import { MasterAdminView } from './components/MasterAdminView';
 import { UsersManagementView } from './components/UsersManagementView';
+import { SlidingSidebar } from './components/SlidingSidebar';
 import { exportCardsToCsv } from './utils/csv';
 import {
   QrCode,
@@ -32,12 +34,14 @@ import {
   Lock,
   ShieldCheck,
   RotateCcw,
+  Radio,
 } from 'lucide-react';
 
 export default function App() {
   const [cards, setCards] = useState<CardRecord[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [currentTab, setCurrentTab] = useState<'cards' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users'>('cards');
+  const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
 
   // Admin Management State
   const [admins, setAdmins] = useState<AdminUser[]>([]);
@@ -62,7 +66,7 @@ export default function App() {
 
       let targetCardId: string | null = null;
       if (pathname.startsWith('/r/')) {
-        targetCardId = pathname.replace('/r/', '').trim();
+        targetCardId = pathname.replace('/r/', '').split('/')[0].split('?')[0].trim();
       } else if (queryCard) {
         targetCardId = queryCard.trim();
       }
@@ -70,7 +74,7 @@ export default function App() {
       if (targetCardId) {
         setCustomerCardId(targetCardId);
 
-        // Instant local cache check to eliminate any white flash or loading delay
+        // Instant local cache check to eliminate any delay
         const cachedRaw = localStorage.getItem('3dbysd_smart_reviews_cards');
         let initialFound: CardRecord | null = null;
         if (cachedRaw) {
@@ -81,12 +85,6 @@ export default function App() {
               initialFound = hit;
               setCustomerCard(hit);
               setIsCustomerLoading(false);
-
-              // If AI Review is not explicitly enabled, immediate zero-delay redirect to Google Reviews!
-              if (hit.aiReviewEnabled !== true && hit.googleReviewUrl && hit.status === 'assigned') {
-                window.location.replace(hit.googleReviewUrl);
-                return;
-              }
             }
           } catch {
             // ignore
@@ -101,10 +99,6 @@ export default function App() {
         const found = await fetchCardById(targetCardId, true);
         if (found) {
           setCustomerCard(found);
-          if (found.aiReviewEnabled !== true && found.googleReviewUrl && found.status === 'assigned') {
-            window.location.replace(found.googleReviewUrl);
-            return;
-          }
         }
         setIsCustomerLoading(false);
       }
@@ -161,6 +155,21 @@ export default function App() {
 
   const handleToggleAiReview = async (id: string, enabled: boolean) => {
     await handleAssignCard(id, { aiReviewEnabled: enabled });
+  };
+
+  const handleBulkUpdateStatus = async (ids: string[], newStatus: 'available' | 'assigned') => {
+    await bulkUpdateCardsStatus(ids, newStatus, effectiveActiveAdmin.id);
+    setCards((prev) =>
+      prev.map((c) =>
+        ids.some((id) => id.toLowerCase() === c.id.toLowerCase())
+          ? {
+              ...c,
+              status: newStatus,
+              updatedAt: new Date().toISOString(),
+            }
+          : c
+      )
+    );
   };
 
   const handleOpenCustomerPreview = (card: CardRecord) => {
@@ -237,7 +246,7 @@ export default function App() {
   const availableCount = displayedCards.filter((c) => c.status === 'available').length;
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] text-slate-900 flex flex-col">
+    <div className="min-h-screen bg-[#F8FAFC] text-slate-900 flex flex-col w-full overflow-x-hidden">
       {/* Top Admin Navigation */}
       <AdminHeader
         currentTab={currentTab}
@@ -249,6 +258,7 @@ export default function App() {
           }
         }}
         onOpenBatchModal={() => setIsBatchModalOpen(true)}
+        onOpenSidebar={() => setIsSidebarOpen(true)}
         totalCards={displayedCards.length}
         assignedCount={assignedCount}
         availableCount={availableCount}
@@ -257,64 +267,61 @@ export default function App() {
         onSelectActiveAdmin={(adm) => setActiveAdmin(adm)}
       />
 
-      {/* Main Admin Workspace Viewport */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
+      {/* Main Admin Workspace Viewport - Optimized container for PC and mobile */}
+      <main className="flex-1 max-w-5xl lg:max-w-6xl w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 space-y-5 overflow-hidden">
         {/* Restricted Admin Notice Banner if logged in as sub-admin */}
         {!isMaster && (
-          <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-xs">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-xl bg-amber-200/80 text-amber-900 flex items-center justify-center font-bold">
+          <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-xs">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-8 h-8 rounded-xl bg-amber-200/80 text-amber-900 flex items-center justify-center font-bold shrink-0">
                 <Lock className="w-4 h-4" />
               </div>
-              <div>
-                <div className="font-bold text-amber-950 flex items-center gap-2">
-                  <span>Restricted Sub-Admin Active: {effectiveActiveAdmin.name}</span>
+              <div className="min-w-0">
+                <div className="font-bold text-amber-950 flex items-center gap-2 flex-wrap">
+                  <span>Restricted Sub-Admin: {effectiveActiveAdmin.name}</span>
                   <span className="font-mono text-[10px] bg-amber-200 text-amber-900 px-2 py-0.2 rounded-full font-bold">
-                    {effectiveActiveAdmin.assignedCardIds.length} Assigned Cards
+                    {effectiveActiveAdmin.assignedCardIds.length} Cards
                   </span>
                 </div>
-                <p className="text-amber-800 text-[11px] mt-0.5">
-                  You are restricted to managing only cards registered to you: [{effectiveActiveAdmin.assignedCardIds.map((id) => `#${id}`).join(', ')}].
+                <p className="text-amber-800 text-[11px] mt-0.5 truncate">
+                  Authorized cards: [{effectiveActiveAdmin.assignedCardIds.map((id) => `#${id}`).join(', ')}]
                 </p>
               </div>
             </div>
 
             <button
               onClick={() => setActiveAdmin(masterAdmin)}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-200 hover:bg-amber-300 text-amber-950 rounded-xl font-bold transition-colors shrink-0 self-start sm:self-auto"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-200 hover:bg-amber-300 text-amber-950 rounded-xl font-bold transition-colors shrink-0 self-start sm:self-auto text-xs"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              <span>Switch Back to Master Admin</span>
+              <span>Switch to Master</span>
             </button>
           </div>
         )}
 
-        {/* Quick Testing & Direct Customer Link Bar with Google Colors */}
-        <div className="relative bg-gradient-to-r from-slate-900 via-slate-900 to-blue-950 text-white rounded-2xl p-4 sm:p-5 shadow-sm border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4 overflow-hidden">
+        {/* Quick Testing & Direct Customer Link Bar */}
+        <div className="relative bg-gradient-to-r from-slate-900 via-slate-900 to-blue-950 text-white rounded-2xl p-4 sm:p-5 shadow-xs border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 overflow-hidden">
           <div className="absolute -top-12 -right-12 w-36 h-36 bg-[#4285F4]/10 rounded-full blur-2xl pointer-events-none" />
 
-          <div className="space-y-1 relative z-10">
+          <div className="space-y-1 relative z-10 min-w-0">
             <div className="flex items-center gap-2">
-              <span className="px-2.5 py-0.5 rounded-full bg-[#FBBC05] text-slate-950 text-[10px] font-black uppercase tracking-wider shadow-2xs">
-                Live Google Review Engine
-              </span>
-              <span className="text-xs text-slate-300">
-                Cards encode permanent URLs · Assign business profiles anytime
+              <span className="px-2 py-0.5 rounded-full bg-[#FBBC05] text-slate-950 text-[10px] font-black uppercase tracking-wider">
+                Google Review Engine
               </span>
             </div>
-            <h2 className="text-sm sm:text-base font-bold text-white flex items-center gap-2">
-              <span>Test customer review scan on any mobile device</span>
+            <h2 className="text-sm sm:text-base font-bold text-white truncate">
+              Test customer scan experience on mobile
             </h2>
           </div>
 
-          <div className="flex items-center gap-2 flex-wrap relative z-10">
-            {displayedCards.slice(0, 3).map((card) => (
+          <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap relative z-10 shrink-0">
+            {displayedCards.slice(0, 2).map((card) => (
               <a
                 key={card.id}
                 href={`/r/${card.id}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-800/90 hover:bg-[#1A73E8] text-xs font-mono text-slate-200 hover:text-white transition-all border border-slate-700/80 shadow-2xs group"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full bg-slate-800/90 hover:bg-[#1A73E8] text-xs font-mono text-slate-200 hover:text-white transition-all border border-slate-700/80 shadow-2xs group"
               >
                 <span>/r/{card.id}</span>
                 <ExternalLink className="w-3 h-3 text-slate-400 group-hover:text-white" />
@@ -323,10 +330,10 @@ export default function App() {
 
             <button
               onClick={() => setSimulatorCardId(displayedCards[0]?.id || '0001')}
-              className="flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-[#1A73E8] hover:bg-[#1557B0] text-white text-xs font-bold transition-all shadow-sm shadow-blue-500/25 active:scale-95"
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-[#1A73E8] hover:bg-[#1557B0] text-white text-xs font-bold transition-all shadow-sm shadow-blue-500/25 active:scale-95 shrink-0"
             >
               <Smartphone className="w-3.5 h-3.5" />
-              <span>Open Phone Preview</span>
+              <span>Phone Preview</span>
             </button>
           </div>
         </div>
@@ -353,11 +360,21 @@ export default function App() {
               </div>
 
               <div className="flex items-center gap-2">
+                {/* NFC Generator & Flasher quick access */}
+                <button
+                  onClick={() => setCurrentTab('nfc')}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-lg shadow-2xs transition-colors cursor-pointer"
+                  title="Open NFC Chip URL Generator & Hardware Flasher"
+                >
+                  <Radio className="w-3.5 h-3.5 text-purple-600 animate-pulse" />
+                  <span>NFC Flasher</span>
+                </button>
+
                 {(isMaster || effectiveActiveAdmin.permissions?.canExportCsv) && (
                   <button
                     onClick={() => exportCardsToCsv(displayedCards)}
                     disabled={displayedCards.length === 0}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 hover:text-slate-900 rounded-lg shadow-2xs transition-colors disabled:opacity-50"
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 hover:text-slate-900 rounded-lg shadow-2xs transition-colors disabled:opacity-50 cursor-pointer"
                     title="Export current card inventory as CSV spreadsheet"
                   >
                     <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
@@ -368,7 +385,7 @@ export default function App() {
                 {(isMaster || effectiveActiveAdmin.permissions?.canCreateCards) && (
                   <button
                     onClick={() => setIsBatchModalOpen(true)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-800 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg shadow-2xs transition-colors"
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-800 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg shadow-2xs transition-colors cursor-pointer"
                   >
                     <Plus className="w-3.5 h-3.5" />
                     <span>Add Cards</span>
@@ -394,6 +411,8 @@ export default function App() {
                     ? handleToggleAiReview
                     : undefined
                 }
+                onBulkUpdateStatus={handleBulkUpdateStatus}
+                onOpenNfcGenerator={() => setCurrentTab('nfc')}
                 activeAdmin={effectiveActiveAdmin}
               />
             )}
@@ -445,14 +464,14 @@ export default function App() {
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-slate-200 bg-white py-6 mt-12 text-center text-xs text-slate-500">
-        <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
+      <footer className="border-t border-slate-200 bg-white py-5 mt-10 text-center text-xs text-slate-500">
+        <div className="max-w-5xl lg:max-w-6xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <span className="font-bold text-slate-900">3DBYSD Smart Reviews</span>
             <span aria-hidden="true">·</span>
             <span>NFC & 3D Stand Dynamic Review Engine</span>
           </div>
-          <div>Built with Google Gemini AI for authentic, honest customer reviews</div>
+          <div>Built with Google Gemini AI for authentic customer reviews</div>
         </div>
       </footer>
 
@@ -481,6 +500,28 @@ export default function App() {
           onClose={() => setSimulatorCardId(null)}
         />
       )}
+
+      {/* Left Sliding Navigation Drawer */}
+      <SlidingSidebar
+        isOpen={isSidebarOpen}
+        onClose={() => setIsSidebarOpen(false)}
+        currentTab={currentTab}
+        onSelectTab={(tab) => {
+          if (tab === 'simulator') {
+            setSimulatorCardId(displayedCards[0]?.id || cards[0]?.id || '0001');
+          } else {
+            setCurrentTab(tab);
+          }
+        }}
+        totalCards={displayedCards.length}
+        assignedCount={assignedCount}
+        availableCount={availableCount}
+        activeAdmin={effectiveActiveAdmin}
+        admins={admins}
+        onSelectActiveAdmin={(adm) => setActiveAdmin(adm)}
+        onOpenBatchModal={() => setIsBatchModalOpen(true)}
+        onExportCsv={() => exportCardsToCsv(displayedCards)}
+      />
     </div>
   );
 }

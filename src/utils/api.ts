@@ -11,6 +11,7 @@ import {
   getDoc,
   setDoc,
   deleteDoc,
+  writeBatch,
   onSnapshot,
 } from 'firebase/firestore';
 
@@ -25,6 +26,7 @@ const INITIAL_CARDS: CardRecord[] = [
     category: 'Specialty Coffee & Brunch',
     googleReviewUrl: 'https://search.google.com/local/writereview?placeid=ChIJN1t_tDeuEmsRUsoyG83frY4',
     notes: 'Table 4 Stand - NFC & QR display',
+    aiReviewEnabled: true,
     scansCount: 42,
     createdAt: new Date(Date.now() - 7 * 86400000).toISOString(),
     updatedAt: new Date().toISOString(),
@@ -36,6 +38,7 @@ const INITIAL_CARDS: CardRecord[] = [
     category: 'Italian Restaurant',
     googleReviewUrl: 'https://search.google.com/local/writereview?placeid=ChIJN1t_tDeuEmsRUsoyG83frY4',
     notes: 'Host stand entrance',
+    aiReviewEnabled: true,
     scansCount: 19,
     createdAt: new Date(Date.now() - 5 * 86400000).toISOString(),
     updatedAt: new Date().toISOString(),
@@ -266,6 +269,57 @@ export async function assignCard(
   }
 
   return null;
+}
+
+export async function bulkUpdateCardsStatus(
+  ids: string[],
+  status: 'available' | 'assigned',
+  adminId?: string
+): Promise<CardRecord[]> {
+  const normalizedIds = ids.map((id) => id.trim());
+  const now = new Date().toISOString();
+
+  // 1. Try batch updating in Firestore
+  try {
+    const batch = writeBatch(db);
+    for (const id of normalizedIds) {
+      const docRef = doc(db, CARDS_COLLECTION, id);
+      batch.set(docRef, { status, updatedAt: now }, { merge: true });
+    }
+    await batch.commit();
+  } catch (err) {
+    console.warn('Firestore bulk update failed, falling back:', err);
+  }
+
+  // 2. Server API fallback/sync
+  try {
+    await fetch('/api/cards/bulk-status', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(adminId ? { 'x-admin-id': adminId } : {}),
+      },
+      body: JSON.stringify({ ids: normalizedIds, status, adminId }),
+    });
+  } catch {
+    // ignore
+  }
+
+  // 3. Update local cache
+  const cached = await fetchCards();
+  const idSet = new Set(normalizedIds.map((id) => id.toLowerCase()));
+  const updatedList = cached.map((c) => {
+    if (idSet.has(c.id.toLowerCase())) {
+      return {
+        ...c,
+        status,
+        updatedAt: now,
+      };
+    }
+    return c;
+  });
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedList));
+  return updatedList;
 }
 
 export async function deleteCard(id: string): Promise<boolean> {

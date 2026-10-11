@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
+  Menu,
   QrCode,
   Plus,
   Printer,
@@ -7,7 +8,6 @@ import {
   Layers,
   LogIn,
   LogOut,
-  User as UserIcon,
   Radio,
   ShieldCheck,
   Lock,
@@ -24,6 +24,7 @@ interface AdminHeaderProps {
   currentTab: 'cards' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users';
   onSelectTab: (tab: 'cards' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users') => void;
   onOpenBatchModal: () => void;
+  onOpenSidebar: () => void;
   totalCards: number;
   assignedCount: number;
   availableCount: number;
@@ -36,6 +37,7 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
   currentTab,
   onSelectTab,
   onOpenBatchModal,
+  onOpenSidebar,
   totalCards,
   assignedCount,
   availableCount,
@@ -58,7 +60,6 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setCurrentUser(user);
       if (user && user.email) {
-        // Automatically save user to persistence
         try {
           const profile = await saveUser({
             uid: user.uid,
@@ -102,151 +103,91 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
     }
   };
 
-  const masterAdmin = admins.find((a) => a.role === 'master') || admins[0];
   const isMaster = activeAdmin.role === 'master';
 
+  // Get active view label & badge styling
+  const getTabMeta = () => {
+    switch (currentTab) {
+      case 'cards':
+        return { label: `Cards Inventory (${totalCards})`, icon: Layers, color: 'text-blue-700 bg-blue-50 border-blue-200' };
+      case 'print':
+        return { label: 'Print Sheets', icon: Printer, color: 'text-amber-800 bg-amber-50 border-amber-200' };
+      case 'nfc':
+        return { label: 'NFC Generator', icon: Radio, color: 'text-purple-700 bg-purple-50 border-purple-200' };
+      case 'simulator':
+        return { label: 'Mobile Simulator', icon: Smartphone, color: 'text-emerald-700 bg-emerald-50 border-emerald-200' };
+      case 'users':
+        return { label: 'Users & Logins', icon: Users, color: 'text-blue-700 bg-blue-50 border-blue-200' };
+      case 'admins':
+        return { label: 'Master Admin', icon: ShieldCheck, color: 'text-purple-700 bg-purple-50 border-purple-200' };
+      default:
+        return { label: 'Dashboard', icon: Layers, color: 'text-slate-700 bg-slate-50 border-slate-200' };
+    }
+  };
+
+  const tabMeta = getTabMeta();
+  const TabIcon = tabMeta.icon;
+
   return (
-    <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200">
+    <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200 w-full">
       {/* Google 4-Color Gradient Stripe */}
       <div className="h-1 w-full bg-gradient-to-r from-[#4285F4] via-[#EA4335] via-[#FBBC05] to-[#34A853]" />
 
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between gap-4 h-16">
-          {/* Zone 1: Brand Wordmark with Google 4-Color Dots */}
-          <div className="flex items-center gap-3 shrink-0">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#1A73E8] to-[#1557B0] flex items-center justify-center text-white shadow-sm shadow-blue-500/20">
-              <QrCode className="w-5 h-5" />
-            </div>
-            <div>
+      <div className="max-w-5xl lg:max-w-6xl mx-auto px-3 sm:px-6">
+        <div className="flex items-center justify-between gap-3 h-14 sm:h-16">
+          {/* Left Zone: Hamburger Menu Icon + Brand Logo & Title */}
+          <div className="flex items-center gap-2.5 sm:gap-3.5 min-w-0">
+            {/* Hamburger Icon to open Sliding Sidebar */}
+            <button
+              onClick={onOpenSidebar}
+              className="flex items-center gap-2 px-2.5 py-1.5 sm:px-3 sm:py-2 rounded-xl text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200/80 border border-slate-200/80 shadow-2xs transition-all active:scale-95 group shrink-0"
+              title="Open Navigation Menu"
+              aria-label="Open Navigation Menu"
+            >
+              <Menu className="w-5 h-5 text-slate-700 group-hover:text-[#1A73E8] transition-colors" />
+              <span className="text-xs font-bold text-slate-700 hidden sm:inline">Menu</span>
+            </button>
+
+            {/* Brand Logo & Title */}
+            <div className="flex items-center gap-2 shrink-0">
+              <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[#1A73E8] to-[#1557B0] flex items-center justify-center text-white shadow-sm shadow-blue-500/20">
+                <QrCode className="w-4 h-4" />
+              </div>
               <div className="flex items-center gap-1.5">
-                <span className="text-base font-extrabold tracking-tight text-slate-900 whitespace-nowrap">
+                <span className="text-sm sm:text-base font-extrabold tracking-tight text-slate-900 whitespace-nowrap">
                   3DBYSD
                 </span>
-                <span className="text-base font-medium text-slate-700">Smart Reviews</span>
-                {/* 4 Google Dots */}
-                <div className="flex items-center gap-1 ml-1" title="Google-Integrated Review Engine">
+                <span className="text-xs sm:text-sm font-semibold text-slate-700 hidden xs:inline whitespace-nowrap">
+                  Smart Reviews
+                </span>
+                <div className="hidden sm:flex items-center gap-0.5 ml-0.5" title="Google Review Engine">
                   <span className="w-1.5 h-1.5 rounded-full bg-[#4285F4]" />
                   <span className="w-1.5 h-1.5 rounded-full bg-[#EA4335]" />
                   <span className="w-1.5 h-1.5 rounded-full bg-[#FBBC05]" />
                   <span className="w-1.5 h-1.5 rounded-full bg-[#34A853]" />
                 </div>
               </div>
-              <div className="text-[11px] font-medium text-slate-500 whitespace-nowrap">
-                Google Business NFC & QR Dynamic Platform
-              </div>
             </div>
           </div>
 
-          {/* Zone 2: Navigation Links */}
-          <nav className="hidden lg:flex items-center gap-1 shrink-0">
-            <button
-              onClick={() => onSelectTab('cards')}
-              className={`flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-full transition-all whitespace-nowrap ${
-                currentTab === 'cards'
-                  ? 'bg-blue-50 text-[#1A73E8] font-bold shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-              }`}
-            >
-              <Layers className="w-4 h-4 text-[#4285F4]" />
-              <span>Cards Inventory ({totalCards})</span>
-            </button>
-
-            <button
-              onClick={() => onSelectTab('print')}
-              className={`flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-full transition-all whitespace-nowrap ${
-                currentTab === 'print'
-                  ? 'bg-amber-50 text-amber-900 font-bold shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-              }`}
-            >
-              <Printer className="w-4 h-4 text-[#FBBC05]" />
-              <span>Print Sheets</span>
-            </button>
-
-            <button
-              onClick={() => onSelectTab('nfc')}
-              className={`flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-full transition-all whitespace-nowrap ${
-                currentTab === 'nfc'
-                  ? 'bg-purple-50 text-purple-900 font-bold shadow-2xs ring-1 ring-purple-200'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-              }`}
-            >
-              <Radio className="w-4 h-4 text-[#1A73E8]" />
-              <span>NFC Generator</span>
-            </button>
-
-            <button
-              onClick={() => onSelectTab('simulator')}
-              className={`flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-full transition-all whitespace-nowrap ${
-                currentTab === 'simulator'
-                  ? 'bg-emerald-50 text-emerald-900 font-bold shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-              }`}
-            >
-              <Smartphone className="w-4 h-4 text-[#34A853]" />
-              <span>Mobile Simulator</span>
-            </button>
-
-            {/* Google Verified Users & Logins Tab */}
-            <button
-              onClick={() => onSelectTab('users')}
-              className={`flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-full transition-all whitespace-nowrap ${
-                currentTab === 'users'
-                  ? 'bg-blue-50 text-[#1A73E8] font-bold shadow-2xs ring-1 ring-blue-300'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-              }`}
-            >
-              <Users className="w-4 h-4 text-[#4285F4]" />
-              <span>Users & Logins</span>
-            </button>
-
-            {/* Master Admin Panel Tab (Only accessible if active admin is Master Admin) */}
-            {isMaster && (
+          {/* Right Zone: Primary Actions & Google Auth */}
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            {/* Quick Add Batch Button */}
+            {(isMaster || activeAdmin.permissions?.canCreateCards) && (
               <button
-                onClick={() => onSelectTab('admins')}
-                className={`flex items-center gap-2 px-3.5 py-2 text-xs font-semibold rounded-full transition-all whitespace-nowrap ${
-                  currentTab === 'admins'
-                    ? 'bg-purple-50 text-purple-900 font-bold shadow-2xs ring-1 ring-purple-300'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-                }`}
+                onClick={onOpenBatchModal}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-[#1A73E8] hover:bg-[#1557B0] rounded-xl shadow-xs transition-all whitespace-nowrap active:scale-95"
+                title="Generate new batch of dynamic QR codes"
               >
-                <ShieldCheck className="w-4 h-4 text-purple-600" />
-                <span>Master Admin ({admins.length})</span>
+                <Plus className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Add Cards</span>
+                <span className="sm:hidden">Add</span>
               </button>
             )}
-          </nav>
-
-          {/* Zone 3: Primary Action, Role Switcher, Google Auth & Counts */}
-          <div className="flex items-center gap-2.5 shrink-0">
-            {/* Active Admin Role Pill & Quick Switcher */}
-            <div className="hidden sm:flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-2 py-1 rounded-full text-xs">
-              {isMaster ? (
-                <div className="flex items-center gap-1 text-purple-700 font-bold text-[11px]">
-                  <ShieldCheck className="w-3.5 h-3.5 text-purple-600" />
-                  <span>👑 Master</span>
-                </div>
-              ) : (
-                <div className="flex items-center gap-1 text-amber-800 font-bold text-[11px]">
-                  <Lock className="w-3.5 h-3.5 text-amber-600" />
-                  <span className="truncate max-w-[90px]">{activeAdmin.name}</span>
-                </div>
-              )}
-
-              {/* Quick switch button if restricted */}
-              {!isMaster && masterAdmin && (
-                <button
-                  onClick={() => onSelectActiveAdmin(masterAdmin)}
-                  title="Switch back to Master Admin mode"
-                  className="px-2 py-0.5 rounded-full bg-blue-50 hover:bg-blue-100 text-[#1A73E8] text-[10px] font-extrabold transition-colors border border-blue-200"
-                >
-                  Exit Sub-Admin
-                </button>
-              )}
-            </div>
 
             {/* Google Authentication Control */}
             {currentUser || verifiedGoogleProfile ? (
-              <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 pl-1.5 pr-2 py-1 rounded-full text-xs">
+              <div className="flex items-center gap-1.5 sm:gap-2 bg-slate-50 border border-slate-200 pl-1.5 pr-2 py-1 rounded-full text-xs">
                 <div className="relative">
                   <img
                     src={
@@ -262,8 +203,8 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
                   />
                   <span className="absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full bg-[#34A853] ring-1 ring-white" />
                 </div>
-                <div className="hidden xl:flex flex-col text-left">
-                  <span className="text-[11px] font-bold text-slate-800 max-w-[100px] truncate leading-tight">
+                <div className="hidden lg:flex flex-col text-left">
+                  <span className="text-[11px] font-bold text-slate-800 max-w-[85px] truncate leading-tight">
                     {currentUser?.displayName || verifiedGoogleProfile?.displayName || 'Google User'}
                   </span>
                   <span className="text-[9px] text-[#34A853] font-semibold flex items-center gap-0.5">
@@ -281,7 +222,7 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
             ) : (
               <button
                 onClick={handleSignInClick}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-300 bg-white hover:bg-slate-50 text-xs font-bold text-slate-700 shadow-2xs transition-all hover:border-blue-400"
+                className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-full border border-slate-300 bg-white hover:bg-slate-50 text-xs font-bold text-slate-700 shadow-2xs transition-all hover:border-blue-400"
                 title="Sign in with Google Account"
               >
                 <svg className="w-3.5 h-3.5" viewBox="0 0 24 24">
@@ -305,79 +246,7 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
                 <span className="hidden sm:inline">Google Login</span>
               </button>
             )}
-
-            {/* Generate Batch QRs button (visible only if admin has creation power) */}
-            {(isMaster || activeAdmin.permissions?.canCreateCards) && (
-              <button
-                onClick={onOpenBatchModal}
-                className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-[#1A73E8] hover:bg-[#1557B0] rounded-full shadow-sm shadow-blue-500/20 transition-all whitespace-nowrap shrink-0 active:scale-95"
-              >
-                <Plus className="w-4 h-4" />
-                <span className="hidden sm:inline">Generate Batch</span>
-                <span className="sm:hidden">Batch</span>
-              </button>
-            )}
           </div>
-        </div>
-
-        {/* Mobile Navigation bar for small screens */}
-        <div className="flex lg:hidden items-center border-t border-slate-100 py-2 overflow-x-auto gap-2">
-          <button
-            onClick={() => onSelectTab('cards')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full whitespace-nowrap ${
-              currentTab === 'cards' ? 'bg-[#1A73E8] text-white' : 'text-slate-600'
-            }`}
-          >
-            <Layers className="w-3.5 h-3.5" />
-            <span>Cards ({totalCards})</span>
-          </button>
-          <button
-            onClick={() => onSelectTab('print')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full whitespace-nowrap ${
-              currentTab === 'print' ? 'bg-[#1A73E8] text-white' : 'text-slate-600'
-            }`}
-          >
-            <Printer className="w-3.5 h-3.5" />
-            <span>Print Sheets</span>
-          </button>
-          <button
-            onClick={() => onSelectTab('nfc')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full whitespace-nowrap ${
-              currentTab === 'nfc' ? 'bg-[#1A73E8] text-white' : 'text-slate-600'
-            }`}
-          >
-            <Radio className="w-3.5 h-3.5" />
-            <span>NFC URL</span>
-          </button>
-          <button
-            onClick={() => onSelectTab('simulator')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full whitespace-nowrap ${
-              currentTab === 'simulator' ? 'bg-[#1A73E8] text-white' : 'text-slate-600'
-            }`}
-          >
-            <Smartphone className="w-3.5 h-3.5" />
-            <span>Simulator</span>
-          </button>
-          <button
-            onClick={() => onSelectTab('users')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full whitespace-nowrap ${
-              currentTab === 'users' ? 'bg-blue-600 text-white' : 'text-blue-700 bg-blue-50'
-            }`}
-          >
-            <Users className="w-3.5 h-3.5" />
-            <span>Users</span>
-          </button>
-          {isMaster && (
-            <button
-              onClick={() => onSelectTab('admins')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full whitespace-nowrap ${
-                currentTab === 'admins' ? 'bg-purple-600 text-white' : 'text-purple-700 bg-purple-50'
-              }`}
-            >
-              <ShieldCheck className="w-3.5 h-3.5" />
-              <span>Master Admin</span>
-            </button>
-          )}
         </div>
       </div>
 
