@@ -40,6 +40,21 @@
           "type": "boolean",
           "description": "Whether AI review draft assistant is enabled (true) or direct redirect (false)"
         },
+        "assignedToEmail": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Email address of the merchant user this card is assigned to"
+        },
+        "assignedToUid": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Firebase UID of the merchant user"
+        },
+        "assignedToName": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Display name of the merchant user"
+        },
         "scansCount": {
           "type": "integer",
           "description": "Total customer scans"

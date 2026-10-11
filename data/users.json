@@ -11,7 +11,9 @@
     "createdAt": "2026-10-10T21:30:00.000Z",
     "loginCount": 4,
     "device": "Web Browser (Chrome)",
-    "assignedCardIds": []
+    "assignedCardIds": [
+      "0001"
+    ]
   },
   {
     "uid": "google-uid-test-user",

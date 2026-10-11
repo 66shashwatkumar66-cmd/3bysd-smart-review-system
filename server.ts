@@ -85,6 +85,9 @@ export interface CardRecord {
   notes: string;
   aiReviewEnabled?: boolean;
   scansCount: number;
+  assignedToEmail?: string;
+  assignedToUid?: string;
+  assignedToName?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -330,9 +333,23 @@ app.get('/api/cards/:id', (req: Request, res: Response) => {
   res.json({ success: true, card });
 });
 
-// REST API: Create single or batch cards
+// REST API: Create single or batch cards (Master Admin Only)
 app.post('/api/cards/batch', (req: Request, res: Response) => {
   try {
+    const requesterAdminId = (req.headers['x-admin-id'] as string) || req.body.adminId;
+    if (requesterAdminId) {
+      const admins = readAdmins();
+      const admin = admins.find(
+        (a) => a.id === requesterAdminId || a.email.toLowerCase() === requesterAdminId.toLowerCase()
+      );
+      if (admin && admin.role === 'restricted') {
+        return res.status(403).json({
+          success: false,
+          message: 'Permission Denied: Only Master Admin (Kalwa Chodu) can generate new QR inventory cards.',
+        });
+      }
+    }
+
     const { count = 1, startNumber = 1, paddingDigits = 4, prefix = '' } = req.body;
     const cards = readCards();
     const existingIds = new Set(cards.map((c) => c.id));
@@ -383,7 +400,17 @@ app.post('/api/cards/batch', (req: Request, res: Response) => {
 app.put('/api/cards/:id/assign', (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { businessName, googleReviewUrl, category, notes, status, aiReviewEnabled } = req.body;
+    const {
+      businessName,
+      googleReviewUrl,
+      category,
+      notes,
+      status,
+      aiReviewEnabled,
+      assignedToEmail,
+      assignedToUid,
+      assignedToName,
+    } = req.body;
 
     const cards = readCards();
     const index = cards.findIndex((c) => c.id.toLowerCase() === id.toLowerCase());
@@ -393,10 +420,12 @@ app.put('/api/cards/:id/assign', (req: Request, res: Response) => {
     }
 
     // Sub-admin permission validation: restricted admins can only edit registered cards
-    const requesterAdminId = req.headers['x-admin-id'] as string || req.body.adminId;
+    const requesterAdminId = (req.headers['x-admin-id'] as string) || req.body.adminId;
     if (requesterAdminId) {
       const admins = readAdmins();
-      const admin = admins.find((a) => a.id === requesterAdminId || a.email.toLowerCase() === requesterAdminId.toLowerCase());
+      const admin = admins.find(
+        (a) => a.id === requesterAdminId || a.email.toLowerCase() === requesterAdminId.toLowerCase()
+      );
       if (admin && admin.role === 'restricted') {
         const canEdit = admin.assignedCardIds.some((cid) => cid.toLowerCase() === id.toLowerCase());
         if (!canEdit) {
@@ -422,11 +451,32 @@ app.put('/api/cards/:id/assign', (req: Request, res: Response) => {
         status !== undefined
           ? status
           : (cards[index].status || (cards[index].businessName && cards[index].googleReviewUrl ? 'assigned' : 'available')),
+      assignedToEmail: assignedToEmail !== undefined ? (assignedToEmail ? String(assignedToEmail).trim() : undefined) : cards[index].assignedToEmail,
+      assignedToUid: assignedToUid !== undefined ? (assignedToUid ? String(assignedToUid).trim() : undefined) : cards[index].assignedToUid,
+      assignedToName: assignedToName !== undefined ? (assignedToName ? String(assignedToName).trim() : undefined) : cards[index].assignedToName,
       updatedAt: new Date().toISOString(),
     };
 
     writeCards(cards);
     syncCardToSupabase(cards[index]);
+
+    // Sync with users storage
+    if (assignedToEmail) {
+      try {
+        const users = readUsers();
+        const target = users.find((u) => u.email.toLowerCase() === String(assignedToEmail).trim().toLowerCase());
+        if (target) {
+          if (!target.assignedCardIds) target.assignedCardIds = [];
+          if (!target.assignedCardIds.includes(cards[index].id)) {
+            target.assignedCardIds.push(cards[index].id);
+            writeUsers(users);
+          }
+        }
+      } catch (uErr) {
+        console.warn('Could not update user assignedCardIds:', uErr);
+      }
+    }
+
     res.json({ success: true, card: cards[index] });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message || 'Assignment failed' });
@@ -967,8 +1017,8 @@ app.get('/', (req: Request, res: Response, next) => {
   next();
 });
 
-// Customer Short URL Route: /r/:id
-app.get('/r/:id', (req: Request, res: Response, next) => {
+// Customer Short URL Route: /r/:id, /c/:id, /review/:id, /nfc/:id
+app.get(['/r/:id', '/c/:id', '/review/:id', '/nfc/:id'], (req: Request, res: Response, next) => {
   try {
     const { id } = req.params;
     const cards = readCards();

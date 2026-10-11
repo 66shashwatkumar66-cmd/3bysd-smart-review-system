@@ -584,6 +584,13 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                         </div>
                       )}
 
+                      {card.assignedToEmail && (
+                        <div className="text-[10px] text-purple-700 font-semibold truncate flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-purple-500 shrink-0" />
+                          <span>Owner: {card.assignedToName || card.assignedToEmail}</span>
+                        </div>
+                      )}
+
                       {card.googleReviewUrl && (
                         <a
                           href={card.googleReviewUrl}
@@ -752,7 +759,7 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                           </div>
                         </td>
 
-                        {/* Business Name */}
+                        {/* Business Name & User Assignment */}
                         <td className="py-3 px-3 sm:px-4">
                           {isAssigned && card.businessName ? (
                             <div className="min-w-0 max-w-[200px]">
@@ -763,11 +770,25 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                                 {card.category || 'Local Business'}
                                 {card.notes && ` · ${card.notes}`}
                               </div>
+                              {card.assignedToEmail && (
+                                <div className="text-[10px] text-purple-700 font-semibold truncate mt-0.5 flex items-center gap-1">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-purple-500 shrink-0" />
+                                  <span>{card.assignedToName || card.assignedToEmail}</span>
+                                </div>
+                              )}
                             </div>
                           ) : (
-                            <div className="flex items-center gap-1.5 text-amber-700/80 text-[11px] font-medium">
-                              <span className="w-2 h-2 rounded-full bg-[#FBBC05] shrink-0" />
-                              <span>Unassigned stock</span>
+                            <div className="space-y-0.5">
+                              <div className="flex items-center gap-1.5 text-amber-700/80 text-[11px] font-medium">
+                                <span className="w-2 h-2 rounded-full bg-[#FBBC05] shrink-0" />
+                                <span>Unassigned stock</span>
+                              </div>
+                              {card.assignedToEmail && (
+                                <div className="text-[10px] text-purple-700 font-semibold truncate flex items-center gap-1">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-purple-500 shrink-0" />
+                                  <span>Allocated: {card.assignedToEmail}</span>
+                                </div>
+                              )}
                             </div>
                           )}
                         </td>

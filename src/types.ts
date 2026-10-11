@@ -7,6 +7,9 @@ export interface CardRecord {
   notes: string;
   aiReviewEnabled?: boolean; // Controls whether AI assistant is active (default true) or direct redirect
   scansCount: number;
+  assignedToEmail?: string; // Assigned user email for RBAC ownership
+  assignedToUid?: string;   // Assigned user Google UID
+  assignedToName?: string;  // Assigned user display name
   createdAt: string;
   updatedAt: string;
 }

@@ -25,6 +25,9 @@ service cloud.firestore {
         (!('googleReviewUrl' in data) || (data.googleReviewUrl is string && data.googleReviewUrl.size() <= 1000)) &&
         (!('notes' in data) || (data.notes is string && data.notes.size() <= 500)) &&
         (!('aiReviewEnabled' in data) || data.aiReviewEnabled is bool) &&
+        (!('assignedToEmail' in data) || (data.assignedToEmail is string && data.assignedToEmail.size() <= 200)) &&
+        (!('assignedToUid' in data) || (data.assignedToUid is string && data.assignedToUid.size() <= 128)) &&
+        (!('assignedToName' in data) || (data.assignedToName is string && data.assignedToName.size() <= 200)) &&
         (!('scansCount' in data) || (data.scansCount is int && data.scansCount >= 0));
     }
 

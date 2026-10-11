@@ -387,15 +387,15 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
               Quick Actions
             </div>
 
-            {(isMaster || activeAdmin.permissions?.canCreateCards) && (
+            {isMaster && (
               <button
                 onClick={() => {
                   onClose();
                   onOpenBatchModal();
                 }}
-                className="w-full flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition-all shadow-2xs"
+                className="w-full flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition-all shadow-2xs cursor-pointer"
               >
-                <Plus className="w-3.5 h-3.5 text-blue-400" />
+                <Plus className="w-3.5 h-3.5 text-[#FBBC05]" />
                 <span>Generate Batch QRs</span>
               </button>
             )}

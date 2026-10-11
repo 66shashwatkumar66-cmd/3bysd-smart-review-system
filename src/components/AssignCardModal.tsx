@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useId } from 'react';
 import { X, ExternalLink, HelpCircle, Check, MapPin, Store, Sparkles } from 'lucide-react';
-import { CardRecord, AdminUser } from '../types';
+import { CardRecord, AdminUser, UserProfile } from '../types';
 
 interface AssignCardModalProps {
   card: CardRecord | null;
@@ -8,6 +8,8 @@ interface AssignCardModalProps {
   onClose: () => void;
   onSave: (id: string, updates: Partial<CardRecord>) => Promise<void>;
   activeAdmin?: AdminUser;
+  isMaster?: boolean;
+  users?: UserProfile[];
 }
 
 export const AssignCardModal: React.FC<AssignCardModalProps> = ({
@@ -16,12 +18,15 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
   onClose,
   onSave,
   activeAdmin,
+  isMaster = true,
+  users = [],
 }) => {
   const businessNameId = useId();
   const categoryId = useId();
   const googleUrlId = useId();
   const notesId = useId();
   const statusId = useId();
+  const assignedUserId = useId();
 
   const [businessName, setBusinessName] = useState('');
   const [category, setCategory] = useState('');
@@ -29,6 +34,9 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
   const [notes, setNotes] = useState('');
   const [status, setStatus] = useState<'available' | 'assigned' | 'disabled'>('assigned');
   const [aiReviewEnabled, setAiReviewEnabled] = useState<boolean>(true);
+  const [assignedToEmail, setAssignedToEmail] = useState<string>('');
+  const [assignedToName, setAssignedToName] = useState<string>('');
+  const [assignedToUid, setAssignedToUid] = useState<string>('');
   const [showHelper, setShowHelper] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -41,6 +49,9 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
       setNotes(card.notes || '');
       setStatus(card.status || 'available');
       setAiReviewEnabled(card.aiReviewEnabled !== false);
+      setAssignedToEmail(card.assignedToEmail || '');
+      setAssignedToName(card.assignedToName || '');
+      setAssignedToUid(card.assignedToUid || '');
       setError('');
     }
   }, [card]);
@@ -70,6 +81,9 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
         notes: notes.trim(),
         status: status,
         aiReviewEnabled: aiReviewEnabled,
+        assignedToEmail: assignedToEmail.trim() || undefined,
+        assignedToName: assignedToName.trim() || undefined,
+        assignedToUid: assignedToUid.trim() || undefined,
       });
       onClose();
     } catch (err: any) {
@@ -106,10 +120,61 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
         </div>
 
         {/* Form Body */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+        <form onSubmit={handleSubmit} className="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
           {error && (
             <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">
               {error}
+            </div>
+          )}
+
+          {/* User Account Assignment (UBRA Access Control) */}
+          {isMaster ? (
+            <div className="p-3.5 bg-purple-50/70 border border-purple-200 rounded-xl space-y-2">
+              <label htmlFor={assignedUserId} className="block text-xs font-bold text-purple-950 flex items-center justify-between">
+                <span>Assign to User Account (Google Email)</span>
+                <span className="text-[10px] font-mono bg-purple-200 text-purple-900 px-1.5 py-0.2 rounded font-bold">RBAC Access</span>
+              </label>
+
+              {users.length > 0 && (
+                <select
+                  value={assignedToEmail}
+                  onChange={(e) => {
+                    const selected = users.find(u => u.email.toLowerCase() === e.target.value.toLowerCase());
+                    if (selected) {
+                      setAssignedToEmail(selected.email);
+                      setAssignedToName(selected.displayName);
+                      setAssignedToUid(selected.uid);
+                    } else {
+                      setAssignedToEmail(e.target.value);
+                    }
+                  }}
+                  className="w-full px-3 py-2 text-xs bg-white border border-purple-200 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-600 mb-1"
+                >
+                  <option value="">-- Choose registered Google user --</option>
+                  {users.map((u) => (
+                    <option key={u.uid} value={u.email}>
+                      {u.displayName} ({u.email}) - {u.role}
+                    </option>
+                  ))}
+                </select>
+              )}
+
+              <input
+                id={assignedUserId}
+                type="email"
+                value={assignedToEmail}
+                onChange={(e) => setAssignedToEmail(e.target.value)}
+                placeholder="Or type Google email (e.g. merchant@gmail.com)"
+                className="w-full px-3 py-1.5 text-xs bg-white border border-purple-200 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-purple-600"
+              />
+              <p className="text-[11px] text-purple-700">
+                Only this logged-in Google user will be authorized to see and manage this card.
+              </p>
+            </div>
+          ) : (
+            <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between text-xs text-slate-600">
+              <span className="font-semibold text-slate-700">Authorized Account:</span>
+              <span className="font-mono text-slate-900 font-bold">{card.assignedToEmail || 'Your Account'}</span>
             </div>
           )}
 

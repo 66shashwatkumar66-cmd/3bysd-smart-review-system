@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { CardRecord, AdminUser } from './types';
+import { CardRecord, AdminUser, UserProfile } from './types';
 import {
   fetchCards,
   fetchCardById,
@@ -11,7 +11,9 @@ import {
   createAdmin,
   updateAdmin,
   deleteAdmin,
+  fetchUsers,
 } from './utils/api';
+import { auth, onAuthStateChanged, signOut } from './firebase';
 import { AdminHeader } from './components/AdminHeader';
 import { CardsTable } from './components/CardsTable';
 import { BatchGeneratorModal } from './components/BatchGeneratorModal';
@@ -24,6 +26,7 @@ import { NfcGeneratorView } from './components/NfcGeneratorView';
 import { MasterAdminView } from './components/MasterAdminView';
 import { UsersManagementView } from './components/UsersManagementView';
 import { SlidingSidebar } from './components/SlidingSidebar';
+import { AuthGateway } from './components/AuthGateway';
 import { exportCardsToCsv } from './utils/csv';
 import {
   QrCode,
@@ -35,6 +38,9 @@ import {
   ShieldCheck,
   RotateCcw,
   Radio,
+  Crown,
+  AlertCircle,
+  Building2,
 } from 'lucide-react';
 
 export default function App() {
@@ -42,6 +48,17 @@ export default function App() {
   const [loading, setLoading] = useState<boolean>(true);
   const [currentTab, setCurrentTab] = useState<'cards' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users'>('cards');
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
+
+  // Authenticated User State (Real Google Auth)
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(() => {
+    try {
+      const saved = localStorage.getItem('3dbysd_current_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [users, setUsers] = useState<UserProfile[]>([]);
 
   // Admin Management State
   const [admins, setAdmins] = useState<AdminUser[]>([]);
@@ -57,16 +74,50 @@ export default function App() {
   const [cardToAssign, setCardToAssign] = useState<CardRecord | null>(null);
   const [simulatorCardId, setSimulatorCardId] = useState<string | null>(null);
 
-  // Parse route from window.location
+  // Listen for Google Auth changes
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser && firebaseUser.email) {
+        const cleanEmail = firebaseUser.email.toLowerCase().trim();
+        const isMasterEmail =
+          cleanEmail === '66shashwatkumar66@gmail.com' ||
+          (firebaseUser.displayName && firebaseUser.displayName.toLowerCase().includes('kalwa'));
+        const userProfile: UserProfile = {
+          uid: firebaseUser.uid,
+          email: cleanEmail,
+          displayName:
+            firebaseUser.displayName || (isMasterEmail ? 'Kalwa Chodu' : cleanEmail.split('@')[0]),
+          photoURL: firebaseUser.photoURL || undefined,
+          provider: 'google.com',
+          role: isMasterEmail ? 'master' : 'member',
+          emailVerified: firebaseUser.emailVerified || true,
+          lastLoginAt: new Date().toISOString(),
+          createdAt: new Date().toISOString(),
+          loginCount: 1,
+        };
+        setCurrentUser(userProfile);
+        localStorage.setItem('3dbysd_current_user', JSON.stringify(userProfile));
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Parse route from window.location and listen to popstate
   useEffect(() => {
     const checkPath = async () => {
       const pathname = window.location.pathname;
       const urlParams = new URLSearchParams(window.location.search);
-      const queryCard = urlParams.get('card') || urlParams.get('r');
+      const queryCard = urlParams.get('card') || urlParams.get('r') || urlParams.get('c');
 
       let targetCardId: string | null = null;
       if (pathname.startsWith('/r/')) {
         targetCardId = pathname.replace('/r/', '').split('/')[0].split('?')[0].trim();
+      } else if (pathname.startsWith('/c/')) {
+        targetCardId = pathname.replace('/c/', '').split('/')[0].split('?')[0].trim();
+      } else if (pathname.startsWith('/review/')) {
+        targetCardId = pathname.replace('/review/', '').split('/')[0].split('?')[0].trim();
+      } else if (pathname.startsWith('/nfc/')) {
+        targetCardId = pathname.replace('/nfc/', '').split('/')[0].split('?')[0].trim();
       } else if (queryCard) {
         targetCardId = queryCard.trim();
       }
@@ -101,12 +152,20 @@ export default function App() {
           setCustomerCard(found);
         }
         setIsCustomerLoading(false);
+      } else {
+        setCustomerCardId(null);
       }
     };
 
     checkPath();
+    window.addEventListener('popstate', checkPath);
     loadCards();
     loadAdminsData();
+    loadUsersData();
+
+    return () => {
+      window.removeEventListener('popstate', checkPath);
+    };
   }, []);
 
   const loadCards = async () => {
@@ -114,6 +173,15 @@ export default function App() {
     const data = await fetchCards();
     setCards(data);
     setLoading(false);
+  };
+
+  const loadUsersData = async () => {
+    try {
+      const list = await fetchUsers();
+      setUsers(list);
+    } catch (e) {
+      console.warn('Failed to fetch users:', e);
+    }
   };
 
   const loadAdminsData = async () => {
@@ -214,13 +282,48 @@ export default function App() {
     );
   }
 
+  // Google Authentication Gateway: Protected access
+  if (!currentUser) {
+    return (
+      <AuthGateway
+        onLoginSuccess={(user) => {
+          setCurrentUser(user);
+          loadCards();
+          loadUsersData();
+        }}
+        onPreviewCard={(id) => {
+          setCustomerCardId(id);
+        }}
+      />
+    );
+  }
+
+  const handleSignOut = async () => {
+    try {
+      await signOut(auth);
+      setCurrentUser(null);
+      localStorage.removeItem('3dbysd_current_user');
+    } catch (e) {
+      console.warn('Sign out failed:', e);
+    }
+  };
+
+  // Master Admin check (Kalwa Chodu / 66shashwatkumar66@gmail.com)
+  const isMaster = Boolean(
+    currentUser.email.toLowerCase() === '66shashwatkumar66@gmail.com' ||
+    currentUser.role === 'master' ||
+    currentUser.displayName?.toLowerCase().includes('kalwa') ||
+    currentUser.displayName?.toLowerCase().includes('chodu') ||
+    activeAdmin?.role === 'master'
+  );
+
   // Active admin fallback
   const effectiveActiveAdmin: AdminUser =
     activeAdmin ||
-    admins[0] || {
+    admins.find((a) => a.role === 'master') || {
       id: 'master-admin-01',
       email: '66shashwatkumar66@gmail.com',
-      name: 'Master Admin',
+      name: 'Kalwa Chodu (Master Admin)',
       role: 'master',
       assignedCardIds: [],
       permissions: {
@@ -234,13 +337,24 @@ export default function App() {
     };
 
   const masterAdmin = admins.find((a) => a.role === 'master') || effectiveActiveAdmin;
-  const isMaster = effectiveActiveAdmin.role === 'master';
 
-  // Filter cards based on current active admin permissions
-  // If restricted, ONLY show and allow editing of the cards registered by master admin
+  // Strict Role-Based Access Control (UBRA):
+  // Master Admin: sees and manages all cards
+  // Logged-in Client User: STRICTLY only sees cards assigned to their Google account
   const displayedCards = isMaster
     ? cards
-    : cards.filter((c) => effectiveActiveAdmin.assignedCardIds.includes(c.id));
+    : cards.filter((c) => {
+        const userEmail = currentUser.email.toLowerCase();
+        const userUid = currentUser.uid;
+        const userAssigned = currentUser.assignedCardIds || [];
+        const adminAssigned = activeAdmin?.assignedCardIds || [];
+        return (
+          (c.assignedToEmail && c.assignedToEmail.toLowerCase() === userEmail) ||
+          (c.assignedToUid && c.assignedToUid === userUid) ||
+          userAssigned.includes(c.id) ||
+          (activeAdmin?.role === 'restricted' && adminAssigned.includes(c.id))
+        );
+      });
 
   const assignedCount = displayedCards.filter((c) => c.status === 'assigned').length;
   const availableCount = displayedCards.filter((c) => c.status === 'available').length;
@@ -265,6 +379,8 @@ export default function App() {
         activeAdmin={effectiveActiveAdmin}
         admins={admins}
         onSelectActiveAdmin={(adm) => setActiveAdmin(adm)}
+        currentUser={currentUser}
+        onSignOut={handleSignOut}
       />
 
       {/* Main Admin Workspace Viewport - Optimized container for PC and mobile */}
@@ -382,7 +498,7 @@ export default function App() {
                   </button>
                 )}
 
-                {(isMaster || effectiveActiveAdmin.permissions?.canCreateCards) && (
+                {isMaster && (
                   <button
                     onClick={() => setIsBatchModalOpen(true)}
                     className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-800 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg shadow-2xs transition-colors cursor-pointer"
@@ -393,6 +509,19 @@ export default function App() {
                 )}
               </div>
             </div>
+
+            {/* Empty state for client user when no cards have been allocated by Master Admin */}
+            {!loading && displayedCards.length === 0 && !isMaster && (
+              <div className="p-8 bg-white rounded-2xl border border-slate-200 text-center space-y-3 shadow-xs">
+                <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto border border-amber-200">
+                  <Building2 className="w-6 h-6" />
+                </div>
+                <h3 className="text-base font-bold text-slate-900">No QR Review Stands Assigned Yet</h3>
+                <p className="text-xs text-slate-600 max-w-md mx-auto leading-relaxed">
+                  Welcome, <strong>{currentUser.displayName}</strong>! Content is strictly isolated by user account. Only Master Admin (Kalwa Chodu) can create new QR batches and allocate them to businesses. Please ask Master Admin (<code>66shashwatkumar66@gmail.com</code>) to allocate cards to your Google email: <strong>{currentUser.email}</strong>.
+                </p>
+              </div>
+            )}
 
             {loading ? (
               <div className="p-12 text-center bg-white rounded-xl border border-slate-200">
@@ -490,6 +619,8 @@ export default function App() {
         onClose={() => setCardToAssign(null)}
         onSave={handleAssignCard}
         activeAdmin={effectiveActiveAdmin}
+        users={users}
+        isMaster={isMaster}
       />
 
       {/* Mobile Simulator Modal */}

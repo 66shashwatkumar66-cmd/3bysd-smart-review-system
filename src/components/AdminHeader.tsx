@@ -31,6 +31,8 @@ interface AdminHeaderProps {
   activeAdmin: AdminUser;
   admins: AdminUser[];
   onSelectActiveAdmin: (admin: AdminUser) => void;
+  currentUser?: UserProfile | null;
+  onSignOut?: () => void;
 }
 
 export const AdminHeader: React.FC<AdminHeaderProps> = ({
@@ -44,6 +46,8 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
   activeAdmin,
   admins,
   onSelectActiveAdmin,
+  currentUser: propCurrentUser,
+  onSignOut,
 }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isGoogleModalOpen, setIsGoogleModalOpen] = useState<boolean>(false);
@@ -98,6 +102,7 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
       await signOut(auth);
       setVerifiedGoogleProfile(null);
       localStorage.removeItem('3dbysd_current_user');
+      if (onSignOut) onSignOut();
     } catch (err: any) {
       console.warn('Sign-out failed:', err?.message);
     }

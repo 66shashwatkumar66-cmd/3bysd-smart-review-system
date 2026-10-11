@@ -73,15 +73,14 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
   const [copied, setCopied] = useState<boolean>(false);
   const [redirected, setRedirected] = useState<boolean>(false);
 
+  const isAssigned = Boolean(card && card.status === 'assigned');
+  const effectiveBusinessName =
+    card?.businessName?.trim() || (isAssigned ? 'Our Business' : `Card #${cardId} Review Stand`);
+  const effectiveCategory = card?.category?.trim() || 'Customer Experience';
+
   // Auto-generate starter review draft when AI review assistant is active
   useEffect(() => {
-    if (
-      card &&
-      card.status === 'assigned' &&
-      effectiveAiReviewEnabled &&
-      !generatedReview &&
-      !isGenerating
-    ) {
+    if (effectiveAiReviewEnabled && !generatedReview && !isGenerating) {
       handleGenerate();
     }
   }, [card?.id, effectiveAiReviewEnabled]);
@@ -93,13 +92,12 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
   };
 
   const handleGenerate = async () => {
-    if (!card) return;
     setIsGenerating(true);
     setCopied(false);
     try {
       const res = await generateAiReview({
-        businessName: card.businessName || 'this business',
-        category: card.category || 'Café / Local Business',
+        businessName: effectiveBusinessName,
+        category: effectiveCategory,
         rating,
         tags: selectedTags,
         notes: customNotes.trim() || undefined,
@@ -116,7 +114,6 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
   };
 
   const handleCopyAndRedirect = async () => {
-    if (!card) return;
     const reviewToCopy = generatedReview.trim();
 
     try {
@@ -130,20 +127,18 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
     setCopied(true);
     setRedirected(true);
 
-    // Open target Google Review URL
-    if (card.googleReviewUrl) {
+    // Open target Google Review URL if configured
+    if (card?.googleReviewUrl) {
       if (isSimulator) {
         window.open(card.googleReviewUrl, '_blank', 'noopener,noreferrer');
       } else {
-        // Direct location navigation on mobile ensures mobile browsers don't block popup
         window.location.href = card.googleReviewUrl;
       }
     }
   };
 
   // State 0: Loading in-progress
-
-  if (isLoading || (!card && !isSimulator)) {
+  if (isLoading) {
     return (
       <div className="min-h-screen bg-[#FDFCFB] flex flex-col justify-center items-center p-6 text-slate-900 antialiased">
         <div className="max-w-sm w-full bg-white rounded-3xl p-8 border border-slate-200/90 shadow-sm text-center space-y-4 animate-fadeIn">
@@ -160,66 +155,6 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
             </h1>
             <p className="text-xs text-slate-500 mt-1">
               Opening your review experience...
-            </p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // State 1: Card unassigned or not found
-  if (!card || card.status !== 'assigned') {
-    if (isSimulator) {
-      // Admin testing in simulator
-      return (
-        <div className="min-h-screen bg-slate-50 flex flex-col justify-between p-4 sm:p-6 text-slate-900">
-          <div className="max-w-md w-full mx-auto my-auto bg-white rounded-3xl p-6 sm:p-8 shadow-sm border border-slate-200 text-center space-y-3">
-            <div className="w-14 h-14 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto border border-amber-200">
-              <Store className="w-7 h-7" />
-            </div>
-
-            <div className="inline-block px-3 py-1 rounded-full bg-slate-100 font-mono text-xs font-bold text-slate-800">
-              Card #{cardId} (Unassigned Stock)
-            </div>
-
-            <h2 className="text-lg font-bold text-slate-900">
-              Simulator: Unassigned Stock
-            </h2>
-            <p className="text-xs text-slate-600 leading-relaxed">
-              This card is currently available in inventory. Assign a business name and Google Review URL in the admin dashboard to activate it.
-            </p>
-
-            {onBackToAdmin && (
-              <button
-                onClick={onBackToAdmin}
-                className="w-full py-2.5 px-4 rounded-xl bg-[#1A73E8] text-white font-semibold text-xs hover:bg-[#1557B0] transition-colors shadow-sm"
-              >
-                Open Admin Dashboard to Assign
-              </button>
-            )}
-          </div>
-
-          <div className="text-center text-[11px] text-slate-400 py-4">
-            Simulator Preview
-          </div>
-        </div>
-      );
-    }
-
-    // Real Customer View for unassigned card - Clean, polite hospitality greeting
-    return (
-      <div className="min-h-screen bg-[#FDFCFB] flex flex-col justify-between p-4 sm:p-6 text-slate-900 antialiased">
-        <div className="max-w-md w-full mx-auto my-auto bg-white rounded-3xl p-6 sm:p-8 shadow-sm border border-slate-200 text-center space-y-4">
-          <div className="w-14 h-14 rounded-2xl bg-blue-50 text-[#1A73E8] flex items-center justify-center mx-auto border border-blue-100">
-            <Store className="w-7 h-7" />
-          </div>
-
-          <div>
-            <h2 className="text-xl font-bold text-slate-900 mb-1">
-              Welcome to our Review Portal!
-            </h2>
-            <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
-              Thank you for visiting us today. We would love your feedback! Please ask our staff to help you leave a review.
             </p>
           </div>
         </div>
@@ -253,7 +188,7 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
             </span>
           )}
 
-          {card.googleReviewUrl && (
+          {card?.googleReviewUrl && (
             <a
               href={card.googleReviewUrl}
               target="_blank"
@@ -269,19 +204,37 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
 
       {/* Main Content Area */}
       <div className="max-w-md w-full mx-auto px-4 py-6 space-y-5 flex-1">
+        {/* Unassigned Demo Banner if testing unconfigured card */}
+        {!isAssigned && (
+          <div className="p-3 bg-blue-50 border border-blue-200 rounded-2xl text-xs text-blue-900 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+              <span><strong>Card #{cardId}</strong> · Live Interactive Preview</span>
+            </div>
+            {onBackToAdmin && (
+              <button
+                onClick={onBackToAdmin}
+                className="px-2.5 py-1 bg-white hover:bg-blue-100 text-[#1A73E8] font-bold rounded-lg border border-blue-200 transition-colors"
+              >
+                Configure in Admin
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Business Branding Card */}
         <div className="bg-white rounded-3xl p-5 border border-slate-200/80 shadow-xs text-center space-y-2">
           <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-[#4285F4] to-[#34A853] p-0.5 mx-auto shadow-sm">
             <div className="w-full h-full bg-white rounded-[14px] flex items-center justify-center font-bold text-xl text-slate-900">
-              {card.businessName.charAt(0)}
+              {effectiveBusinessName.charAt(0).toUpperCase()}
             </div>
           </div>
           <div>
             <h1 className="text-lg sm:text-xl font-extrabold text-slate-900 leading-tight">
-              {card.businessName}
+              {effectiveBusinessName}
             </h1>
             <p className="text-xs text-slate-500 font-medium mt-0.5">
-              {card.category || 'Customer Review'}
+              {effectiveCategory}
             </p>
           </div>
           <p className="text-xs text-slate-600 pt-1">
@@ -438,7 +391,7 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
           </button>
 
           {/* Fallback button if browser popup blocker or mobile tab didn't navigate */}
-          {redirected && card.googleReviewUrl && (
+          {redirected && card?.googleReviewUrl && (
             <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-center space-y-1.5 animate-fadeIn">
               <p className="text-xs text-emerald-900 font-semibold">
                 Draft copied to your clipboard! Paste into Google:
@@ -456,7 +409,7 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
           )}
 
           {/* Option to skip AI directly to Google */}
-          {card.googleReviewUrl && (
+          {card?.googleReviewUrl && (
             <div className="text-center pt-1">
               <a
                 href={card.googleReviewUrl}
@@ -475,7 +428,7 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
       {/* Clean Footer */}
       <footer className="text-center py-4 text-[11px] text-slate-400 border-t border-slate-100 bg-white/60">
         <div className="max-w-md mx-auto px-4 flex items-center justify-between">
-          <span>{card.businessName}</span>
+          <span>{effectiveBusinessName}</span>
           <span>Google Review Assistant</span>
         </div>
       </footer>
