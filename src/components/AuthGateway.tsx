@@ -184,7 +184,7 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
                 <li>
                   Click{' '}
                   <a
-                    href="https://console.firebase.google.com/project/gen-lang-client-0291366136/authentication/settings"
+                    href="https://console.firebase.google.com/project/project-4e377685-f686-4db4-996/authentication/settings"
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-[#1A73E8] font-bold underline inline-flex items-center gap-0.5"
