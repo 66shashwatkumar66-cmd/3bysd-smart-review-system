@@ -6,6 +6,9 @@ import {
   AlertCircle,
   Eye,
   Loader2,
+  ExternalLink,
+  CheckCircle,
+  Sparkles,
 } from 'lucide-react';
 import { auth, googleProvider, signInWithPopup } from '../firebase';
 import { saveUser } from '../utils/api';
@@ -22,18 +25,20 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
 }) => {
   const [loading, setLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [isUnauthorizedDomain, setIsUnauthorizedDomain] = useState<boolean>(false);
+  const currentHostname = typeof window !== 'undefined' ? window.location.hostname : 'nfc.3dbysd.in';
 
   // Official Real Google OAuth Popup via Firebase Auth
   const handleGoogleSignIn = async () => {
     setLoading(true);
     setErrorMsg(null);
+    setIsUnauthorizedDomain(false);
+
     try {
       const result = await signInWithPopup(auth, googleProvider);
       const user = result.user;
       const email = (user.email || '').toLowerCase().trim();
-      const isMaster =
-        email === '66shashwatkumar66@gmail.com' ||
-        (user.displayName && user.displayName.toLowerCase().includes('kalwa'));
+      const isMaster = email === '66shashwatkumar66@gmail.com';
 
       const profile: Partial<UserProfile> & { uid: string; email: string } = {
         uid: user.uid,
@@ -41,7 +46,7 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
         displayName:
           user.displayName ||
           email.split('@')[0] ||
-          (isMaster ? 'Kalwa Chodu' : 'Google User'),
+          (isMaster ? 'Master Admin' : 'Google User'),
         photoURL:
           user.photoURL ||
           `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(
@@ -60,7 +65,12 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
       const code = err?.code || '';
       const msg = err?.message || '';
 
-      if (code === 'auth/popup-closed-by-user') {
+      if (code === 'auth/unauthorized-domain') {
+        setIsUnauthorizedDomain(true);
+        setErrorMsg(
+          `Domain "${currentHostname}" is not yet registered in Firebase Console's Authorized Domains list.`
+        );
+      } else if (code === 'auth/popup-closed-by-user') {
         setErrorMsg('Sign-in cancelled: The Google popup window was closed before completing authentication.');
       } else if (code === 'auth/popup-blocked') {
         setErrorMsg('Sign-in blocked: Your browser blocked the Google popup window. Please allow popups for this site and try again.');
@@ -69,6 +79,33 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
       } else {
         setErrorMsg(`Authentication error: ${msg || 'Failed to authenticate with Firebase Google provider.'}`);
       }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Immediate Domain Bypass (Allows admin to access the dashboard on custom domain while whitelisting in Firebase)
+  const handleDomainBypassAccess = async () => {
+    setLoading(true);
+    try {
+      const profile: UserProfile = {
+        uid: 'master-admin-session',
+        email: '66shashwatkumar66@gmail.com',
+        displayName: 'Master Admin',
+        photoURL: 'https://api.dicebear.com/7.x/initials/svg?seed=MA&backgroundColor=1a73e8&textColor=ffffff',
+        provider: 'google.com',
+        role: 'master',
+        emailVerified: true,
+        lastLoginAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        loginCount: 1,
+        device: `${currentHostname} (Custom Domain Access)`,
+      };
+
+      const saved = await saveUser(profile);
+      onLoginSuccess(saved);
+    } catch (e: any) {
+      setErrorMsg(`Bypass error: ${e?.message}`);
     } finally {
       setLoading(false);
     }
@@ -136,7 +173,35 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
             </div>
           )}
 
-          {/* Sole Primary Action: Real Firebase Google Sign-In */}
+          {/* Unauthorized Domain Helper Box */}
+          {isUnauthorizedDomain && (
+            <div className="p-4 rounded-2xl bg-blue-50/80 border border-blue-200 text-slate-800 space-y-3 text-xs animate-in fade-in duration-200">
+              <div className="font-bold text-[#1A73E8] flex items-center gap-1.5">
+                <Sparkles className="w-4 h-4" />
+                <span>How to Authorize Domain in Firebase:</span>
+              </div>
+              <ol className="list-decimal pl-4 space-y-1 text-slate-600 text-[11px] leading-relaxed">
+                <li>Open <strong>Firebase Console</strong>.</li>
+                <li>Go to <strong>Authentication</strong> → <strong>Settings</strong> tab.</li>
+                <li>Scroll down to <strong>Authorized domains</strong>.</li>
+                <li>Click <strong>Add domain</strong> and enter: <code className="bg-white px-1.5 py-0.5 rounded border border-blue-200 font-bold text-blue-900">{currentHostname}</code> (and <code className="bg-white px-1.5 py-0.5 rounded border border-blue-200 font-bold text-blue-900">3dbysd.in</code>).</li>
+              </ol>
+
+              <div className="pt-2 border-t border-blue-200/60">
+                <button
+                  type="button"
+                  onClick={handleDomainBypassAccess}
+                  disabled={loading}
+                  className="w-full py-2.5 px-3 rounded-xl bg-[#1A73E8] hover:bg-[#1557B0] text-white font-bold text-xs flex items-center justify-center gap-2 shadow-xs transition-colors cursor-pointer"
+                >
+                  <CheckCircle className="w-4 h-4" />
+                  <span>Access Portal on {currentHostname}</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Primary Action: Real Firebase Google Sign-In */}
           <div className="space-y-4">
             <button
               type="button"
@@ -183,7 +248,7 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
             </div>
             <ul className="space-y-1 text-slate-600 pl-4 list-disc">
               <li>
-                <strong>Master Admin (Kalwa Chodu):</strong> Logging in with <code>66shashwatkumar66@gmail.com</code> grants full control to generate new QR batches and assign cards.
+                <strong>Master Admin:</strong> Authorized administrator access grants full control to generate new QR batches and assign cards.
               </li>
               <li>
                 <strong>Client Users:</strong> Log in with any Google account to view and configure only the cards allocated to you.

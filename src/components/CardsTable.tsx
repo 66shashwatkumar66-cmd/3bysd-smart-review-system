@@ -41,6 +41,12 @@ interface CardsTableProps {
   activeAdmin?: AdminUser;
 }
 
+function formatAssignedUser(email?: string, name?: string): string {
+  if (!email) return '';
+  if (email.toLowerCase() === '66shashwatkumar66@gmail.com') return 'Master Admin';
+  return name || email;
+}
+
 export const CardsTable: React.FC<CardsTableProps> = ({
   cards,
   onAssignCard,
@@ -587,7 +593,7 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                       {card.assignedToEmail && (
                         <div className="text-[10px] text-purple-700 font-semibold truncate flex items-center gap-1">
                           <span className="w-1.5 h-1.5 rounded-full bg-purple-500 shrink-0" />
-                          <span>Owner: {card.assignedToName || card.assignedToEmail}</span>
+                          <span>Owner: {formatAssignedUser(card.assignedToEmail, card.assignedToName)}</span>
                         </div>
                       )}
 
@@ -773,7 +779,7 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                               {card.assignedToEmail && (
                                 <div className="text-[10px] text-purple-700 font-semibold truncate mt-0.5 flex items-center gap-1">
                                   <span className="w-1.5 h-1.5 rounded-full bg-purple-500 shrink-0" />
-                                  <span>{card.assignedToName || card.assignedToEmail}</span>
+                                  <span>{formatAssignedUser(card.assignedToEmail, card.assignedToName)}</span>
                                 </div>
                               )}
                             </div>
@@ -786,7 +792,7 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                               {card.assignedToEmail && (
                                 <div className="text-[10px] text-purple-700 font-semibold truncate flex items-center gap-1">
                                   <span className="w-1.5 h-1.5 rounded-full bg-purple-500 shrink-0" />
-                                  <span>Allocated: {card.assignedToEmail}</span>
+                                  <span>Allocated: {formatAssignedUser(card.assignedToEmail, card.assignedToName)}</span>
                                 </div>
                               )}
                             </div>

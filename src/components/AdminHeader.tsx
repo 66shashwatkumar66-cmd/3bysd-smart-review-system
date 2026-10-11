@@ -42,8 +42,7 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
 }) => {
   const isMaster = Boolean(
     currentUser.email.toLowerCase() === '66shashwatkumar66@gmail.com' ||
-    currentUser.role === 'master' ||
-    currentUser.displayName?.toLowerCase().includes('kalwa')
+    currentUser.role === 'master'
   );
 
   // Get active view label & badge styling
@@ -144,7 +143,7 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
               </div>
               <div className="hidden lg:flex flex-col text-left">
                 <span className="text-[11px] font-bold text-slate-800 max-w-[110px] truncate leading-tight">
-                  {currentUser.displayName}
+                  {isMaster ? 'Master Admin' : currentUser.displayName}
                 </span>
                 <span className="text-[9px] text-[#34A853] font-semibold flex items-center gap-0.5">
                   <CheckCircle className="w-2.5 h-2.5" />

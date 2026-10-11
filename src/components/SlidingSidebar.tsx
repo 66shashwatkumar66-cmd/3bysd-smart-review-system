@@ -50,8 +50,7 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
 }) => {
   const isMaster = Boolean(
     currentUser.email.toLowerCase() === '66shashwatkumar66@gmail.com' ||
-    currentUser.role === 'master' ||
-    currentUser.displayName?.toLowerCase().includes('kalwa')
+    currentUser.role === 'master'
   );
 
 
@@ -212,10 +211,10 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
                 </div>
                 <div className="min-w-0">
                   <div className="text-xs font-bold text-slate-900 truncate flex items-center gap-1">
-                    <span>{currentUser.displayName}</span>
+                    <span>{isMaster ? 'Master Admin' : currentUser.displayName}</span>
                   </div>
                   <div className="text-[10px] text-slate-500 truncate font-mono">
-                    {currentUser.email}
+                    {isMaster ? 'Administrator Account' : currentUser.email}
                   </div>
                 </div>
               </div>

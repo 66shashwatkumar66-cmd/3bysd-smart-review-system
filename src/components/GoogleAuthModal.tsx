@@ -38,9 +38,7 @@ export const GoogleAuthModal: React.FC<GoogleAuthModalProps> = ({
       const result = await signInWithPopup(auth, googleProvider);
       const user = result.user;
       const email = (user.email || '').toLowerCase().trim();
-      const isMaster =
-        email === '66shashwatkumar66@gmail.com' ||
-        (user.displayName && user.displayName.toLowerCase().includes('kalwa'));
+      const isMaster = email === '66shashwatkumar66@gmail.com';
 
       const profile: Partial<UserProfile> & { uid: string; email: string } = {
         uid: user.uid,
@@ -48,7 +46,7 @@ export const GoogleAuthModal: React.FC<GoogleAuthModalProps> = ({
         displayName:
           user.displayName ||
           email.split('@')[0] ||
-          (isMaster ? 'Kalwa Chodu' : 'Google User'),
+          (isMaster ? 'Master Admin' : 'Google User'),
         photoURL:
           user.photoURL ||
           `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(

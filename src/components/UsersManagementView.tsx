@@ -277,7 +277,7 @@ export const UsersManagementView: React.FC<UsersManagementViewProps> = ({
                           )}
                         </div>
                         <div className="text-[11px] text-slate-500 font-mono truncate">
-                          {user.email}
+                          {user.role === 'master' ? '••••••••@internal.admin' : user.email}
                         </div>
                       </div>
                     </div>
@@ -359,7 +359,7 @@ export const UsersManagementView: React.FC<UsersManagementViewProps> = ({
                               )}
                             </div>
                             <div className="text-[11px] text-slate-500 font-mono truncate">
-                              {user.email}
+                              {user.role === 'master' ? '••••••••@internal.admin' : user.email}
                             </div>
                           </div>
                         </div>

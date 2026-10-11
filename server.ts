@@ -359,7 +359,7 @@ app.post('/api/cards/batch', (req: Request, res: Response) => {
     if (requesterEmail && requesterEmail !== '66shashwatkumar66@gmail.com' && requesterRole !== 'master') {
       return res.status(403).json({
         success: false,
-        message: 'Permission Denied: Only Master Admin (Kalwa Chodu / 66shashwatkumar66@gmail.com) can generate new QR inventory cards.',
+        message: 'Permission Denied: Only Master Admin can generate new QR inventory cards.',
       });
     }
 
@@ -371,7 +371,7 @@ app.post('/api/cards/batch', (req: Request, res: Response) => {
       if (admin && admin.role === 'restricted') {
         return res.status(403).json({
           success: false,
-          message: 'Permission Denied: Only Master Admin (Kalwa Chodu) can generate new QR inventory cards.',
+          message: 'Permission Denied: Only Master Admin can generate new QR inventory cards.',
         });
       }
     }
@@ -561,7 +561,7 @@ app.delete('/api/cards/:id', (req: Request, res: Response) => {
     if (requesterEmail && requesterEmail !== '66shashwatkumar66@gmail.com' && requesterRole !== 'master') {
       return res.status(403).json({
         success: false,
-        message: 'Permission Denied: Only Master Admin (Kalwa Chodu) can delete cards.',
+        message: 'Permission Denied: Only Master Admin can delete cards.',
       });
     }
 

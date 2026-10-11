@@ -75,14 +75,12 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser && firebaseUser.email) {
         const cleanEmail = firebaseUser.email.toLowerCase().trim();
-        const isMasterEmail =
-          cleanEmail === '66shashwatkumar66@gmail.com' ||
-          (firebaseUser.displayName && firebaseUser.displayName.toLowerCase().includes('kalwa'));
+        const isMasterEmail = cleanEmail === '66shashwatkumar66@gmail.com';
         const userProfile: UserProfile = {
           uid: firebaseUser.uid,
           email: cleanEmail,
           displayName:
-            firebaseUser.displayName || (isMasterEmail ? 'Kalwa Chodu' : cleanEmail.split('@')[0]),
+            firebaseUser.displayName || (isMasterEmail ? 'Master Admin' : cleanEmail.split('@')[0]),
           photoURL: firebaseUser.photoURL || undefined,
           provider: 'google.com',
           role: isMasterEmail ? 'master' : 'member',
@@ -322,12 +320,10 @@ export default function App() {
     }
   };
 
-  // Master Admin check (Kalwa Chodu / 66shashwatkumar66@gmail.com)
+  // Master Admin check
   const isMaster = Boolean(
     currentUser.email.toLowerCase() === '66shashwatkumar66@gmail.com' ||
-    currentUser.role === 'master' ||
-    currentUser.displayName?.toLowerCase().includes('kalwa') ||
-    currentUser.displayName?.toLowerCase().includes('chodu')
+    currentUser.role === 'master'
   );
 
   // Active admin fallback
@@ -335,8 +331,8 @@ export default function App() {
     activeAdmin ||
     admins.find((a) => a.role === 'master') || {
       id: 'master-admin-01',
-      email: '66shashwatkumar66@gmail.com',
-      name: 'Kalwa Chodu (Master Admin)',
+      email: 'admin@3dbysd.internal',
+      name: 'Master Admin',
       role: 'master',
       assignedCardIds: [],
       permissions: {
@@ -527,7 +523,7 @@ export default function App() {
                 </div>
                 <h3 className="text-base font-bold text-slate-900">No QR Review Stands Assigned Yet</h3>
                 <p className="text-xs text-slate-600 max-w-md mx-auto leading-relaxed">
-                  Welcome, <strong>{currentUser.displayName}</strong>! Content is strictly isolated by user account. Only Master Admin (Kalwa Chodu) can create new QR batches and allocate them to businesses. Please ask Master Admin (<code>66shashwatkumar66@gmail.com</code>) to allocate cards to your Google email: <strong>{currentUser.email}</strong>.
+                  Welcome, <strong>{currentUser.displayName}</strong>! Content is strictly isolated by user account. Only the Master Administrator can create new QR batches and allocate them to businesses. Please contact your administrator to allocate cards to your Google account (<strong>{currentUser.email}</strong>).
                 </p>
               </div>
             )}
