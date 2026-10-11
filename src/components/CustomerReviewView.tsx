@@ -105,9 +105,19 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
 
       if (res.success && res.review) {
         setGeneratedReview(res.review);
+      } else {
+        // High-quality instant client-side draft fallback
+        const tagText = selectedTags.length > 0 ? selectedTags.join(' & ') : 'service';
+        const noteText = customNotes.trim() ? ` ${customNotes.trim()}.` : '';
+        const fallback = rating === 5
+          ? `Had an exceptional 5-star experience with ${effectiveBusinessName}! Really impressed by the ${tagText} and welcoming atmosphere.${noteText} Highly recommended!`
+          : `Great experience with ${effectiveBusinessName}. Appreciated the ${tagText} and smooth service.${noteText} Will definitely return!`;
+        setGeneratedReview(fallback);
       }
     } catch (err) {
-      console.error('Failed to generate review draft:', err);
+      console.warn('Failed to generate review draft via API, using client fallback:', err);
+      const tagText = selectedTags.length > 0 ? selectedTags.join(' & ') : 'service';
+      setGeneratedReview(`Exceptional 5-star experience at ${effectiveBusinessName}! Very happy with the ${tagText} and attentive team. Highly recommend to everyone.`);
     } finally {
       setIsGenerating(false);
     }

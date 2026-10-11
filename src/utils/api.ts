@@ -405,22 +405,30 @@ export async function fetchAdmins(): Promise<AdminUser[]> {
       snapshot.forEach((d) => list.push(d.data() as AdminUser));
       localStorage.setItem(ADMINS_STORAGE_KEY, JSON.stringify(list));
       return list;
+    } else {
+      for (const adm of DEFAULT_ADMINS) {
+        await setDoc(doc(db, ADMINS_COLLECTION, adm.id), adm);
+      }
+      return DEFAULT_ADMINS;
     }
   } catch (err) {
-    console.warn('Firestore fetch admins failed, falling back to server/cache:', err);
+    console.warn('Firestore fetch admins failed, falling back to cache:', err);
   }
 
-  try {
-    const res = await fetch('/api/admins');
-    if (res.ok) {
-      const data = await res.json();
-      if (data.admins && data.admins.length > 0) {
-        localStorage.setItem(ADMINS_STORAGE_KEY, JSON.stringify(data.admins));
-        return data.admins;
+  // Only check backend API on local dev environment
+  if (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
+    try {
+      const res = await fetch('/api/admins');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.admins && data.admins.length > 0) {
+          localStorage.setItem(ADMINS_STORAGE_KEY, JSON.stringify(data.admins));
+          return data.admins;
+        }
       }
+    } catch {
+      // ignore
     }
-  } catch {
-    // ignore
   }
 
   const cached = localStorage.getItem(ADMINS_STORAGE_KEY);

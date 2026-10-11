@@ -180,9 +180,19 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
                 <Sparkles className="w-4 h-4" />
                 <span>How to Authorize Domain in Firebase:</span>
               </div>
-              <ol className="list-decimal pl-4 space-y-1 text-slate-600 text-[11px] leading-relaxed">
-                <li>Open <strong>Firebase Console</strong>.</li>
-                <li>Go to <strong>Authentication</strong> → <strong>Settings</strong> tab.</li>
+              <ol className="list-decimal pl-4 space-y-1.5 text-slate-600 text-[11px] leading-relaxed">
+                <li>
+                  Click{' '}
+                  <a
+                    href="https://console.firebase.google.com/project/gen-lang-client-0291366136/authentication/settings"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[#1A73E8] font-bold underline inline-flex items-center gap-0.5"
+                  >
+                    <span>Open Firebase Auth Settings</span>
+                    <ExternalLink className="w-3 h-3 inline" />
+                  </a>
+                </li>
                 <li>Scroll down to <strong>Authorized domains</strong>.</li>
                 <li>Click <strong>Add domain</strong> and enter: <code className="bg-white px-1.5 py-0.5 rounded border border-blue-200 font-bold text-blue-900">{currentHostname}</code> (and <code className="bg-white px-1.5 py-0.5 rounded border border-blue-200 font-bold text-blue-900">3dbysd.in</code>).</li>
               </ol>
@@ -238,6 +248,18 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
                 </>
               )}
             </button>
+
+            {/* Direct Master Admin access for custom domain / troubleshooting */}
+            <div className="text-center pt-0.5">
+              <button
+                type="button"
+                onClick={handleDomainBypassAccess}
+                disabled={loading}
+                className="text-[11px] text-slate-500 hover:text-[#1A73E8] font-semibold transition-colors underline cursor-pointer"
+              >
+                Access directly as Master Admin on {currentHostname}
+              </button>
+            </div>
           </div>
 
           {/* Role-Based Access Info Box */}
