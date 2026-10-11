@@ -307,9 +307,24 @@ function writeCards(cards: CardRecord[]): void {
   }
 }
 
-// REST API: Get all cards
-app.get('/api/cards', (_req: Request, res: Response) => {
+// REST API: Get all cards (RBAC Filtered)
+app.get('/api/cards', (req: Request, res: Response) => {
   const cards = readCards();
+  const userEmail = (req.headers['x-user-email'] as string || req.query.userEmail as string || '').toLowerCase().trim();
+  const userRole = (req.headers['x-user-role'] as string || req.query.userRole as string || '').toLowerCase().trim();
+
+  // If requesting user is NOT master admin, strictly filter cards allocated to them
+  const isMaster = userEmail === '66shashwatkumar66@gmail.com' || userRole === 'master';
+  if (userEmail && !isMaster) {
+    const userUid = (req.headers['x-user-uid'] as string) || '';
+    const filtered = cards.filter(
+      (c) =>
+        (c.assignedToEmail && c.assignedToEmail.toLowerCase() === userEmail) ||
+        (userUid && c.assignedToUid === userUid)
+    );
+    return res.json({ success: true, cards: filtered });
+  }
+
   res.json({ success: true, cards });
 });
 
@@ -337,6 +352,17 @@ app.get('/api/cards/:id', (req: Request, res: Response) => {
 app.post('/api/cards/batch', (req: Request, res: Response) => {
   try {
     const requesterAdminId = (req.headers['x-admin-id'] as string) || req.body.adminId;
+    const requesterEmail = (req.headers['x-user-email'] as string || req.body.userEmail || '').toLowerCase().trim();
+    const requesterRole = (req.headers['x-user-role'] as string || req.body.userRole || '').toLowerCase().trim();
+
+    // Check if non-master attempts to create cards
+    if (requesterEmail && requesterEmail !== '66shashwatkumar66@gmail.com' && requesterRole !== 'master') {
+      return res.status(403).json({
+        success: false,
+        message: 'Permission Denied: Only Master Admin (Kalwa Chodu / 66shashwatkumar66@gmail.com) can generate new QR inventory cards.',
+      });
+    }
+
     if (requesterAdminId) {
       const admins = readAdmins();
       const admin = admins.find(
@@ -526,9 +552,19 @@ app.put('/api/cards/bulk-status', (req: Request, res: Response) => {
   }
 });
 
-// REST API: Delete card
+// REST API: Delete card (Master Admin Only)
 app.delete('/api/cards/:id', (req: Request, res: Response) => {
   try {
+    const requesterEmail = (req.headers['x-user-email'] as string || req.body.userEmail || '').toLowerCase().trim();
+    const requesterRole = (req.headers['x-user-role'] as string || req.body.userRole || '').toLowerCase().trim();
+
+    if (requesterEmail && requesterEmail !== '66shashwatkumar66@gmail.com' && requesterRole !== 'master') {
+      return res.status(403).json({
+        success: false,
+        message: 'Permission Denied: Only Master Admin (Kalwa Chodu) can delete cards.',
+      });
+    }
+
     const { id } = req.params;
     const cards = readCards();
     const filtered = cards.filter((c) => c.id.toLowerCase() !== id.toLowerCase());

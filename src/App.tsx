@@ -12,6 +12,7 @@ import {
   updateAdmin,
   deleteAdmin,
   fetchUsers,
+  saveUser,
 } from './utils/api';
 import { auth, onAuthStateChanged, signOut } from './firebase';
 import { AdminHeader } from './components/AdminHeader';
@@ -41,6 +42,7 @@ import {
   Crown,
   AlertCircle,
   Building2,
+  Store,
 } from 'lucide-react';
 
 export default function App() {
@@ -49,15 +51,9 @@ export default function App() {
   const [currentTab, setCurrentTab] = useState<'cards' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users'>('cards');
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
 
-  // Authenticated User State (Real Google Auth)
-  const [currentUser, setCurrentUser] = useState<UserProfile | null>(() => {
-    try {
-      const saved = localStorage.getItem('3dbysd_current_user');
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
-    }
-  });
+  // Authenticated User State (Strictly Real Firebase Auth)
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+  const [authChecking, setAuthChecking] = useState<boolean>(true);
   const [users, setUsers] = useState<UserProfile[]>([]);
 
   // Admin Management State
@@ -74,7 +70,7 @@ export default function App() {
   const [cardToAssign, setCardToAssign] = useState<CardRecord | null>(null);
   const [simulatorCardId, setSimulatorCardId] = useState<string | null>(null);
 
-  // Listen for Google Auth changes
+  // Listen for Google Auth changes strictly via Firebase
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser && firebaseUser.email) {
@@ -95,9 +91,17 @@ export default function App() {
           createdAt: new Date().toISOString(),
           loginCount: 1,
         };
-        setCurrentUser(userProfile);
-        localStorage.setItem('3dbysd_current_user', JSON.stringify(userProfile));
+        try {
+          const saved = await saveUser(userProfile);
+          setCurrentUser(saved);
+        } catch {
+          setCurrentUser(userProfile);
+        }
+      } else {
+        setCurrentUser(null);
+        localStorage.removeItem('3dbysd_current_user');
       }
+      setAuthChecking(false);
     });
     return () => unsubscribe();
   }, []);
@@ -282,7 +286,17 @@ export default function App() {
     );
   }
 
-  // Google Authentication Gateway: Protected access
+  // If checking Firebase authentication token
+  if (authChecking) {
+    return (
+      <div className="min-h-screen bg-[#F8FAFC] flex flex-col items-center justify-center p-4">
+        <div className="w-8 h-8 border-3 border-[#1A73E8] border-t-transparent rounded-full animate-spin mb-2" />
+        <p className="text-xs font-semibold text-slate-500">Checking Firebase authentication...</p>
+      </div>
+    );
+  }
+
+  // Google Authentication Gateway: Protected access (Strictly Firebase login required)
   if (!currentUser) {
     return (
       <AuthGateway
@@ -313,8 +327,7 @@ export default function App() {
     currentUser.email.toLowerCase() === '66shashwatkumar66@gmail.com' ||
     currentUser.role === 'master' ||
     currentUser.displayName?.toLowerCase().includes('kalwa') ||
-    currentUser.displayName?.toLowerCase().includes('chodu') ||
-    activeAdmin?.role === 'master'
+    currentUser.displayName?.toLowerCase().includes('chodu')
   );
 
   // Active admin fallback
@@ -347,12 +360,10 @@ export default function App() {
         const userEmail = currentUser.email.toLowerCase();
         const userUid = currentUser.uid;
         const userAssigned = currentUser.assignedCardIds || [];
-        const adminAssigned = activeAdmin?.assignedCardIds || [];
         return (
           (c.assignedToEmail && c.assignedToEmail.toLowerCase() === userEmail) ||
           (c.assignedToUid && c.assignedToUid === userUid) ||
-          userAssigned.includes(c.id) ||
-          (activeAdmin?.role === 'restricted' && adminAssigned.includes(c.id))
+          userAssigned.includes(c.id)
         );
       });
 
@@ -385,33 +396,31 @@ export default function App() {
 
       {/* Main Admin Workspace Viewport - Optimized container for PC and mobile */}
       <main className="flex-1 max-w-5xl lg:max-w-6xl w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 space-y-5 overflow-hidden">
-        {/* Restricted Admin Notice Banner if logged in as sub-admin */}
+        {/* Isolated Client Merchant Account Banner */}
         {!isMaster && (
-          <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-xs">
+          <div className="p-3.5 bg-blue-50/80 border border-blue-200/90 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-xs">
             <div className="flex items-center gap-2.5 min-w-0">
-              <div className="w-8 h-8 rounded-xl bg-amber-200/80 text-amber-900 flex items-center justify-center font-bold shrink-0">
-                <Lock className="w-4 h-4" />
+              <div className="w-8 h-8 rounded-xl bg-blue-100 text-[#1A73E8] flex items-center justify-center font-bold shrink-0">
+                <Store className="w-4 h-4" />
               </div>
               <div className="min-w-0">
-                <div className="font-bold text-amber-950 flex items-center gap-2 flex-wrap">
-                  <span>Restricted Sub-Admin: {effectiveActiveAdmin.name}</span>
-                  <span className="font-mono text-[10px] bg-amber-200 text-amber-900 px-2 py-0.2 rounded-full font-bold">
-                    {effectiveActiveAdmin.assignedCardIds.length} Cards
+                <div className="font-bold text-slate-900 flex items-center gap-2 flex-wrap">
+                  <span>Client Merchant Account: {currentUser.displayName}</span>
+                  <span className="font-mono text-[10px] bg-blue-200/80 text-blue-900 px-2 py-0.5 rounded-full font-bold">
+                    {displayedCards.length} Allocated Cards
                   </span>
                 </div>
-                <p className="text-amber-800 text-[11px] mt-0.5 truncate">
-                  Authorized cards: [{effectiveActiveAdmin.assignedCardIds.map((id) => `#${id}`).join(', ')}]
+                <p className="text-slate-600 text-[11px] mt-0.5 truncate">
+                  {displayedCards.length > 0
+                    ? `Managing authorized cards: [${displayedCards.map((c) => `#${c.id}`).join(', ')}]`
+                    : `No cards allocated to ${currentUser.email} yet. Contact Master Admin to assign cards.`}
                 </p>
               </div>
             </div>
-
-            <button
-              onClick={() => setActiveAdmin(masterAdmin)}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-200 hover:bg-amber-300 text-amber-950 rounded-xl font-bold transition-colors shrink-0 self-start sm:self-auto text-xs"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-              <span>Switch to Master</span>
-            </button>
+            <div className="text-[10px] font-semibold text-emerald-700 bg-emerald-100/80 px-2.5 py-1 rounded-full shrink-0 self-start sm:self-auto flex items-center gap-1 border border-emerald-200">
+              <ShieldCheck className="w-3 h-3 text-emerald-600" />
+              <span>Isolated User Session</span>
+            </div>
           </div>
         )}
 
@@ -583,8 +592,8 @@ export default function App() {
           />
         )}
 
-        {/* Tab 5: Google Verified Users & Logins */}
-        {currentTab === 'users' && (
+        {/* Tab 5: Google Verified Users & Logins - Master Admin Only */}
+        {currentTab === 'users' && isMaster && (
           <UsersManagementView
             activeAdmin={effectiveActiveAdmin}
             onRefreshAdmins={loadAdminsData}
@@ -652,6 +661,8 @@ export default function App() {
         onSelectActiveAdmin={(adm) => setActiveAdmin(adm)}
         onOpenBatchModal={() => setIsBatchModalOpen(true)}
         onExportCsv={() => exportCardsToCsv(displayedCards)}
+        currentUser={currentUser}
+        onSignOut={handleSignOut}
       />
     </div>
   );
