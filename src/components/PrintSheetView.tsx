@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { CardRecord } from '../types';
 import { Printer, Download, Star, Radio, Check } from 'lucide-react';
 import { generateQrPng, downloadCardPng, downloadCardSvg } from '../utils/qr';
+import { getCardScanUrl } from '../utils/url';
 
 interface PrintSheetViewProps {
   cards: CardRecord[];
@@ -26,7 +27,7 @@ export const PrintSheetView: React.FC<PrintSheetViewProps> = ({ cards }) => {
       setLoadingQr(true);
       const map: Record<string, string> = {};
       for (const card of filteredCards) {
-        const url = `${window.location.origin}/r/${card.id}`;
+        const url = getCardScanUrl(card.id);
         try {
           const dataUrl = await generateQrPng(url, 400);
           map[card.id] = dataUrl;
@@ -119,7 +120,7 @@ export const PrintSheetView: React.FC<PrintSheetViewProps> = ({ cards }) => {
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6 print:grid-cols-3 print:gap-4 max-w-5xl mx-auto">
             {filteredCards.map((card) => {
               const qrSrc = qrImages[card.id];
-              const permanentUrl = `${window.location.origin}/r/${card.id}`;
+              const permanentUrl = getCardScanUrl(card.id);
 
               return (
                 <div

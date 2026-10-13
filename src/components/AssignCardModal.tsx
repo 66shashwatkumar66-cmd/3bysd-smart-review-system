@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useId } from 'react';
-import { X, ExternalLink, HelpCircle, Check, MapPin, Store, Sparkles } from 'lucide-react';
+import { X, ExternalLink, HelpCircle, Check, MapPin, Store, Sparkles, Radio, Copy, Tag } from 'lucide-react';
 import { CardRecord, AdminUser, UserProfile } from '../types';
+import { getCardScanUrl } from '../utils/url';
 
 interface AssignCardModalProps {
   card: CardRecord | null;
@@ -27,6 +28,7 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
   const notesId = useId();
   const statusId = useId();
   const assignedUserId = useId();
+  const keywordsId = useId();
 
   const [businessName, setBusinessName] = useState('');
   const [category, setCategory] = useState('');
@@ -37,8 +39,10 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
   const [assignedToEmail, setAssignedToEmail] = useState<string>('');
   const [assignedToName, setAssignedToName] = useState<string>('');
   const [assignedToUid, setAssignedToUid] = useState<string>('');
+  const [customKeywordsText, setCustomKeywordsText] = useState<string>('');
   const [showHelper, setShowHelper] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [nfcCopied, setNfcCopied] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -52,6 +56,7 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
       setAssignedToEmail(card.assignedToEmail || '');
       setAssignedToName(card.assignedToName || '');
       setAssignedToUid(card.assignedToUid || '');
+      setCustomKeywordsText(card.customKeywords ? card.customKeywords.join(', ') : '');
       setError('');
     }
   }, [card]);
@@ -74,6 +79,13 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
     setError('');
     setIsSubmitting(true);
     try {
+      const keywordsArray = customKeywordsText
+        ? customKeywordsText
+            .split(',')
+            .map((k: string) => k.trim())
+            .filter(Boolean)
+        : undefined;
+
       await onSave(card.id, {
         businessName: businessName.trim(),
         category: category.trim(),
@@ -84,6 +96,7 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
         assignedToEmail: assignedToEmail.trim() || undefined,
         assignedToName: assignedToName.trim() || undefined,
         assignedToUid: assignedToUid.trim() || undefined,
+        customKeywords: keywordsArray,
       });
       onClose();
     } catch (err: any) {
@@ -264,6 +277,60 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
                 </ol>
               </div>
             )}
+          </div>
+
+          {/* Dedicated NFC Stand URL Box */}
+          <div className="p-3 bg-purple-50/70 border border-purple-200 rounded-xl space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-purple-950 flex items-center gap-1.5">
+                <Radio className="w-3.5 h-3.5 text-purple-600" />
+                <span>NFC Tag Stand Permanent URL:</span>
+              </span>
+              <span className="text-[10px] font-mono text-purple-700 bg-purple-100 px-1.5 py-0.2 rounded font-bold">
+                NFC Ready
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 px-2.5 py-1.5 bg-white border border-purple-200 rounded-lg text-xs font-mono text-purple-900 truncate">
+                {getCardScanUrl(card.id)}
+              </code>
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText(getCardScanUrl(card.id));
+                  setNfcCopied(true);
+                  setTimeout(() => setNfcCopied(false), 2000);
+                }}
+                className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-bold shrink-0 flex items-center gap-1 transition-colors cursor-pointer"
+              >
+                {nfcCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{nfcCopied ? 'Copied' : 'Copy NFC URL'}</span>
+              </button>
+            </div>
+            <p className="text-[10px] text-purple-700">
+              Write this URL onto your physical NFC chip card or puck using the free NFC Tools mobile app.
+            </p>
+          </div>
+
+          {/* Custom Experience Keywords */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label htmlFor={keywordsId} className="block text-xs font-semibold text-slate-700 flex items-center gap-1">
+                <Tag className="w-3.5 h-3.5 text-amber-500" />
+                <span>Custom Experience Keywords (Comma-separated)</span>
+              </label>
+            </div>
+            <input
+              id={keywordsId}
+              type="text"
+              value={customKeywordsText}
+              onChange={(e) => setCustomKeywordsText(e.target.value)}
+              placeholder="e.g. Delicious Pizza, Cozy Ambience, Friendly Staff, Fast Delivery"
+              className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900 focus:bg-white"
+            />
+            <p className="text-[11px] text-slate-500 mt-1">
+              Customers will see these exact tags when scanning this stand.
+            </p>
           </div>
 
           {/* Physical Stand Placement & Notes */}

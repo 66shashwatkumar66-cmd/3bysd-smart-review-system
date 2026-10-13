@@ -12,7 +12,6 @@ import {
   updateAdmin,
   deleteAdmin,
   fetchUsers,
-  saveUser,
 } from './utils/api';
 import { auth, onAuthStateChanged, signOut } from './firebase';
 import { AdminHeader } from './components/AdminHeader';
@@ -24,6 +23,7 @@ import { CustomerReviewView } from './components/CustomerReviewView';
 import { MobileSimulatorModal } from './components/MobileSimulatorModal';
 import { AdminStatsWidget } from './components/AdminStatsWidget';
 import { NfcGeneratorView } from './components/NfcGeneratorView';
+import { ReviewCustomizerView } from './components/ReviewCustomizerView';
 import { MasterAdminView } from './components/MasterAdminView';
 import { UsersManagementView } from './components/UsersManagementView';
 import { SlidingSidebar } from './components/SlidingSidebar';
@@ -42,18 +42,25 @@ import {
   Crown,
   AlertCircle,
   Building2,
-  Store,
+  Sliders,
+  LogOut,
 } from 'lucide-react';
 
 export default function App() {
   const [cards, setCards] = useState<CardRecord[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
-  const [currentTab, setCurrentTab] = useState<'cards' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users'>('cards');
+  const [currentTab, setCurrentTab] = useState<'cards' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users'>('cards');
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
 
-  // Authenticated User State (Strictly Real Firebase Auth)
-  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
-  const [authChecking, setAuthChecking] = useState<boolean>(true);
+  // Authenticated User State (Real Google Auth)
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(() => {
+    try {
+      const saved = localStorage.getItem('3dbysd_current_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
   const [users, setUsers] = useState<UserProfile[]>([]);
 
   // Admin Management State
@@ -70,7 +77,7 @@ export default function App() {
   const [cardToAssign, setCardToAssign] = useState<CardRecord | null>(null);
   const [simulatorCardId, setSimulatorCardId] = useState<string | null>(null);
 
-  // Listen for Google Auth changes strictly via Firebase
+  // Listen for Google Auth changes
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser && firebaseUser.email) {
@@ -80,7 +87,7 @@ export default function App() {
           uid: firebaseUser.uid,
           email: cleanEmail,
           displayName:
-            firebaseUser.displayName || (isMasterEmail ? 'Master Admin' : cleanEmail.split('@')[0]),
+            firebaseUser.displayName || (isMasterEmail ? 'Master Administrator' : cleanEmail.split('@')[0]),
           photoURL: firebaseUser.photoURL || undefined,
           provider: 'google.com',
           role: isMasterEmail ? 'master' : 'member',
@@ -89,17 +96,9 @@ export default function App() {
           createdAt: new Date().toISOString(),
           loginCount: 1,
         };
-        try {
-          const saved = await saveUser(userProfile);
-          setCurrentUser(saved);
-        } catch {
-          setCurrentUser(userProfile);
-        }
-      } else {
-        setCurrentUser(null);
-        localStorage.removeItem('3dbysd_current_user');
+        setCurrentUser(userProfile);
+        localStorage.setItem('3dbysd_current_user', JSON.stringify(userProfile));
       }
-      setAuthChecking(false);
     });
     return () => unsubscribe();
   }, []);
@@ -109,7 +108,13 @@ export default function App() {
     const checkPath = async () => {
       const pathname = window.location.pathname;
       const urlParams = new URLSearchParams(window.location.search);
-      const queryCard = urlParams.get('card') || urlParams.get('r') || urlParams.get('c');
+      const hash = window.location.hash || '';
+      const queryCard =
+        urlParams.get('card') ||
+        urlParams.get('r') ||
+        urlParams.get('c') ||
+        urlParams.get('nfc') ||
+        urlParams.get('id');
 
       let targetCardId: string | null = null;
       if (pathname.startsWith('/r/')) {
@@ -120,6 +125,10 @@ export default function App() {
         targetCardId = pathname.replace('/review/', '').split('/')[0].split('?')[0].trim();
       } else if (pathname.startsWith('/nfc/')) {
         targetCardId = pathname.replace('/nfc/', '').split('/')[0].split('?')[0].trim();
+      } else if (hash.includes('/r/')) {
+        targetCardId = hash.split('/r/')[1].split('/')[0].split('?')[0].trim();
+      } else if (hash.startsWith('#') && hash.length > 1 && !hash.includes('/')) {
+        targetCardId = hash.replace(/^#/, '').trim();
       } else if (queryCard) {
         targetCardId = queryCard.trim();
       }
@@ -127,7 +136,7 @@ export default function App() {
       if (targetCardId) {
         setCustomerCardId(targetCardId);
 
-        // Instant local cache check to eliminate any delay
+        // Instant local cache check
         const cachedRaw = localStorage.getItem('3dbysd_smart_reviews_cards');
         let initialFound: CardRecord | null = null;
         if (cachedRaw) {
@@ -137,23 +146,23 @@ export default function App() {
             if (hit) {
               initialFound = hit;
               setCustomerCard(hit);
-              setIsCustomerLoading(false);
             }
           } catch {
             // ignore
           }
         }
 
-        if (!initialFound) {
-          setIsCustomerLoading(true);
-        }
-
-        // Fetch fresh card from backend / Firestore and record scan count
-        const found = await fetchCardById(targetCardId, true);
-        if (found) {
-          setCustomerCard(found);
-        }
+        // Never lock the customer on a spinner: render review page immediately!
         setIsCustomerLoading(false);
+
+        // Fetch fresh card in background and record scan count
+        fetchCardById(targetCardId, true).then((found) => {
+          if (found) {
+            setCustomerCard(found);
+          }
+        }).catch((err) => {
+          console.warn('Background card fetch error:', err);
+        });
       } else {
         setCustomerCardId(null);
       }
@@ -170,12 +179,20 @@ export default function App() {
     };
   }, []);
 
-  const loadCards = async () => {
+  const loadCards = async (email?: string) => {
     setLoading(true);
-    const data = await fetchCards();
+    const targetEmail = email || currentUser?.email;
+    const data = await fetchCards(targetEmail);
     setCards(data);
     setLoading(false);
   };
+
+  // Re-fetch with user context when currentUser logs in or changes
+  useEffect(() => {
+    if (currentUser?.email) {
+      loadCards(currentUser.email);
+    }
+  }, [currentUser?.email]);
 
   const loadUsersData = async () => {
     try {
@@ -284,17 +301,7 @@ export default function App() {
     );
   }
 
-  // If checking Firebase authentication token
-  if (authChecking) {
-    return (
-      <div className="min-h-screen bg-[#F8FAFC] flex flex-col items-center justify-center p-4">
-        <div className="w-8 h-8 border-3 border-[#1A73E8] border-t-transparent rounded-full animate-spin mb-2" />
-        <p className="text-xs font-semibold text-slate-500">Checking Firebase authentication...</p>
-      </div>
-    );
-  }
-
-  // Google Authentication Gateway: Protected access (Strictly Firebase login required)
+  // Google Authentication Gateway: Protected access
   if (!currentUser) {
     return (
       <AuthGateway
@@ -320,30 +327,128 @@ export default function App() {
     }
   };
 
-  // Master Admin check
-  const isMaster = Boolean(
-    currentUser.email.toLowerCase() === '66shashwatkumar66@gmail.com' ||
-    currentUser.role === 'master'
+  // Master Admin check: STRICTLY ONLY for the email 66shashwatkumar66@gmail.com
+  const isMaster = Boolean(currentUser.email.toLowerCase() === '66shashwatkumar66@gmail.com');
+
+  // Guard management views: Only Master Admin can access 'admins' or 'users'
+  useEffect(() => {
+    if (!isMaster && (currentTab === 'admins' || currentTab === 'users')) {
+      setCurrentTab('cards');
+    }
+  }, [isMaster, currentTab]);
+
+  // Check if authorized as a sub-admin by Master Admin
+  const authorizedAdmin = admins.find(
+    (a) => a.email.toLowerCase() === currentUser.email.toLowerCase()
   );
+
+  // Check if user has allocated cards as a client merchant
+  const userAllocatedCards = cards.filter((c) => {
+    const userEmail = currentUser.email.toLowerCase();
+    const userUid = currentUser.uid;
+    const userAssigned = currentUser.assignedCardIds || [];
+    return (
+      (c.assignedToEmail && c.assignedToEmail.toLowerCase() === userEmail) ||
+      (c.assignedToUid && c.assignedToUid === userUid) ||
+      userAssigned.includes(c.id)
+    );
+  });
+
+  // Strict Role-Based Access Control (UBRA):
+  // If the user is NOT Master Admin (66shashwatkumar66@gmail.com),
+  // NOT authorized by Master Admin in admins list,
+  // and has NO allocated cards:
+  // Render clean "Access Pending Authorization" gate!
+  if (!isMaster && !authorizedAdmin && userAllocatedCards.length === 0) {
+    return (
+      <div className="min-h-screen bg-[#F8FAFC] text-slate-900 flex flex-col justify-between antialiased">
+        <header className="border-b border-slate-200 bg-white/90 backdrop-blur-md px-4 py-3.5">
+          <div className="max-w-md mx-auto flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-xl bg-slate-900 text-white flex items-center justify-center font-bold">
+                <QrCode className="w-4 h-4 text-[#FBBC05]" />
+              </div>
+              <span className="font-extrabold text-sm text-slate-900">3DBYSD Smart Reviews</span>
+            </div>
+            <button
+              onClick={handleSignOut}
+              className="text-xs font-semibold text-slate-600 hover:text-red-600 flex items-center gap-1 cursor-pointer"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Sign Out</span>
+            </button>
+          </div>
+        </header>
+
+        <main className="max-w-md w-full mx-auto px-4 py-12 flex flex-col justify-center space-y-5 flex-1">
+          <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200 shadow-xl text-center space-y-4">
+            <div className="w-14 h-14 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto border border-amber-200">
+              <Lock className="w-7 h-7 text-amber-600" />
+            </div>
+
+            <div className="space-y-1.5">
+              <h2 className="text-lg font-extrabold text-slate-900">
+                Access Pending Authorization
+              </h2>
+              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100 text-slate-700 text-xs font-mono font-medium">
+                <span>{currentUser.email}</span>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed">
+              This management portal is protected by <strong>Strict Role-Based Access Control (UBRA)</strong>.
+              Your Google account is not yet authorized as an administrator, and no QR/NFC stands have been allocated to your email.
+            </p>
+
+            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl text-left text-xs text-slate-600 space-y-1.5">
+              <div className="font-bold text-slate-800 flex items-center gap-1.5">
+                <ShieldCheck className="w-4 h-4 text-[#1A73E8]" />
+                <span>How to gain access:</span>
+              </div>
+              <p className="text-[11px] leading-relaxed">
+                Please contact the <strong>Master Administrator</strong> to authorize your email as an administrator or allocate 3D stand QR codes to your account.
+              </p>
+            </div>
+
+            <div className="pt-2 flex flex-col gap-2">
+              <button
+                onClick={handleSignOut}
+                className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition-colors flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Switch Google Account</span>
+              </button>
+            </div>
+          </div>
+        </main>
+
+        <footer className="border-t border-slate-200 bg-white py-4 text-center text-xs text-slate-500">
+          3DBYSD Smart Reviews · Protected by Strict Role-Based Access Control
+        </footer>
+      </div>
+    );
+  }
 
   // Active admin fallback
   const effectiveActiveAdmin: AdminUser =
     activeAdmin ||
-    admins.find((a) => a.role === 'master') || {
-      id: 'master-admin-01',
-      email: 'admin@3dbysd.internal',
-      name: 'Master Admin',
-      role: 'master',
-      assignedCardIds: [],
-      permissions: {
-        canEditCards: true,
-        canToggleAi: true,
-        canExportCsv: true,
-        canCreateCards: true,
-      },
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
+    (authorizedAdmin
+      ? authorizedAdmin
+      : {
+          id: 'master-admin-01',
+          email: '66shashwatkumar66@gmail.com',
+          name: 'Master Administrator',
+          role: 'master',
+          assignedCardIds: [],
+          permissions: {
+            canEditCards: true,
+            canToggleAi: true,
+            canExportCsv: true,
+            canCreateCards: true,
+          },
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
 
   const masterAdmin = admins.find((a) => a.role === 'master') || effectiveActiveAdmin;
 
@@ -356,10 +461,12 @@ export default function App() {
         const userEmail = currentUser.email.toLowerCase();
         const userUid = currentUser.uid;
         const userAssigned = currentUser.assignedCardIds || [];
+        const adminAssigned = effectiveActiveAdmin?.assignedCardIds || [];
         return (
           (c.assignedToEmail && c.assignedToEmail.toLowerCase() === userEmail) ||
           (c.assignedToUid && c.assignedToUid === userUid) ||
-          userAssigned.includes(c.id)
+          userAssigned.includes(c.id) ||
+          (effectiveActiveAdmin?.role === 'restricted' && adminAssigned.includes(c.id))
         );
       });
 
@@ -392,31 +499,35 @@ export default function App() {
 
       {/* Main Admin Workspace Viewport - Optimized container for PC and mobile */}
       <main className="flex-1 max-w-5xl lg:max-w-6xl w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 space-y-5 overflow-hidden">
-        {/* Isolated Client Merchant Account Banner */}
+        {/* Restricted Admin Notice Banner if logged in as sub-admin */}
         {!isMaster && (
-          <div className="p-3.5 bg-blue-50/80 border border-blue-200/90 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-xs">
+          <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-xs">
             <div className="flex items-center gap-2.5 min-w-0">
-              <div className="w-8 h-8 rounded-xl bg-blue-100 text-[#1A73E8] flex items-center justify-center font-bold shrink-0">
-                <Store className="w-4 h-4" />
+              <div className="w-8 h-8 rounded-xl bg-amber-200/80 text-amber-900 flex items-center justify-center font-bold shrink-0">
+                <Lock className="w-4 h-4" />
               </div>
               <div className="min-w-0">
-                <div className="font-bold text-slate-900 flex items-center gap-2 flex-wrap">
-                  <span>Client Merchant Account: {currentUser.displayName}</span>
-                  <span className="font-mono text-[10px] bg-blue-200/80 text-blue-900 px-2 py-0.5 rounded-full font-bold">
-                    {displayedCards.length} Allocated Cards
+                <div className="font-bold text-amber-950 flex items-center gap-2 flex-wrap">
+                  <span>Restricted Sub-Admin: {effectiveActiveAdmin.name}</span>
+                  <span className="font-mono text-[10px] bg-amber-200 text-amber-900 px-2 py-0.2 rounded-full font-bold">
+                    {effectiveActiveAdmin.assignedCardIds.length} Cards
                   </span>
                 </div>
-                <p className="text-slate-600 text-[11px] mt-0.5 truncate">
-                  {displayedCards.length > 0
-                    ? `Managing authorized cards: [${displayedCards.map((c) => `#${c.id}`).join(', ')}]`
-                    : `No cards allocated to ${currentUser.email} yet. Contact Master Admin to assign cards.`}
+                <p className="text-amber-800 text-[11px] mt-0.5 truncate">
+                  Authorized cards: [{effectiveActiveAdmin.assignedCardIds.map((id) => `#${id}`).join(', ')}]
                 </p>
               </div>
             </div>
-            <div className="text-[10px] font-semibold text-emerald-700 bg-emerald-100/80 px-2.5 py-1 rounded-full shrink-0 self-start sm:self-auto flex items-center gap-1 border border-emerald-200">
-              <ShieldCheck className="w-3 h-3 text-emerald-600" />
-              <span>Isolated User Session</span>
-            </div>
+
+            {currentUser?.email?.toLowerCase() === '66shashwatkumar66@gmail.com' && (
+              <button
+                onClick={() => setActiveAdmin(masterAdmin)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-200 hover:bg-amber-300 text-amber-950 rounded-xl font-bold transition-colors shrink-0 self-start sm:self-auto text-xs"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Switch to Master</span>
+              </button>
+            )}
           </div>
         )}
 
@@ -480,11 +591,23 @@ export default function App() {
                 </p>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                {/* Keywords Customizer quick access */}
+                <button
+                  type="button"
+                  onClick={() => setCurrentTab('customizer')}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-xl shadow-2xs transition-colors cursor-pointer"
+                  title="Customize Review Page Keywords & Tags"
+                >
+                  <Sliders className="w-3.5 h-3.5 text-purple-600" />
+                  <span>Review Customizer</span>
+                </button>
+
                 {/* NFC Generator & Flasher quick access */}
                 <button
+                  type="button"
                   onClick={() => setCurrentTab('nfc')}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-lg shadow-2xs transition-colors cursor-pointer"
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-xl shadow-2xs transition-colors cursor-pointer ring-1 ring-purple-300/60"
                   title="Open NFC Chip URL Generator & Hardware Flasher"
                 >
                   <Radio className="w-3.5 h-3.5 text-purple-600 animate-pulse" />
@@ -493,9 +616,10 @@ export default function App() {
 
                 {(isMaster || effectiveActiveAdmin.permissions?.canExportCsv) && (
                   <button
+                    type="button"
                     onClick={() => exportCardsToCsv(displayedCards)}
                     disabled={displayedCards.length === 0}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 hover:text-slate-900 rounded-lg shadow-2xs transition-colors disabled:opacity-50 cursor-pointer"
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 hover:text-slate-900 rounded-xl shadow-2xs transition-colors disabled:opacity-50 cursor-pointer"
                     title="Export current card inventory as CSV spreadsheet"
                   >
                     <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
@@ -505,10 +629,11 @@ export default function App() {
 
                 {isMaster && (
                   <button
+                    type="button"
                     onClick={() => setIsBatchModalOpen(true)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-800 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg shadow-2xs transition-colors cursor-pointer"
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-slate-800 bg-white border border-slate-200 hover:bg-slate-50 rounded-xl shadow-2xs transition-colors cursor-pointer"
                   >
-                    <Plus className="w-3.5 h-3.5" />
+                    <Plus className="w-3.5 h-3.5 text-[#1A73E8]" />
                     <span>Add Cards</span>
                   </button>
                 )}
@@ -523,7 +648,7 @@ export default function App() {
                 </div>
                 <h3 className="text-base font-bold text-slate-900">No QR Review Stands Assigned Yet</h3>
                 <p className="text-xs text-slate-600 max-w-md mx-auto leading-relaxed">
-                  Welcome, <strong>{currentUser.displayName}</strong>! Content is strictly isolated by user account. Only the Master Administrator can create new QR batches and allocate them to businesses. Please contact your administrator to allocate cards to your Google account (<strong>{currentUser.email}</strong>).
+                  Welcome, <strong>{currentUser.displayName}</strong>! Content is strictly isolated by user account. Only the Master Administrator can create new QR batches and allocate them to businesses. Please ask the administrator to allocate cards to your Google email: <strong>{currentUser.email}</strong>.
                 </p>
               </div>
             )}
@@ -547,10 +672,21 @@ export default function App() {
                 }
                 onBulkUpdateStatus={handleBulkUpdateStatus}
                 onOpenNfcGenerator={() => setCurrentTab('nfc')}
+                onOpenCustomizer={() => setCurrentTab('customizer')}
                 activeAdmin={effectiveActiveAdmin}
               />
             )}
           </div>
+        )}
+
+        {/* Tab: Review Page Customizer */}
+        {currentTab === 'customizer' && (
+          <ReviewCustomizerView
+            cards={displayedCards}
+            activeAdmin={effectiveActiveAdmin}
+            onSaveCardKeywords={handleAssignCard}
+            onPreviewCard={handleOpenCustomerPreview}
+          />
         )}
 
         {/* Tab 2: Print Sheets */}
@@ -588,7 +724,7 @@ export default function App() {
           />
         )}
 
-        {/* Tab 5: Google Verified Users & Logins - Master Admin Only */}
+        {/* Tab 5: Google Verified Users & Logins - Strictly Master Admin Only */}
         {currentTab === 'users' && isMaster && (
           <UsersManagementView
             activeAdmin={effectiveActiveAdmin}
@@ -657,8 +793,6 @@ export default function App() {
         onSelectActiveAdmin={(adm) => setActiveAdmin(adm)}
         onOpenBatchModal={() => setIsBatchModalOpen(true)}
         onExportCsv={() => exportCardsToCsv(displayedCards)}
-        currentUser={currentUser}
-        onSignOut={handleSignOut}
       />
     </div>
   );

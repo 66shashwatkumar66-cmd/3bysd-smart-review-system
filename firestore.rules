@@ -28,7 +28,9 @@ service cloud.firestore {
         (!('assignedToEmail' in data) || (data.assignedToEmail is string && data.assignedToEmail.size() <= 200)) &&
         (!('assignedToUid' in data) || (data.assignedToUid is string && data.assignedToUid.size() <= 128)) &&
         (!('assignedToName' in data) || (data.assignedToName is string && data.assignedToName.size() <= 200)) &&
-        (!('scansCount' in data) || (data.scansCount is int && data.scansCount >= 0));
+        (!('scansCount' in data) || (data.scansCount is int && data.scansCount >= 0)) &&
+        (!('customKeywords' in data) || data.customKeywords is list) &&
+        (!('reviewPageSettings' in data) || data.reviewPageSettings is map);
     }
 
     function isValidAdmin(data) {

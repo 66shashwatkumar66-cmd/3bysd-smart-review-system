@@ -27,7 +27,7 @@ interface CustomerReviewViewProps {
   isLoading?: boolean;
 }
 
-const EXPERIENCE_TAGS = [
+const DEFAULT_EXPERIENCE_TAGS = [
   { id: 'Food & Drinks', label: 'Food & Drinks', icon: Coffee },
   { id: 'Friendly Staff', label: 'Friendly Staff', icon: Users },
   { id: 'Cosy Ambience', label: 'Cosy Ambience', icon: Heart },
@@ -54,6 +54,18 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
   const notesInputId = useId();
   const reviewDraftId = useId();
 
+  // Dynamic tags list: Use customKeywords if configured on card, otherwise defaults
+  const activeTagsList = React.useMemo(() => {
+    if (card?.customKeywords && card.customKeywords.length > 0) {
+      return card.customKeywords.map((kw) => ({
+        id: kw,
+        label: kw,
+        icon: Sparkles,
+      }));
+    }
+    return DEFAULT_EXPERIENCE_TAGS;
+  }, [card?.customKeywords]);
+
   // Allow simulator to preview AI enabled even if disabled on card, for testing
   const [simulatorOverrideAi, setSimulatorOverrideAi] = useState<boolean | null>(null);
 
@@ -63,15 +75,24 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
       : (card?.aiReviewEnabled !== false);
 
   const [rating, setRating] = useState<number>(5);
-  const [selectedTags, setSelectedTags] = useState<string[]>([
-    'Food & Drinks',
-    'Friendly Staff',
-  ]);
+  const [selectedTags, setSelectedTags] = useState<string[]>(() => {
+    if (card?.customKeywords && card.customKeywords.length > 0) {
+      return card.customKeywords.slice(0, 2);
+    }
+    return ['Food & Drinks', 'Friendly Staff'];
+  });
   const [customNotes, setCustomNotes] = useState<string>('');
   const [generatedReview, setGeneratedReview] = useState<string>('');
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [copied, setCopied] = useState<boolean>(false);
   const [redirected, setRedirected] = useState<boolean>(false);
+
+  // Sync selected tags if card changes
+  useEffect(() => {
+    if (card?.customKeywords && card.customKeywords.length > 0) {
+      setSelectedTags((prev) => (prev.length > 0 ? prev : card.customKeywords!.slice(0, 2)));
+    }
+  }, [card?.customKeywords]);
 
   const isAssigned = Boolean(card && card.status === 'assigned');
   const effectiveBusinessName =
@@ -105,19 +126,9 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
 
       if (res.success && res.review) {
         setGeneratedReview(res.review);
-      } else {
-        // High-quality instant client-side draft fallback
-        const tagText = selectedTags.length > 0 ? selectedTags.join(' & ') : 'service';
-        const noteText = customNotes.trim() ? ` ${customNotes.trim()}.` : '';
-        const fallback = rating === 5
-          ? `Had an exceptional 5-star experience with ${effectiveBusinessName}! Really impressed by the ${tagText} and welcoming atmosphere.${noteText} Highly recommended!`
-          : `Great experience with ${effectiveBusinessName}. Appreciated the ${tagText} and smooth service.${noteText} Will definitely return!`;
-        setGeneratedReview(fallback);
       }
     } catch (err) {
-      console.warn('Failed to generate review draft via API, using client fallback:', err);
-      const tagText = selectedTags.length > 0 ? selectedTags.join(' & ') : 'service';
-      setGeneratedReview(`Exceptional 5-star experience at ${effectiveBusinessName}! Very happy with the ${tagText} and attentive team. Highly recommend to everyone.`);
+      console.error('Failed to generate review draft:', err);
     } finally {
       setIsGenerating(false);
     }
@@ -241,7 +252,7 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
           </div>
           <div>
             <h1 className="text-lg sm:text-xl font-extrabold text-slate-900 leading-tight">
-              {effectiveBusinessName}
+              {card?.customHeadline || effectiveBusinessName}
             </h1>
             <p className="text-xs text-slate-500 font-medium mt-0.5">
               {effectiveCategory}
@@ -297,7 +308,7 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
           </div>
 
           <div className="grid grid-cols-2 gap-2">
-            {EXPERIENCE_TAGS.map((tag) => {
+            {activeTagsList.map((tag) => {
               const Icon = tag.icon;
               const isSelected = selectedTags.includes(tag.id);
               return (

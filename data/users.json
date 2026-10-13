@@ -1,32 +1,46 @@
 [
   {
-    "uid": "google-user-66shashwatkumar66",
+    "uid": "WPfhNE8D00Zbd7lbpdbyeTQWqBf1",
     "email": "66shashwatkumar66@gmail.com",
-    "displayName": "Shashwat Kumar (Master)",
-    "photoURL": "https://api.dicebear.com/7.x/initials/svg?seed=SK&backgroundColor=1a73e8&textColor=ffffff",
+    "displayName": "Shashwat Kumar",
+    "photoURL": "https://lh3.googleusercontent.com/a/ACg8ocKVVr-IKYEb18gEJ-FfwLdaE1MfRqt-oRucrG1Vsb87lcWGzGJb=s96-c",
     "provider": "google.com",
     "role": "master",
     "emailVerified": true,
-    "lastLoginAt": "2026-10-10T23:13:00.866Z",
+    "lastLoginAt": "2026-10-13T19:01:58.673Z",
     "createdAt": "2026-10-10T21:30:00.000Z",
-    "loginCount": 4,
-    "device": "Web Browser (Chrome)",
+    "loginCount": 15,
+    "device": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "assignedCardIds": [
       "0001"
     ]
   },
   {
-    "uid": "google-uid-test-user",
-    "email": "test.customer@gmail.com",
-    "displayName": "Test Customer",
-    "photoURL": "https://api.dicebear.com/7.x/initials/svg?seed=TC",
+    "uid": "mJgZBldnifeKVWNHkck0LnxpTB32",
+    "email": "shashwat9403@gmail.com",
+    "displayName": "Shashwat",
+    "photoURL": "https://lh3.googleusercontent.com/a/ACg8ocIW_cWrEpB-CRX4WlTFKFcn_oSqCjKB_CtPMCq7NxZpVS7geQ=s96-c",
     "provider": "google.com",
     "role": "member",
     "emailVerified": true,
-    "lastLoginAt": "2026-10-10T23:13:00.857Z",
-    "createdAt": "2026-10-10T23:13:00.857Z",
+    "lastLoginAt": "2026-10-13T18:55:13.926Z",
+    "createdAt": "2026-10-13T18:55:13.815Z",
+    "loginCount": 3,
+    "device": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "assignedCardIds": []
+  },
+  {
+    "uid": "google-uid-3dbysdgmailcom",
+    "email": "3dbysd@gmail.com",
+    "displayName": "3dbysd",
+    "photoURL": "https://api.dicebear.com/7.x/initials/svg?seed=3dbysd%40gmail.com&backgroundColor=1a73e8&textColor=ffffff",
+    "provider": "google.com",
+    "role": "member",
+    "emailVerified": true,
+    "lastLoginAt": "2026-10-13T19:01:23.616Z",
+    "createdAt": "2026-10-13T19:01:23.616Z",
     "loginCount": 1,
-    "device": "Chrome on Android",
+    "device": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "assignedCardIds": []
   }
 ]

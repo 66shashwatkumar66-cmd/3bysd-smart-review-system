@@ -1,6 +1,7 @@
 import React, { useState, useId } from 'react';
 import { X, Sparkles, AlertCircle, ArrowRight } from 'lucide-react';
 import { CardRecord } from '../types';
+import { getPublicBaseUrl } from '../utils/url';
 
 interface BatchGeneratorModalProps {
   isOpen: boolean;
@@ -201,7 +202,7 @@ export const BatchGeneratorModal: React.FC<BatchGeneratorModalProps> = ({
             <p className="text-[11px] text-slate-500 pt-1">
               Permanent URL scheme:{' '}
               <span className="text-blue-700 font-mono">
-                {window.location.origin}/r/{previewStart}
+                {getPublicBaseUrl()}/r/{previewStart}
               </span>
             </p>
           </div>

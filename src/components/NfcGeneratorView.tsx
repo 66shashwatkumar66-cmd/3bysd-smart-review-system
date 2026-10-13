@@ -16,6 +16,7 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import { generateQrPng, downloadCardPng } from '../utils/qr';
+import { getCardScanUrl } from '../utils/url';
 
 interface NfcGeneratorViewProps {
   cards: CardRecord[];
@@ -105,7 +106,7 @@ export const NfcGeneratorView: React.FC<NfcGeneratorViewProps> = ({
         onCardUpdated(updated);
 
         // Pre-generate companion QR
-        const nfcUrl = `${window.location.origin}/r/${updated.id}`;
+        const nfcUrl = getCardScanUrl(updated.id);
         try {
           const qrData = await generateQrPng(nfcUrl, 512);
           setQrPreviewSrc(qrData);
@@ -146,7 +147,7 @@ export const NfcGeneratorView: React.FC<NfcGeneratorViewProps> = ({
   };
 
   const currentNfcUrl = generatedCard
-    ? `${window.location.origin}/r/${generatedCard.id}`
+    ? getCardScanUrl(generatedCard.id)
     : '';
 
   return (

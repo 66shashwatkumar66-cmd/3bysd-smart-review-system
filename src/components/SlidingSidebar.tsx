@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   X,
   Layers,
@@ -10,17 +10,28 @@ import {
   Plus,
   FileSpreadsheet,
   QrCode,
+  Lock,
+  RotateCcw,
+  LogIn,
   LogOut,
   CheckCircle,
+  ExternalLink,
+  Sparkles,
+  ChevronRight,
   Database,
   Cpu,
+  Sliders,
 } from 'lucide-react';
 import { AdminUser, UserProfile } from '../types';
+import { auth, signOut, onAuthStateChanged, User } from '../firebase';
+import { GoogleAuthModal } from './GoogleAuthModal';
+import { saveUser } from '../utils/api';
+
 interface SlidingSidebarProps {
   isOpen: boolean;
   onClose: () => void;
-  currentTab: 'cards' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users';
-  onSelectTab: (tab: 'cards' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users') => void;
+  currentTab: 'cards' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users';
+  onSelectTab: (tab: 'cards' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users') => void;
   totalCards: number;
   assignedCount: number;
   availableCount: number;
@@ -29,8 +40,6 @@ interface SlidingSidebarProps {
   onSelectActiveAdmin: (admin: AdminUser) => void;
   onOpenBatchModal: () => void;
   onExportCsv?: () => void;
-  currentUser: UserProfile;
-  onSignOut: () => void;
 }
 
 export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
@@ -43,19 +52,63 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
   availableCount,
   activeAdmin,
   admins,
+  onSelectActiveAdmin,
   onOpenBatchModal,
   onExportCsv,
-  currentUser,
-  onSignOut,
 }) => {
-  const isMaster = Boolean(
-    currentUser.email.toLowerCase() === '66shashwatkumar66@gmail.com' ||
-    currentUser.role === 'master'
-  );
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isGoogleModalOpen, setIsGoogleModalOpen] = useState<boolean>(false);
+  const [verifiedGoogleProfile, setVerifiedGoogleProfile] = useState<UserProfile | null>(() => {
+    try {
+      const saved = localStorage.getItem('3dbysd_current_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
 
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setCurrentUser(user);
+      if (user && user.email) {
+        try {
+          const profile = await saveUser({
+            uid: user.uid,
+            email: user.email,
+            displayName: user.displayName || user.email.split('@')[0],
+            photoURL: user.photoURL || undefined,
+            provider: 'google.com',
+            emailVerified: user.emailVerified,
+            role: user.email.toLowerCase() === '66shashwatkumar66@gmail.com' ? 'master' : 'member',
+          });
+          setVerifiedGoogleProfile(profile);
+          localStorage.setItem('3dbysd_current_user', JSON.stringify(profile));
+        } catch {
+          // ignore
+        }
+      }
+    });
+    return () => unsubscribe();
+  }, []);
 
+  const handleSignOut = async () => {
+    try {
+      await signOut(auth);
+      setVerifiedGoogleProfile(null);
+      localStorage.removeItem('3dbysd_current_user');
+    } catch (err: any) {
+      console.warn('Sign-out failed:', err?.message);
+    }
+  };
 
-
+  const handleGoogleSuccess = (user: UserProfile) => {
+    setVerifiedGoogleProfile(user);
+    localStorage.setItem('3dbysd_current_user', JSON.stringify(user));
+    if (user.role === 'master' || user.email === '66shashwatkumar66@gmail.com') {
+      const master = admins.find((a) => a.role === 'master') || admins[0];
+      if (master) onSelectActiveAdmin(master);
+    }
+  };
   // Close on Escape key press
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -79,6 +132,9 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
     };
   }, [isOpen]);
 
+  const masterAdmin = admins.find((a) => a.role === 'master') || admins[0];
+  const isMaster = activeAdmin.role === 'master';
+
   const navItems = [
     {
       id: 'cards' as const,
@@ -88,6 +144,13 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
       color: '#1A73E8',
       badge: totalCards.toString(),
       badgeColor: 'bg-blue-100 text-blue-700',
+    },
+    {
+      id: 'customizer' as const,
+      label: 'Review Page Customizer',
+      description: 'Customize keywords & review tags',
+      icon: Sliders,
+      color: '#8B5CF6',
     },
     {
       id: 'print' as const,
@@ -112,6 +175,7 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
       icon: Smartphone,
       color: '#34A853',
     },
+    // Strictly isolate management views (Users & Master Admin) to Master Admin only
     ...(isMaster
       ? [
           {
@@ -191,19 +255,20 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
 
         {/* Scrollable Navigation Body */}
         <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-4">
-          {/* Active User Profile Card */}
+          {/* Active Admin Profile Card */}
           <div className="p-3 rounded-xl bg-gradient-to-br from-slate-50 to-blue-50/40 border border-slate-200/80 space-y-2.5">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <div className="relative">
                   <img
                     src={
-                      currentUser.photoURL ||
+                      currentUser?.photoURL ||
+                      verifiedGoogleProfile?.photoURL ||
                       `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(
-                        currentUser.email
+                        currentUser?.email || verifiedGoogleProfile?.email || activeAdmin.email
                       )}&backgroundColor=1a73e8&textColor=ffffff`
                     }
-                    alt={currentUser.displayName}
+                    alt={activeAdmin.name}
                     className="w-8 h-8 rounded-full object-cover border border-slate-200"
                     referrerPolicy="no-referrer"
                   />
@@ -211,10 +276,10 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
                 </div>
                 <div className="min-w-0">
                   <div className="text-xs font-bold text-slate-900 truncate flex items-center gap-1">
-                    <span>{isMaster ? 'Master Admin' : currentUser.displayName}</span>
+                    <span>{currentUser?.displayName || verifiedGoogleProfile?.displayName || activeAdmin.name}</span>
                   </div>
                   <div className="text-[10px] text-slate-500 truncate font-mono">
-                    {isMaster ? 'Administrator Account' : currentUser.email}
+                    {currentUser?.email || verifiedGoogleProfile?.email || activeAdmin.email}
                   </div>
                 </div>
               </div>
@@ -224,25 +289,46 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
                 className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full whitespace-nowrap ${
                   isMaster
                     ? 'bg-purple-100 text-purple-800 border border-purple-200'
-                    : 'bg-blue-100 text-blue-800 border border-blue-200'
+                    : 'bg-amber-100 text-amber-800 border border-amber-200'
                 }`}
               >
-                {isMaster ? '👑 Master Admin' : 'Merchant'}
+                {isMaster ? '👑 Master' : '🛡️ Sub-Admin'}
               </span>
             </div>
 
-            {/* Account Status and Sign Out */}
-            <div className="pt-2 border-t border-slate-200/60 flex items-center justify-between text-[11px]">
+            {/* Quick Admin Switcher: Only available if the authenticated Google user is actually the Master Admin */}
+            {!isMaster && masterAdmin && (currentUser?.email?.toLowerCase() === '66shashwatkumar66@gmail.com') && (
               <button
                 onClick={() => {
+                  onSelectActiveAdmin(masterAdmin);
                   onClose();
-                  onSignOut();
                 }}
-                className="flex items-center gap-1.5 text-slate-500 hover:text-red-600 transition-colors cursor-pointer"
+                className="w-full flex items-center justify-center gap-1.5 py-1 px-2 rounded-lg bg-blue-100/70 hover:bg-blue-100 text-[#1A73E8] text-[11px] font-bold transition-colors border border-blue-200"
               >
-                <LogOut className="w-3.5 h-3.5" />
-                <span>Sign out</span>
+                <RotateCcw className="w-3 h-3" />
+                <span>Exit Sub-Admin Mode</span>
               </button>
+            )}
+
+            {/* Google Login / Logout Action */}
+            <div className="pt-2 border-t border-slate-200/60 flex items-center justify-between text-[11px]">
+              {currentUser || verifiedGoogleProfile ? (
+                <button
+                  onClick={handleSignOut}
+                  className="flex items-center gap-1.5 text-slate-500 hover:text-red-600 transition-colors"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span>Sign out</span>
+                </button>
+              ) : (
+                <button
+                  onClick={() => setIsGoogleModalOpen(true)}
+                  className="flex items-center gap-1.5 text-[#1A73E8] font-semibold hover:underline"
+                >
+                  <LogIn className="w-3.5 h-3.5" />
+                  <span>Connect Google Account</span>
+                </button>
+              )}
 
               <span className="text-[10px] text-emerald-600 font-semibold flex items-center gap-1">
                 <CheckCircle className="w-3 h-3" /> Verified
@@ -365,6 +451,14 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
           </div>
         </div>
       </aside>
+
+      {/* Google Authentication Modal inside Sidebar */}
+      <GoogleAuthModal
+        isOpen={isGoogleModalOpen}
+        onClose={() => setIsGoogleModalOpen(false)}
+        onSuccess={handleGoogleSuccess}
+        defaultEmail={activeAdmin.email || '66shashwatkumar66@gmail.com'}
+      />
     </>
   );
 };

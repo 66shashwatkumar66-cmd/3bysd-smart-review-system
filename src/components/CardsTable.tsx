@@ -24,10 +24,12 @@ import {
   ChevronDown,
   CheckSquare,
   Layers,
+  Sliders,
 } from 'lucide-react';
 import { downloadCardPng, downloadCardSvg } from '../utils/qr';
 import { exportCardsToCsv } from '../utils/csv';
 import { bulkUpdateCardsStatus } from '../utils/api';
+import { getCardScanUrl } from '../utils/url';
 
 interface CardsTableProps {
   cards: CardRecord[];
@@ -38,13 +40,8 @@ interface CardsTableProps {
   onToggleAiReview?: (id: string, enabled: boolean) => void;
   onBulkUpdateStatus?: (cardIds: string[], status: 'available' | 'assigned') => Promise<void> | void;
   onOpenNfcGenerator?: (card?: CardRecord) => void;
+  onOpenCustomizer?: (card?: CardRecord) => void;
   activeAdmin?: AdminUser;
-}
-
-function formatAssignedUser(email?: string, name?: string): string {
-  if (!email) return '';
-  if (email.toLowerCase() === '66shashwatkumar66@gmail.com') return 'Master Admin';
-  return name || email;
 }
 
 export const CardsTable: React.FC<CardsTableProps> = ({
@@ -56,6 +53,7 @@ export const CardsTable: React.FC<CardsTableProps> = ({
   onToggleAiReview,
   onBulkUpdateStatus,
   onOpenNfcGenerator,
+  onOpenCustomizer,
   activeAdmin,
 }) => {
   const searchInputId = useId();
@@ -106,7 +104,7 @@ export const CardsTable: React.FC<CardsTableProps> = ({
   });
 
   const handleCopyLink = (cardId: string) => {
-    const fullUrl = `${window.location.origin}/r/${cardId}`;
+    const fullUrl = getCardScanUrl(cardId);
     navigator.clipboard.writeText(fullUrl);
     setCopiedId(cardId);
     setTimeout(() => setCopiedId(null), 2000);
@@ -320,6 +318,32 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                 Disabled ({disabledCount})
               </button>
             )}
+
+            {/* Direct NFC Flasher & Hardware Tools in Card Inventory */}
+            {onOpenNfcGenerator && (
+              <button
+                type="button"
+                onClick={() => onOpenNfcGenerator()}
+                className="px-2.5 py-1 rounded-lg text-[11px] font-bold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 transition-colors flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                title="Open NFC Chip Hardware Flasher & Tag URL Generator"
+              >
+                <Radio className="w-3.5 h-3.5 text-purple-600 animate-pulse" />
+                <span>NFC Tools</span>
+              </button>
+            )}
+
+            {/* Direct Keywords Customizer in Card Inventory */}
+            {onOpenCustomizer && (
+              <button
+                type="button"
+                onClick={() => onOpenCustomizer(filteredCards[0] || cards[0])}
+                className="px-2.5 py-1 rounded-lg text-[11px] font-bold text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-200 transition-colors flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                title="Customize Review Page Keywords & Tags"
+              >
+                <Sliders className="w-3.5 h-3.5 text-purple-600" />
+                <span>Review Customizer</span>
+              </button>
+            )}
           </div>
 
           {(search || statusFilter !== 'all') && (
@@ -423,6 +447,18 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                     <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
                     <span>Set Assigned</span>
                   </button>
+
+                  {onOpenNfcGenerator && (
+                    <button
+                      type="button"
+                      onClick={() => onOpenNfcGenerator()}
+                      className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-purple-50 text-purple-800 border border-purple-300 hover:bg-purple-100 shadow-2xs transition-colors cursor-pointer"
+                      title="Open NFC Generator for selected cards"
+                    >
+                      <Radio className="w-3.5 h-3.5 text-purple-600 animate-pulse" />
+                      <span>NFC Tools ({selectedCardIds.length})</span>
+                    </button>
+                  )}
                 </>
               )}
             </div>
@@ -485,7 +521,7 @@ export const CardsTable: React.FC<CardsTableProps> = ({
               </div>
 
               {filteredCards.map((card) => {
-                const permanentUrl = `${window.location.origin}/r/${card.id}`;
+                const permanentUrl = getCardScanUrl(card.id);
                 const isAssigned = card.status === 'assigned';
                 const isSelected = selectedCardIds.includes(card.id);
 
@@ -593,7 +629,7 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                       {card.assignedToEmail && (
                         <div className="text-[10px] text-purple-700 font-semibold truncate flex items-center gap-1">
                           <span className="w-1.5 h-1.5 rounded-full bg-purple-500 shrink-0" />
-                          <span>Owner: {formatAssignedUser(card.assignedToEmail, card.assignedToName)}</span>
+                          <span>Owner: {card.assignedToName || card.assignedToEmail}</span>
                         </div>
                       )}
 
@@ -656,11 +692,24 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                             setNfcWriteStatus('');
                             setNfcCopied(false);
                           }}
-                          title="NFC Flasher & Chip Tools"
-                          className="p-1.5 rounded-lg text-purple-600 hover:text-purple-800 hover:bg-purple-50 transition-colors cursor-pointer"
+                          title="NFC Flasher & Hardware Tools"
+                          className="px-2 py-1 rounded-lg text-[11px] font-bold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 transition-colors flex items-center gap-1 cursor-pointer"
                         >
-                          <Radio className="w-3.5 h-3.5" />
+                          <Radio className="w-3 h-3 text-purple-600" />
+                          <span>NFC</span>
                         </button>
+
+                        {/* Customize Keywords */}
+                        {onOpenCustomizer && (
+                          <button
+                            type="button"
+                            onClick={() => onOpenCustomizer(card)}
+                            title="Customize Review Keywords"
+                            className="p-1.5 rounded-lg text-amber-600 hover:bg-amber-50 border border-amber-200 transition-colors cursor-pointer"
+                          >
+                            <Sliders className="w-3.5 h-3.5" />
+                          </button>
+                        )}
 
                         {/* Assign / Edit */}
                         {canEditCards && (
@@ -722,7 +771,7 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {filteredCards.map((card) => {
-                    const permanentUrl = `${window.location.origin}/r/${card.id}`;
+                    const permanentUrl = getCardScanUrl(card.id);
                     const isAssigned = card.status === 'assigned';
                     const isSelected = selectedCardIds.includes(card.id);
 
@@ -779,7 +828,7 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                               {card.assignedToEmail && (
                                 <div className="text-[10px] text-purple-700 font-semibold truncate mt-0.5 flex items-center gap-1">
                                   <span className="w-1.5 h-1.5 rounded-full bg-purple-500 shrink-0" />
-                                  <span>{formatAssignedUser(card.assignedToEmail, card.assignedToName)}</span>
+                                  <span>{card.assignedToName || card.assignedToEmail}</span>
                                 </div>
                               )}
                             </div>
@@ -792,7 +841,7 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                               {card.assignedToEmail && (
                                 <div className="text-[10px] text-purple-700 font-semibold truncate flex items-center gap-1">
                                   <span className="w-1.5 h-1.5 rounded-full bg-purple-500 shrink-0" />
-                                  <span>Allocated: {formatAssignedUser(card.assignedToEmail, card.assignedToName)}</span>
+                                  <span>Allocated: {card.assignedToEmail}</span>
                                 </div>
                               )}
                             </div>
@@ -908,7 +957,7 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                               <Download className="w-3.5 h-3.5" />
                             </button>
 
-                            {/* NFC Chip Tool */}
+                            {/* Prominent NFC Chip Tool */}
                             <button
                               type="button"
                               onClick={() => {
@@ -917,10 +966,23 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                                 setNfcCopied(false);
                               }}
                               title="Program NFC Tag & Copy URL"
-                              className="p-1.5 rounded-lg text-purple-600 hover:text-purple-900 hover:bg-purple-50 transition-colors cursor-pointer"
+                              className="px-2.5 py-1 rounded-lg text-xs font-bold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 transition-colors flex items-center gap-1 cursor-pointer"
                             >
-                              <Radio className="w-3.5 h-3.5" />
+                              <Radio className="w-3.5 h-3.5 text-purple-600 animate-pulse" />
+                              <span>NFC Tag</span>
                             </button>
+
+                            {/* Customize Keywords */}
+                            {onOpenCustomizer && (
+                              <button
+                                type="button"
+                                onClick={() => onOpenCustomizer(card)}
+                                title="Customize Keywords & Review Page"
+                                className="p-1.5 rounded-lg text-amber-600 hover:text-amber-800 hover:bg-amber-50 border border-amber-200 transition-colors cursor-pointer"
+                              >
+                                <Sliders className="w-3.5 h-3.5" />
+                              </button>
+                            )}
 
                             {/* Assign / Edit */}
                             {canEditCards && (
@@ -1012,6 +1074,18 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                   <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
                   <span>Assigned</span>
                 </button>
+
+                {onOpenNfcGenerator && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenNfcGenerator()}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 border border-purple-500/40 transition-colors cursor-pointer shadow-sm"
+                    title="Open NFC Generator for selected cards"
+                  >
+                    <Radio className="w-3.5 h-3.5 text-purple-400 animate-pulse" />
+                    <span>NFC URLs</span>
+                  </button>
+                )}
               </>
             )}
           </div>
@@ -1095,12 +1169,12 @@ export const CardsTable: React.FC<CardsTableProps> = ({
               </label>
               <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between gap-2">
                 <code className="text-xs font-mono text-purple-700 font-bold truncate">
-                  {`${window.location.origin}/r/${selectedNfcCard.id}`}
+                  {getCardScanUrl(selectedNfcCard.id)}
                 </code>
                 <button
                   type="button"
                   onClick={() => {
-                    const url = `${window.location.origin}/r/${selectedNfcCard.id}`;
+                    const url = getCardScanUrl(selectedNfcCard.id);
                     navigator.clipboard.writeText(url);
                     setNfcCopied(true);
                     setTimeout(() => setNfcCopied(false), 2000);

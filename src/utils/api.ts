@@ -67,7 +67,30 @@ const INITIAL_CARDS: CardRecord[] = [
   },
 ];
 
-export async function fetchCards(): Promise<CardRecord[]> {
+export function getApiAuthHeaders(userEmail?: string): Record<string, string> {
+  let email = (userEmail || '').trim().toLowerCase();
+  if (!email) {
+    try {
+      const stored = localStorage.getItem('3dbysd_current_user');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (parsed?.email) email = parsed.email.trim().toLowerCase();
+      }
+    } catch {
+      // ignore
+    }
+  }
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  if (email) {
+    headers['x-user-email'] = email;
+    headers['x-admin-id'] = email;
+  }
+  return headers;
+}
+
+export async function fetchCards(userEmail?: string): Promise<CardRecord[]> {
   try {
     const colRef = collection(db, CARDS_COLLECTION);
     const snapshot = await getDocs(colRef);
@@ -91,9 +114,11 @@ export async function fetchCards(): Promise<CardRecord[]> {
     console.warn('Firestore fetch failed, attempting server API fallback:', error);
   }
 
-  // Fallback to local server REST API
+  // Fallback to local server REST API with Role-Based isolation headers
   try {
-    const res = await fetch('/api/cards');
+    const res = await fetch('/api/cards', {
+      headers: getApiAuthHeaders(userEmail),
+    });
     if (res.ok) {
       const data = await res.json();
       if (data.cards && Array.isArray(data.cards)) {
@@ -118,11 +143,48 @@ export async function fetchCards(): Promise<CardRecord[]> {
 }
 
 export async function fetchCardById(id: string, recordScan: boolean = false): Promise<CardRecord | null> {
-  try {
-    const docRef = doc(db, CARDS_COLLECTION, id);
-    const docSnap = await getDoc(docRef);
+  const cleanId = id.trim();
 
-    if (docSnap.exists()) {
+  // 1. Instant check from localStorage cache if available
+  const cached = localStorage.getItem(STORAGE_KEY);
+  let localMatch: CardRecord | null = null;
+  if (cached) {
+    try {
+      const parsed = JSON.parse(cached) as CardRecord[];
+      const hit = parsed.find((c) => c.id.toLowerCase() === cleanId.toLowerCase());
+      if (hit) localMatch = hit;
+    } catch {
+      // ignore
+    }
+  }
+
+  // 2. Fast server API query (typically <20ms)
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2000);
+    const res = await fetch(`/api/cards/${encodeURIComponent(cleanId)}${recordScan ? '?scan=true' : ''}`, {
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.card) {
+        return data.card;
+      }
+    }
+  } catch (err) {
+    console.warn(`Server fetch card ${cleanId} notice:`, err);
+  }
+
+  // 3. Fallback to Firestore with timeout guard
+  try {
+    const docRef = doc(db, CARDS_COLLECTION, cleanId);
+    const docSnap = await Promise.race([
+      getDoc(docRef),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
+    ]);
+
+    if (docSnap && docSnap.exists()) {
       const card = docSnap.data() as CardRecord;
       if (recordScan) {
         const newCount = (card.scansCount || 0) + 1;
@@ -131,30 +193,19 @@ export async function fetchCardById(id: string, recordScan: boolean = false): Pr
           scansCount: newCount,
           updatedAt: new Date().toISOString(),
         };
-        await setDoc(docRef, updated, { merge: true });
+        setDoc(docRef, updated, { merge: true }).catch(() => {});
         return updated;
       }
       return card;
     }
   } catch (error) {
-    console.warn(`Firestore get card ${id} failed:`, error);
+    console.warn(`Firestore get card ${cleanId} notice:`, error);
   }
 
-  // Fallback to server REST API
-  try {
-    const res = await fetch(`/api/cards/${encodeURIComponent(id)}${recordScan ? '?scan=true' : ''}`);
-    if (res.ok) {
-      const data = await res.json();
-      if (data.card) {
-        return data.card;
-      }
-    }
-  } catch (err) {
-    console.warn(`Server fetch card ${id} failed:`, err);
-  }
+  if (localMatch) return localMatch;
 
   const allCards = await fetchCards();
-  return allCards.find((c) => c.id.toLowerCase() === id.toLowerCase()) || null;
+  return allCards.find((c) => c.id.toLowerCase() === cleanId.toLowerCase()) || null;
 }
 
 export async function createBatchCards(payload: {
@@ -201,7 +252,7 @@ export async function createBatchCards(payload: {
   try {
     await fetch('/api/cards/batch', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getApiAuthHeaders(),
       body: JSON.stringify(payload),
     });
   } catch {
@@ -254,10 +305,7 @@ export async function assignCard(
   try {
     const res = await fetch(`/api/cards/${encodeURIComponent(id)}/assign`, {
       method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(adminId ? { 'x-admin-id': adminId } : {}),
-      },
+      headers: getApiAuthHeaders(adminId),
       body: JSON.stringify({ ...updates, adminId }),
     });
     if (res.ok) {
@@ -295,10 +343,7 @@ export async function bulkUpdateCardsStatus(
   try {
     await fetch('/api/cards/bulk-status', {
       method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(adminId ? { 'x-admin-id': adminId } : {}),
-      },
+      headers: getApiAuthHeaders(adminId),
       body: JSON.stringify({ ids: normalizedIds, status, adminId }),
     });
   } catch {
@@ -330,7 +375,10 @@ export async function deleteCard(id: string): Promise<boolean> {
   }
 
   try {
-    await fetch(`/api/cards/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    await fetch(`/api/cards/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: getApiAuthHeaders(),
+    });
   } catch {
     // ignore
   }
@@ -379,21 +427,6 @@ const DEFAULT_ADMINS: AdminUser[] = [
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   },
-  {
-    id: 'sub-admin-01',
-    email: 'artisan.manager@example.com',
-    name: 'Artisan Branch Manager',
-    role: 'restricted',
-    assignedCardIds: ['0001', '0002'],
-    permissions: {
-      canEditCards: true,
-      canToggleAi: true,
-      canExportCsv: false,
-      canCreateCards: false,
-    },
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  },
 ];
 
 export async function fetchAdmins(): Promise<AdminUser[]> {
@@ -405,30 +438,24 @@ export async function fetchAdmins(): Promise<AdminUser[]> {
       snapshot.forEach((d) => list.push(d.data() as AdminUser));
       localStorage.setItem(ADMINS_STORAGE_KEY, JSON.stringify(list));
       return list;
-    } else {
-      for (const adm of DEFAULT_ADMINS) {
-        await setDoc(doc(db, ADMINS_COLLECTION, adm.id), adm);
-      }
-      return DEFAULT_ADMINS;
     }
   } catch (err) {
-    console.warn('Firestore fetch admins failed, falling back to cache:', err);
+    console.warn('Firestore fetch admins failed, falling back to server/cache:', err);
   }
 
-  // Only check backend API on local dev environment
-  if (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
-    try {
-      const res = await fetch('/api/admins');
-      if (res.ok) {
-        const data = await res.json();
-        if (data.admins && data.admins.length > 0) {
-          localStorage.setItem(ADMINS_STORAGE_KEY, JSON.stringify(data.admins));
-          return data.admins;
-        }
+  try {
+    const res = await fetch('/api/admins', {
+      headers: getApiAuthHeaders(),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.admins && data.admins.length > 0) {
+        localStorage.setItem(ADMINS_STORAGE_KEY, JSON.stringify(data.admins));
+        return data.admins;
       }
-    } catch {
-      // ignore
     }
+  } catch {
+    // ignore
   }
 
   const cached = localStorage.getItem(ADMINS_STORAGE_KEY);
@@ -470,7 +497,7 @@ export async function createAdmin(payload: Partial<AdminUser>): Promise<AdminUse
   try {
     await fetch('/api/admins', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getApiAuthHeaders(),
       body: JSON.stringify(newAdmin),
     });
   } catch {
@@ -504,7 +531,7 @@ export async function updateAdmin(id: string, updates: Partial<AdminUser>): Prom
   try {
     await fetch(`/api/admins/${encodeURIComponent(merged.id)}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getApiAuthHeaders(),
       body: JSON.stringify(updates),
     });
   } catch {
@@ -524,7 +551,10 @@ export async function deleteAdmin(id: string): Promise<boolean> {
   }
 
   try {
-    await fetch(`/api/admins/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    await fetch(`/api/admins/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: getApiAuthHeaders(),
+    });
   } catch {
     // ignore
   }
@@ -557,7 +587,9 @@ export async function fetchUsers(): Promise<UserProfile[]> {
 
   // 2. Try REST backend /api/users
   try {
-    const res = await fetch('/api/users');
+    const res = await fetch('/api/users', {
+      headers: getApiAuthHeaders(),
+    });
     if (res.ok) {
       const data = await res.json();
       if (data.success && Array.isArray(data.users) && data.users.length > 0) {
@@ -630,7 +662,7 @@ export async function saveUser(user: Partial<UserProfile> & { uid: string; email
   try {
     await fetch('/api/users', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getApiAuthHeaders(),
       body: JSON.stringify(fullUser),
     });
   } catch {
@@ -666,7 +698,10 @@ export async function deleteUser(uid: string): Promise<boolean> {
 
   // 2. Delete on backend
   try {
-    await fetch(`/api/users/${encodeURIComponent(uid)}`, { method: 'DELETE' });
+    await fetch(`/api/users/${encodeURIComponent(uid)}`, {
+      method: 'DELETE',
+      headers: getApiAuthHeaders(),
+    });
   } catch {
     // ignore
   }

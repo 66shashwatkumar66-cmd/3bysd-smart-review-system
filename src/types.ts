@@ -10,6 +10,10 @@ export interface CardRecord {
   assignedToEmail?: string; // Assigned user email for RBAC ownership
   assignedToUid?: string;   // Assigned user Google UID
   assignedToName?: string;  // Assigned user display name
+  customKeywords?: string[]; // Custom experience tags/keywords for this business
+  reviewTone?: 'enthusiastic' | 'friendly' | 'professional' | 'concise'; // Tone for AI review generation
+  promptStarter?: string; // Optional custom guidance for AI review generator
+  customHeadline?: string; // Optional custom headline on customer review page
   createdAt: string;
   updatedAt: string;
 }

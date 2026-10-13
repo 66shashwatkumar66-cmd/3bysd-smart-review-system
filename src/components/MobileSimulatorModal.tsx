@@ -2,6 +2,7 @@ import React, { useState, useId } from 'react';
 import { CardRecord } from '../types';
 import { CustomerReviewView } from './CustomerReviewView';
 import { X, ExternalLink, Smartphone } from 'lucide-react';
+import { getCardScanUrl } from '../utils/url';
 
 interface MobileSimulatorModalProps {
   cards: CardRecord[];
@@ -20,7 +21,7 @@ export const MobileSimulatorModal: React.FC<MobileSimulatorModalProps> = ({
   );
 
   const activeCard = cards.find((c) => c.id === selectedCardId) || null;
-  const fullUrl = `${window.location.origin}/r/${selectedCardId}`;
+  const fullUrl = getCardScanUrl(selectedCardId);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/70 backdrop-blur-xs">
