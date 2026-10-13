@@ -67,30 +67,7 @@ const INITIAL_CARDS: CardRecord[] = [
   },
 ];
 
-export function getApiAuthHeaders(userEmail?: string): Record<string, string> {
-  let email = (userEmail || '').trim().toLowerCase();
-  if (!email) {
-    try {
-      const stored = localStorage.getItem('3dbysd_current_user');
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (parsed?.email) email = parsed.email.trim().toLowerCase();
-      }
-    } catch {
-      // ignore
-    }
-  }
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-  if (email) {
-    headers['x-user-email'] = email;
-    headers['x-admin-id'] = email;
-  }
-  return headers;
-}
-
-export async function fetchCards(userEmail?: string): Promise<CardRecord[]> {
+export async function fetchCards(): Promise<CardRecord[]> {
   try {
     const colRef = collection(db, CARDS_COLLECTION);
     const snapshot = await getDocs(colRef);
@@ -114,11 +91,9 @@ export async function fetchCards(userEmail?: string): Promise<CardRecord[]> {
     console.warn('Firestore fetch failed, attempting server API fallback:', error);
   }
 
-  // Fallback to local server REST API with Role-Based isolation headers
+  // Fallback to local server REST API
   try {
-    const res = await fetch('/api/cards', {
-      headers: getApiAuthHeaders(userEmail),
-    });
+    const res = await fetch('/api/cards');
     if (res.ok) {
       const data = await res.json();
       if (data.cards && Array.isArray(data.cards)) {
@@ -252,7 +227,7 @@ export async function createBatchCards(payload: {
   try {
     await fetch('/api/cards/batch', {
       method: 'POST',
-      headers: getApiAuthHeaders(),
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
   } catch {
@@ -305,7 +280,10 @@ export async function assignCard(
   try {
     const res = await fetch(`/api/cards/${encodeURIComponent(id)}/assign`, {
       method: 'PUT',
-      headers: getApiAuthHeaders(adminId),
+      headers: {
+        'Content-Type': 'application/json',
+        ...(adminId ? { 'x-admin-id': adminId } : {}),
+      },
       body: JSON.stringify({ ...updates, adminId }),
     });
     if (res.ok) {
@@ -343,7 +321,10 @@ export async function bulkUpdateCardsStatus(
   try {
     await fetch('/api/cards/bulk-status', {
       method: 'PUT',
-      headers: getApiAuthHeaders(adminId),
+      headers: {
+        'Content-Type': 'application/json',
+        ...(adminId ? { 'x-admin-id': adminId } : {}),
+      },
       body: JSON.stringify({ ids: normalizedIds, status, adminId }),
     });
   } catch {
@@ -375,10 +356,7 @@ export async function deleteCard(id: string): Promise<boolean> {
   }
 
   try {
-    await fetch(`/api/cards/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-      headers: getApiAuthHeaders(),
-    });
+    await fetch(`/api/cards/${encodeURIComponent(id)}`, { method: 'DELETE' });
   } catch {
     // ignore
   }
@@ -427,6 +405,21 @@ const DEFAULT_ADMINS: AdminUser[] = [
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   },
+  {
+    id: 'sub-admin-01',
+    email: 'artisan.manager@example.com',
+    name: 'Artisan Branch Manager',
+    role: 'restricted',
+    assignedCardIds: ['0001', '0002'],
+    permissions: {
+      canEditCards: true,
+      canToggleAi: true,
+      canExportCsv: false,
+      canCreateCards: false,
+    },
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  },
 ];
 
 export async function fetchAdmins(): Promise<AdminUser[]> {
@@ -444,9 +437,7 @@ export async function fetchAdmins(): Promise<AdminUser[]> {
   }
 
   try {
-    const res = await fetch('/api/admins', {
-      headers: getApiAuthHeaders(),
-    });
+    const res = await fetch('/api/admins');
     if (res.ok) {
       const data = await res.json();
       if (data.admins && data.admins.length > 0) {
@@ -497,7 +488,7 @@ export async function createAdmin(payload: Partial<AdminUser>): Promise<AdminUse
   try {
     await fetch('/api/admins', {
       method: 'POST',
-      headers: getApiAuthHeaders(),
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(newAdmin),
     });
   } catch {
@@ -531,7 +522,7 @@ export async function updateAdmin(id: string, updates: Partial<AdminUser>): Prom
   try {
     await fetch(`/api/admins/${encodeURIComponent(merged.id)}`, {
       method: 'PUT',
-      headers: getApiAuthHeaders(),
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updates),
     });
   } catch {
@@ -551,10 +542,7 @@ export async function deleteAdmin(id: string): Promise<boolean> {
   }
 
   try {
-    await fetch(`/api/admins/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-      headers: getApiAuthHeaders(),
-    });
+    await fetch(`/api/admins/${encodeURIComponent(id)}`, { method: 'DELETE' });
   } catch {
     // ignore
   }
@@ -587,9 +575,7 @@ export async function fetchUsers(): Promise<UserProfile[]> {
 
   // 2. Try REST backend /api/users
   try {
-    const res = await fetch('/api/users', {
-      headers: getApiAuthHeaders(),
-    });
+    const res = await fetch('/api/users');
     if (res.ok) {
       const data = await res.json();
       if (data.success && Array.isArray(data.users) && data.users.length > 0) {
@@ -662,7 +648,7 @@ export async function saveUser(user: Partial<UserProfile> & { uid: string; email
   try {
     await fetch('/api/users', {
       method: 'POST',
-      headers: getApiAuthHeaders(),
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(fullUser),
     });
   } catch {
@@ -698,10 +684,7 @@ export async function deleteUser(uid: string): Promise<boolean> {
 
   // 2. Delete on backend
   try {
-    await fetch(`/api/users/${encodeURIComponent(uid)}`, {
-      method: 'DELETE',
-      headers: getApiAuthHeaders(),
-    });
+    await fetch(`/api/users/${encodeURIComponent(uid)}`, { method: 'DELETE' });
   } catch {
     // ignore
   }

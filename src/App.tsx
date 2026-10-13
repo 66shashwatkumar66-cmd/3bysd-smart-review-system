@@ -179,20 +179,12 @@ export default function App() {
     };
   }, []);
 
-  const loadCards = async (email?: string) => {
+  const loadCards = async () => {
     setLoading(true);
-    const targetEmail = email || currentUser?.email;
-    const data = await fetchCards(targetEmail);
+    const data = await fetchCards();
     setCards(data);
     setLoading(false);
   };
-
-  // Re-fetch with user context when currentUser logs in or changes
-  useEffect(() => {
-    if (currentUser?.email) {
-      loadCards(currentUser.email);
-    }
-  }, [currentUser?.email]);
 
   const loadUsersData = async () => {
     try {
@@ -329,13 +321,6 @@ export default function App() {
 
   // Master Admin check: STRICTLY ONLY for the email 66shashwatkumar66@gmail.com
   const isMaster = Boolean(currentUser.email.toLowerCase() === '66shashwatkumar66@gmail.com');
-
-  // Guard management views: Only Master Admin can access 'admins' or 'users'
-  useEffect(() => {
-    if (!isMaster && (currentTab === 'admins' || currentTab === 'users')) {
-      setCurrentTab('cards');
-    }
-  }, [isMaster, currentTab]);
 
   // Check if authorized as a sub-admin by Master Admin
   const authorizedAdmin = admins.find(
@@ -519,15 +504,13 @@ export default function App() {
               </div>
             </div>
 
-            {currentUser?.email?.toLowerCase() === '66shashwatkumar66@gmail.com' && (
-              <button
-                onClick={() => setActiveAdmin(masterAdmin)}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-200 hover:bg-amber-300 text-amber-950 rounded-xl font-bold transition-colors shrink-0 self-start sm:self-auto text-xs"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                <span>Switch to Master</span>
-              </button>
-            )}
+            <button
+              onClick={() => setActiveAdmin(masterAdmin)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-200 hover:bg-amber-300 text-amber-950 rounded-xl font-bold transition-colors shrink-0 self-start sm:self-auto text-xs"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Switch to Master</span>
+            </button>
           </div>
         )}
 
@@ -724,8 +707,8 @@ export default function App() {
           />
         )}
 
-        {/* Tab 5: Google Verified Users & Logins - Strictly Master Admin Only */}
-        {currentTab === 'users' && isMaster && (
+        {/* Tab 5: Google Verified Users & Logins */}
+        {currentTab === 'users' && (
           <UsersManagementView
             activeAdmin={effectiveActiveAdmin}
             onRefreshAdmins={loadAdminsData}
