@@ -84,20 +84,22 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
             .split(',')
             .map((k: string) => k.trim())
             .filter(Boolean)
-        : undefined;
+        : [];
 
-      await onSave(card.id, {
+      const payload: Partial<CardRecord> = {
         businessName: businessName.trim(),
         category: category.trim(),
         googleReviewUrl: googleReviewUrl.trim(),
         notes: notes.trim(),
         status: status,
         aiReviewEnabled: aiReviewEnabled,
-        assignedToEmail: assignedToEmail.trim() || undefined,
-        assignedToName: assignedToName.trim() || undefined,
-        assignedToUid: assignedToUid.trim() || undefined,
+        assignedToEmail: assignedToEmail.trim() || '',
+        assignedToName: assignedToName.trim() || '',
+        assignedToUid: assignedToUid.trim() || '',
         customKeywords: keywordsArray,
-      });
+      };
+
+      await onSave(card.id, payload);
       onClose();
     } catch (err: any) {
       setError(err.message || 'Failed to update assignment');

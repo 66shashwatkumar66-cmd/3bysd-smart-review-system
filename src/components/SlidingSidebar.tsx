@@ -175,15 +175,16 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
       icon: Smartphone,
       color: '#34A853',
     },
-    {
-      id: 'users' as const,
-      label: 'Users & Logins',
-      description: 'Google verified logins & registry',
-      icon: Users,
-      color: '#4285F4',
-    },
+    // Strictly isolate management views (Users & Master Admin) to Master Admin only
     ...(isMaster
       ? [
+          {
+            id: 'users' as const,
+            label: 'Users & Logins',
+            description: 'Google verified logins & registry',
+            icon: Users,
+            color: '#4285F4',
+          },
           {
             id: 'admins' as const,
             label: 'Master Admin Control',
@@ -295,8 +296,8 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
               </span>
             </div>
 
-            {/* Quick Admin Switcher if restricted */}
-            {!isMaster && masterAdmin && (
+            {/* Quick Admin Switcher: Only available if the authenticated Google user is actually the Master Admin */}
+            {!isMaster && masterAdmin && (currentUser?.email?.toLowerCase() === '66shashwatkumar66@gmail.com') && (
               <button
                 onClick={() => {
                   onSelectActiveAdmin(masterAdmin);

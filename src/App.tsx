@@ -459,7 +459,7 @@ export default function App() {
   const availableCount = displayedCards.filter((c) => c.status === 'available').length;
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] text-slate-900 flex flex-col w-full overflow-x-hidden">
+    <div className="min-h-screen bg-[#F8FAFC] text-slate-900 flex flex-col w-full max-w-full overflow-x-hidden">
       {/* Top Admin Navigation */}
       <AdminHeader
         currentTab={currentTab}
@@ -483,7 +483,7 @@ export default function App() {
       />
 
       {/* Main Admin Workspace Viewport - Optimized container for PC and mobile */}
-      <main className="flex-1 max-w-5xl lg:max-w-6xl w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 space-y-5 overflow-hidden">
+      <main className="flex-1 max-w-5xl lg:max-w-6xl w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 space-y-5 max-w-full overflow-x-hidden">
         {/* Restricted Admin Notice Banner if logged in as sub-admin */}
         {!isMaster && (
           <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-xs">

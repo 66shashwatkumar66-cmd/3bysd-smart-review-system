@@ -56,6 +56,11 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Health check / Connection test endpoint
+    match /test/{testId} {
+      allow get: if true;
+    }
+
     // Dynamic QR Cards Collection
     match /cards/{cardId} {
       allow get, list: if true;

@@ -744,8 +744,8 @@ export const CardsTable: React.FC<CardsTableProps> = ({
             </div>
 
             {/* 2. Desktop PC View: Streamlined Responsive Table (Fitted without horizontal scrollbar) */}
-            <div className="hidden md:block w-full overflow-hidden">
-              <table className="w-full text-left text-xs border-collapse">
+            <div className="hidden md:block w-full max-w-full overflow-x-auto custom-scrollbar">
+              <table className="w-full text-left text-xs border-collapse min-w-[680px]">
                 <thead>
                   <tr className="bg-slate-50/90 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
                     <th className="py-3 px-3 sm:px-4 w-10 text-center">

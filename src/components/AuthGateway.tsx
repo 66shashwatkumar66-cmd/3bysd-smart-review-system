@@ -9,10 +9,13 @@ import {
   KeyRound,
   CheckCircle,
   Clock,
+  ShieldAlert,
 } from 'lucide-react';
 import { auth, googleProvider, signInWithPopup } from '../firebase';
 import { saveUser, fetchAdmins, fetchCards } from '../utils/api';
 import { UserProfile } from '../types';
+import { logAuthFailure } from '../utils/firebaseDiagnostics';
+import { FirebaseDiagnosticsModal } from './FirebaseDiagnosticsModal';
 
 interface AuthGatewayProps {
   onLoginSuccess: (user: UserProfile) => void;
@@ -27,6 +30,7 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [googleEmail, setGoogleEmail] = useState<string>('');
   const [showEmailInput, setShowEmailInput] = useState<boolean>(false);
+  const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState<boolean>(false);
 
   // 1. Google OAuth Authentication via Firebase
   const handleGoogleSignIn = async () => {
@@ -70,13 +74,13 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
       const saved = await saveUser(profile);
       onLoginSuccess(saved);
     } catch (err: any) {
-      console.warn('Google sign-in popup error:', err);
+      logAuthFailure(err, 'Auth Gateway Google Sign-In');
       const code = err?.code || '';
       const msg = err?.message || '';
 
       if (code === 'auth/unauthorized-domain' || msg.includes('unauthorized-domain')) {
         setErrorMsg(
-          'Google Cloud Domain notice: Enter your authorized Google email directly below to proceed.'
+          `Domain "${window.location.hostname}" is not authorized in Firebase OAuth. You can inspect diagnostics or sign in using your authorized Google email below.`
         );
         setShowEmailInput(true);
       } else if (code === 'auth/popup-blocked') {
@@ -199,9 +203,19 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
           {errorMsg && (
             <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-start gap-2.5">
               <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-              <div className="space-y-1">
+              <div className="space-y-1.5 flex-1 min-w-0">
                 <span className="font-semibold">Notice</span>
                 <p className="text-amber-800 leading-relaxed">{errorMsg}</p>
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => setIsDiagnosticsOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-200/80 hover:bg-amber-200 text-amber-950 font-bold text-[11px] transition-colors cursor-pointer"
+                  >
+                    <ShieldAlert className="w-3.5 h-3.5 text-amber-700" />
+                    <span>Run Firebase & Domain Diagnostics</span>
+                  </button>
+                </div>
               </div>
             </div>
           )}
@@ -309,11 +323,29 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
 
       {/* Clean Footer */}
       <footer className="border-t border-slate-200 bg-white py-4 text-center text-xs text-slate-500">
-        <div className="max-w-5xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-1">
+        <div className="max-w-5xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
           <div>3DBYSD Smart Reviews · Stand Management Platform</div>
-          <div>Powered by Google Gemini 3.8 Flash AI</div>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setIsDiagnosticsOpen(true)}
+              className="text-[#1A73E8] hover:underline font-semibold flex items-center gap-1 cursor-pointer"
+            >
+              <ShieldAlert className="w-3.5 h-3.5" />
+              <span>Firebase Diagnostics</span>
+            </button>
+            <span aria-hidden="true">·</span>
+            <span>Powered by Google Gemini AI</span>
+          </div>
         </div>
       </footer>
+
+      {/* Diagnostics Modal */}
+      <FirebaseDiagnosticsModal
+        isOpen={isDiagnosticsOpen}
+        onClose={() => setIsDiagnosticsOpen(false)}
+        initialError={errorMsg}
+      />
     </div>
   );
 };

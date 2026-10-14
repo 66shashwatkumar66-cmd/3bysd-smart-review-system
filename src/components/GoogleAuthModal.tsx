@@ -5,10 +5,13 @@ import {
   AlertCircle,
   RefreshCw,
   Lock,
+  ShieldAlert,
 } from 'lucide-react';
 import { auth, googleProvider, signInWithPopup } from '../firebase';
 import { saveUser } from '../utils/api';
 import { UserProfile } from '../types';
+import { logAuthFailure } from '../utils/firebaseDiagnostics';
+import { FirebaseDiagnosticsModal } from './FirebaseDiagnosticsModal';
 
 interface GoogleAuthModalProps {
   isOpen: boolean;
@@ -25,6 +28,7 @@ export const GoogleAuthModal: React.FC<GoogleAuthModalProps> = ({
   const [loading, setLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState<boolean>(false);
 
   if (!isOpen) return null;
 
@@ -65,11 +69,15 @@ export const GoogleAuthModal: React.FC<GoogleAuthModalProps> = ({
         onClose();
       }, 700);
     } catch (err: any) {
-      console.warn('Google Popup result:', err);
+      logAuthFailure(err, 'Google Auth Modal');
       const code = err?.code || '';
       const msg = err?.message || '';
 
-      if (code === 'auth/popup-closed-by-user') {
+      if (code === 'auth/unauthorized-domain' || msg.includes('unauthorized-domain')) {
+        setErrorMsg(
+          `Domain Unauthorized in Firebase: "${window.location.hostname}" is not yet in your Firebase Authorized Domains list. Check console for details or view Diagnostics.`
+        );
+      } else if (code === 'auth/popup-closed-by-user') {
         setErrorMsg('Sign-in cancelled: popup was closed before completing Google authentication.');
       } else if (code === 'auth/popup-blocked') {
         setErrorMsg('Sign-in blocked: your browser blocked the Google popup window. Please allow popups.');
@@ -133,9 +141,19 @@ export const GoogleAuthModal: React.FC<GoogleAuthModalProps> = ({
           {errorMsg && (
             <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-start gap-2.5">
               <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-              <div className="space-y-1">
+              <div className="space-y-1.5 flex-1 min-w-0">
                 <span className="font-semibold">Notice</span>
                 <p className="text-amber-800 leading-relaxed">{errorMsg}</p>
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setIsDiagnosticsOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-200/80 hover:bg-amber-200 text-amber-900 font-bold text-[11px] transition-colors cursor-pointer"
+                  >
+                    <ShieldAlert className="w-3.5 h-3.5 text-amber-700" />
+                    <span>View OAuth & Domain Diagnostics</span>
+                  </button>
+                </div>
               </div>
             </div>
           )}
@@ -188,14 +206,31 @@ export const GoogleAuthModal: React.FC<GoogleAuthModalProps> = ({
         {/* Footer */}
         <div className="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
           <span>Firebase Authentication</span>
-          <button
-            onClick={onClose}
-            className="px-3.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 font-medium text-slate-700 transition-colors cursor-pointer"
-          >
-            Cancel
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setIsDiagnosticsOpen(true)}
+              className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 font-medium text-slate-600 hover:text-slate-900 transition-colors cursor-pointer text-xs flex items-center gap-1"
+            >
+              <ShieldAlert className="w-3.5 h-3.5 text-[#1A73E8]" />
+              <span>Diagnostics</span>
+            </button>
+            <button
+              onClick={onClose}
+              className="px-3.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 font-medium text-slate-700 transition-colors cursor-pointer"
+            >
+              Cancel
+            </button>
+          </div>
         </div>
       </div>
+
+      {/* Diagnostics Sub-Modal */}
+      <FirebaseDiagnosticsModal
+        isOpen={isDiagnosticsOpen}
+        onClose={() => setIsDiagnosticsOpen(false)}
+        initialError={errorMsg}
+      />
     </div>
   );
 };

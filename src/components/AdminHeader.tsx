@@ -137,7 +137,7 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
   const TabIcon = tabMeta.icon;
 
   return (
-    <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200 w-full">
+    <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200 w-full max-w-full overflow-x-hidden">
       {/* Google 4-Color Gradient Stripe */}
       <div className="h-1 w-full bg-gradient-to-r from-[#4285F4] via-[#EA4335] via-[#FBBC05] to-[#34A853]" />
 
@@ -179,7 +179,7 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
           </div>
 
           {/* Middle Zone: Desktop Navigation Bar with direct 1-click access */}
-          <nav className="hidden md:flex items-center gap-1 bg-slate-100/90 p-1 rounded-xl border border-slate-200/80">
+          <nav className="hidden lg:flex items-center gap-1 bg-slate-100/90 p-1 rounded-xl border border-slate-200/80 shrink-0">
             <button
               type="button"
               onClick={() => onSelectTab('cards')}

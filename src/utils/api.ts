@@ -18,6 +18,34 @@ import {
 const STORAGE_KEY = '3dbysd_smart_reviews_cards';
 const CARDS_COLLECTION = 'cards';
 
+/**
+ * Deeply removes all keys with `undefined` values.
+ * Firestore strictly rejects documents containing undefined values with:
+ * "FirebaseError: Function setDoc() called with invalid data. Unsupported field value: undefined"
+ */
+export function cleanForFirestore<T extends Record<string, any>>(obj: T): T {
+  if (obj === null || typeof obj !== 'object') {
+    return obj;
+  }
+  if (Array.isArray(obj)) {
+    return obj.map((item) =>
+      typeof item === 'object' && item !== null ? cleanForFirestore(item) : item
+    ) as any;
+  }
+  const clean: any = {};
+  for (const [key, val] of Object.entries(obj)) {
+    if (val === undefined) {
+      continue;
+    }
+    if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
+      clean[key] = cleanForFirestore(val);
+    } else {
+      clean[key] = val;
+    }
+  }
+  return clean;
+}
+
 const INITIAL_CARDS: CardRecord[] = [
   {
     id: '0001',
@@ -213,9 +241,9 @@ export async function createBatchCards(payload: {
       newCards.push(card);
       existingIds.add(id);
 
-      // Write to Firestore
+      // Write to Firestore with sanitization
       try {
-        await setDoc(doc(db, CARDS_COLLECTION, id), card);
+        await setDoc(doc(db, CARDS_COLLECTION, id), cleanForFirestore(card));
       } catch (err) {
         console.warn(`Failed writing card ${id} to Firestore:`, err);
       }
@@ -246,37 +274,37 @@ export async function assignCard(
 ): Promise<CardRecord | null> {
   const docRef = doc(db, CARDS_COLLECTION, id);
 
+  // Read existing doc if available
+  let existingData: Partial<CardRecord> = { id, status: 'available', scansCount: 0 };
   try {
     const existingSnap = await getDoc(docRef);
-    const existingData = existingSnap.exists()
-      ? (existingSnap.data() as CardRecord)
-      : { id, status: 'available', scansCount: 0 };
-
-    const mergedCard: CardRecord = {
-      ...existingData,
-      ...updates,
-      id,
-      updatedAt: new Date().toISOString(),
-    } as CardRecord;
-
-    await setDoc(docRef, mergedCard);
-
-    // Update local cache
-    const cached = await fetchCards();
-    const idx = cached.findIndex((c) => c.id.toLowerCase() === id.toLowerCase());
-    if (idx !== -1) {
-      cached[idx] = mergedCard;
-    } else {
-      cached.push(mergedCard);
+    if (existingSnap.exists()) {
+      existingData = existingSnap.data() as CardRecord;
     }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(cached));
-
-    return mergedCard;
-  } catch (error) {
-    console.warn(`Firestore assign card ${id} error:`, error);
+  } catch (readErr) {
+    console.warn(`Firestore read card ${id} notice:`, readErr);
   }
 
-  // Server API Fallback
+  // Merge existing + new updates
+  const mergedCard: CardRecord = {
+    ...existingData,
+    ...updates,
+    id,
+    updatedAt: new Date().toISOString(),
+  } as CardRecord;
+
+  // CRITICAL: Deeply sanitize all fields to eliminate undefined values
+  const sanitizedCard = cleanForFirestore(mergedCard);
+
+  // 1. Write to Firestore
+  try {
+    await setDoc(docRef, sanitizedCard);
+    console.log(`✅ Firestore updated successfully for Card #${id}`);
+  } catch (error) {
+    console.error(`Firestore assign card ${id} error:`, error);
+  }
+
+  // 2. ALWAYS sync with Server API (data/cards.json backup & Supabase cloud sync)
   try {
     const res = await fetch(`/api/cards/${encodeURIComponent(id)}/assign`, {
       method: 'PUT',
@@ -284,17 +312,33 @@ export async function assignCard(
         'Content-Type': 'application/json',
         ...(adminId ? { 'x-admin-id': adminId } : {}),
       },
-      body: JSON.stringify({ ...updates, adminId }),
+      body: JSON.stringify({ ...sanitizedCard, adminId }),
     });
     if (res.ok) {
       const data = await res.json();
-      if (data.card) return data.card;
+      if (data.card) {
+        // Updated in server
+      }
     }
+  } catch (serverErr) {
+    console.warn(`Server API assign card ${id} sync notice:`, serverErr);
+  }
+
+  // 3. Update localStorage cache
+  try {
+    const cached = await fetchCards();
+    const idx = cached.findIndex((c) => c.id.toLowerCase() === id.toLowerCase());
+    if (idx !== -1) {
+      cached[idx] = sanitizedCard;
+    } else {
+      cached.push(sanitizedCard);
+    }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(cached));
   } catch {
     // ignore
   }
 
-  return null;
+  return sanitizedCard;
 }
 
 export async function bulkUpdateCardsStatus(
@@ -305,12 +349,12 @@ export async function bulkUpdateCardsStatus(
   const normalizedIds = ids.map((id) => id.trim());
   const now = new Date().toISOString();
 
-  // 1. Try batch updating in Firestore
+  // 1. Try batch updating in Firestore with sanitized payload
   try {
     const batch = writeBatch(db);
     for (const id of normalizedIds) {
       const docRef = doc(db, CARDS_COLLECTION, id);
-      batch.set(docRef, { status, updatedAt: now }, { merge: true });
+      batch.set(docRef, cleanForFirestore({ status, updatedAt: now }), { merge: true });
     }
     await batch.commit();
   } catch (err) {
@@ -480,7 +524,7 @@ export async function createAdmin(payload: Partial<AdminUser>): Promise<AdminUse
   };
 
   try {
-    await setDoc(doc(db, ADMINS_COLLECTION, newAdmin.id), newAdmin);
+    await setDoc(doc(db, ADMINS_COLLECTION, newAdmin.id), cleanForFirestore(newAdmin));
   } catch (err) {
     console.warn(`Firestore create admin failed:`, err);
   }
@@ -514,7 +558,7 @@ export async function updateAdmin(id: string, updates: Partial<AdminUser>): Prom
   };
 
   try {
-    await setDoc(doc(db, ADMINS_COLLECTION, merged.id), merged);
+    await setDoc(doc(db, ADMINS_COLLECTION, merged.id), cleanForFirestore(merged));
   } catch (err) {
     console.warn(`Firestore update admin failed:`, err);
   }
@@ -639,7 +683,7 @@ export async function saveUser(user: Partial<UserProfile> & { uid: string; email
 
   // 1. Save to Firestore
   try {
-    await setDoc(doc(db, USERS_COLLECTION, fullUser.uid), fullUser);
+    await setDoc(doc(db, USERS_COLLECTION, fullUser.uid), cleanForFirestore(fullUser));
   } catch (err) {
     console.warn('Firestore saveUser notice:', err);
   }
