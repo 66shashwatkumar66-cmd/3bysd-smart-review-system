@@ -1,6 +1,6 @@
 [
   {
-    "scansCount": 78,
+    "scansCount": 85,
     "googleReviewUrl": "https://search.google.com/local/writereview?placeid=ChIJN1t_tDeuEmsRUsoyG83frY4",
     "notes": "Table 4 Stand - NFC & QR display",
     "status": "assigned",
@@ -11,7 +11,7 @@
     "id": "0001",
     "category": "Specialty Coffee & Brunch",
     "assignedToEmail": "66shashwatkumar66@gmail.com",
-    "updatedAt": "2026-10-14T09:39:42.780Z"
+    "updatedAt": "2026-10-14T10:23:00.669Z"
   },
   {
     "notes": "Host stand entrance",
@@ -31,12 +31,13 @@
     "aiReviewEnabled": true,
     "businessName": "3d by sd",
     "createdAt": "2026-10-07T19:08:29.393Z",
-    "status": "assigned",
+    "status": "disabled",
     "category": "3d printing",
     "scansCount": 6,
     "id": "0003",
-    "updatedAt": "2026-10-14T09:29:57.368Z",
-    "assignedToEmail": "66shashwatkumar66@gmail.com"
+    "updatedAt": "2026-10-14T09:56:49.820Z",
+    "assignedToEmail": "66shashwatkumar66@gmail.com",
+    "customKeywords": []
   },
   {
     "businessName": "",

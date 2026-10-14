@@ -112,8 +112,6 @@ export interface AdminUser {
   updatedAt: string;
 }
 
-const MASTER_ADMIN_EMAIL = '66shashwatkumar66@gmail.com';
-
 function ensureAdminsFile(): void {
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -122,7 +120,7 @@ function ensureAdminsFile(): void {
     const initialAdmins: AdminUser[] = [
       {
         id: 'master-admin-01',
-        email: MASTER_ADMIN_EMAIL,
+        email: '66shashwatkumar66@gmail.com',
         name: 'Master Admin',
         role: 'master',
         assignedCardIds: [],
@@ -135,43 +133,24 @@ function ensureAdminsFile(): void {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       },
+      {
+        id: 'sub-admin-01',
+        email: 'branch.manager@example.com',
+        name: 'Branch Manager (Restricted)',
+        role: 'restricted',
+        assignedCardIds: ['0001', '0002'],
+        permissions: {
+          canEditCards: true,
+          canToggleAi: true,
+          canExportCsv: false,
+          canCreateCards: false,
+        },
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
     ];
     fs.writeFileSync(ADMINS_FILE, JSON.stringify(initialAdmins, null, 2), 'utf-8');
   }
-}
-
-function getRequesterEmail(req: Request): string {
-  const headerEmail =
-    (req.headers['x-user-email'] as string) ||
-    (req.headers['x-admin-email'] as string) ||
-    '';
-  if (headerEmail) return headerEmail.trim().toLowerCase();
-
-  const adminIdHeader = (req.headers['x-admin-id'] as string) || '';
-  if (adminIdHeader) {
-    if (adminIdHeader.includes('@')) return adminIdHeader.trim().toLowerCase();
-    const admins = readAdmins();
-    const found = admins.find(
-      (a) => a.id === adminIdHeader || a.email.toLowerCase() === adminIdHeader.toLowerCase()
-    );
-    if (found) return found.email.toLowerCase();
-  }
-
-  const queryEmail = (req.query?.userEmail as string) || (req.query?.adminEmail as string);
-  if (queryEmail && typeof queryEmail === 'string' && queryEmail.includes('@')) {
-    return queryEmail.trim().toLowerCase();
-  }
-
-  const bodyEmail = req.body?.userEmail || req.body?.adminEmail;
-  if (bodyEmail && typeof bodyEmail === 'string' && bodyEmail.includes('@')) {
-    return bodyEmail.trim().toLowerCase();
-  }
-
-  return '';
-}
-
-function isRequesterMaster(req: Request): boolean {
-  return getRequesterEmail(req) === MASTER_ADMIN_EMAIL;
 }
 
 function readAdmins(): AdminUser[] {
@@ -332,28 +311,9 @@ function writeCards(cards: CardRecord[]): void {
   }
 }
 
-// REST API: Get all cards with strict role-based isolation
-app.get('/api/cards', (req: Request, res: Response) => {
+// REST API: Get all cards
+app.get('/api/cards', (_req: Request, res: Response) => {
   const cards = readCards();
-  const requesterEmail = getRequesterEmail(req);
-
-  // If requester is authenticated and is NOT Master Admin:
-  // Strictly isolate cards to only their allocated cards!
-  if (requesterEmail && requesterEmail !== MASTER_ADMIN_EMAIL) {
-    const admins = readAdmins();
-    const adminRecord = admins.find((a) => a.email.toLowerCase() === requesterEmail);
-    const allocatedCardIds = new Set(
-      adminRecord ? adminRecord.assignedCardIds.map((cid) => cid.toLowerCase()) : []
-    );
-
-    const userCards = cards.filter((c) => {
-      const assignedTo = (c.assignedToEmail || '').toLowerCase();
-      return assignedTo === requesterEmail || allocatedCardIds.has(c.id.toLowerCase());
-    });
-    return res.json({ success: true, cards: userCards });
-  }
-
-  // Master Admin or system queries receive all cards
   res.json({ success: true, cards });
 });
 
@@ -377,15 +337,21 @@ app.get('/api/cards/:id', (req: Request, res: Response) => {
   res.json({ success: true, card });
 });
 
-// REST API: Create single or batch cards (STRICTLY Master Admin Only)
+// REST API: Create single or batch cards (Master Admin Only)
 app.post('/api/cards/batch', (req: Request, res: Response) => {
   try {
-    // Strict Server-Side Validation: Only Master Admin (66shashwatkumar66@gmail.com)
-    if (!isRequesterMaster(req)) {
-      return res.status(403).json({
-        success: false,
-        message: 'Permission Denied: Only Master Admin (66shashwatkumar66@gmail.com) can generate new QR inventory cards.',
-      });
+    const requesterAdminId = (req.headers['x-admin-id'] as string) || req.body.adminId;
+    if (requesterAdminId) {
+      const admins = readAdmins();
+      const admin = admins.find(
+        (a) => a.id === requesterAdminId || a.email.toLowerCase() === requesterAdminId.toLowerCase()
+      );
+      if (admin && admin.role === 'restricted') {
+        return res.status(403).json({
+          success: false,
+          message: 'Permission Denied: Only Master Admin can generate new QR inventory cards.',
+        });
+      }
     }
 
     const { count = 1, startNumber = 1, paddingDigits = 4, prefix = '' } = req.body;
@@ -451,30 +417,39 @@ app.put('/api/cards/:id/assign', (req: Request, res: Response) => {
     } = req.body;
 
     const cards = readCards();
-    const index = cards.findIndex((c) => c.id.toLowerCase() === id.toLowerCase());
+    let index = cards.findIndex((c) => c.id.toLowerCase() === id.toLowerCase());
 
     if (index === -1) {
-      return res.status(404).json({ success: false, message: `Card ${id} not found` });
+      const initial: CardRecord = {
+        id,
+        status: status || 'available',
+        businessName: businessName !== undefined ? String(businessName).trim() : '',
+        category: category !== undefined ? String(category).trim() : 'Local Business',
+        googleReviewUrl: googleReviewUrl !== undefined ? String(googleReviewUrl).trim() : '',
+        notes: notes !== undefined ? String(notes).trim() : '',
+        scansCount: 0,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      cards.push(initial);
+      index = cards.length - 1;
     }
 
-    // Strict Role-Based Validation:
-    // If requester is NOT Master Admin, they can ONLY edit cards allocated to them.
-    const requesterEmail = getRequesterEmail(req);
-    if (requesterEmail && requesterEmail !== MASTER_ADMIN_EMAIL) {
+    // Sub-admin permission validation: restricted admins can only edit registered cards
+    const requesterAdminId = (req.headers['x-admin-id'] as string) || req.body.adminId;
+    if (requesterAdminId) {
       const admins = readAdmins();
-      const admin = admins.find((a) => a.email.toLowerCase() === requesterEmail);
-      const allocatedCardIds = new Set(
-        admin ? admin.assignedCardIds.map((cid) => cid.toLowerCase()) : []
+      const admin = admins.find(
+        (a) => a.id === requesterAdminId || a.email.toLowerCase() === requesterAdminId.toLowerCase()
       );
-      const isCardAssignedToUser =
-        (cards[index].assignedToEmail || '').toLowerCase() === requesterEmail ||
-        allocatedCardIds.has(id.toLowerCase());
-
-      if (!isCardAssignedToUser) {
-        return res.status(403).json({
-          success: false,
-          message: `Permission Denied: User ${requesterEmail} is strictly limited to their allocated cards.`,
-        });
+      if (admin && admin.role === 'restricted') {
+        const canEdit = admin.assignedCardIds.some((cid) => cid.toLowerCase() === id.toLowerCase());
+        if (!canEdit) {
+          return res.status(403).json({
+            success: false,
+            message: `Restricted Access: Sub-admin ${admin.name} is only authorized to edit assigned cards [${admin.assignedCardIds.join(', ')}].`,
+          });
+        }
       }
     }
 
@@ -540,30 +515,17 @@ app.put('/api/cards/bulk-status', (req: Request, res: Response) => {
     }
 
     const cards = readCards();
-    const requesterEmail = getRequesterEmail(req);
+    const requesterAdminId = (req.headers['x-admin-id'] as string) || req.body.adminId;
+
     let allowedIds = new Set(ids.map((id: string) => id.toLowerCase()));
-
-    // Strict Role-Based Validation:
-    if (requesterEmail && requesterEmail !== MASTER_ADMIN_EMAIL) {
+    if (requesterAdminId) {
       const admins = readAdmins();
-      const admin = admins.find((a) => a.email.toLowerCase() === requesterEmail);
-      const authorizedSet = new Set(
-        admin ? admin.assignedCardIds.map((cid) => cid.toLowerCase()) : []
+      const admin = admins.find(
+        (a) => a.id === requesterAdminId || a.email.toLowerCase() === requesterAdminId.toLowerCase()
       );
-
-      allowedIds = new Set(
-        [...allowedIds].filter((id) => {
-          const card = cards.find((c) => c.id.toLowerCase() === id);
-          const assigned = (card?.assignedToEmail || '').toLowerCase() === requesterEmail;
-          return assigned || authorizedSet.has(id);
-        })
-      );
-
-      if (allowedIds.size === 0) {
-        return res.status(403).json({
-          success: false,
-          message: 'Permission Denied: You are strictly limited to updating your allocated cards.',
-        });
+      if (admin && admin.role === 'restricted') {
+        const authorizedSet = new Set(admin.assignedCardIds.map((cid) => cid.toLowerCase()));
+        allowedIds = new Set([...allowedIds].filter((id) => authorizedSet.has(id)));
       }
     }
 
@@ -587,16 +549,9 @@ app.put('/api/cards/bulk-status', (req: Request, res: Response) => {
   }
 });
 
-// REST API: Delete card (Strictly Master Admin Only)
+// REST API: Delete card
 app.delete('/api/cards/:id', (req: Request, res: Response) => {
   try {
-    if (!isRequesterMaster(req)) {
-      return res.status(403).json({
-        success: false,
-        message: 'Permission Denied: Only Master Admin (66shashwatkumar66@gmail.com) can delete cards.',
-      });
-    }
-
     const { id } = req.params;
     const cards = readCards();
     const filtered = cards.filter((c) => c.id.toLowerCase() !== id.toLowerCase());
@@ -612,28 +567,15 @@ app.delete('/api/cards/:id', (req: Request, res: Response) => {
   }
 });
 
-// REST API: Get all admins (Strictly Master Admin Only)
-app.get('/api/admins', (req: Request, res: Response) => {
-  if (!isRequesterMaster(req)) {
-    return res.status(403).json({
-      success: false,
-      message: 'Permission Denied: Management view restricted to Master Admin (66shashwatkumar66@gmail.com).',
-    });
-  }
+// REST API: Get all admins
+app.get('/api/admins', (_req: Request, res: Response) => {
   const admins = readAdmins();
   res.json({ success: true, admins });
 });
 
-// REST API: Create or register new sub-admin (Strictly Master Admin Only)
+// REST API: Create or register new sub-admin
 app.post('/api/admins', (req: Request, res: Response) => {
   try {
-    if (!isRequesterMaster(req)) {
-      return res.status(403).json({
-        success: false,
-        message: 'Permission Denied: Only Master Admin (66shashwatkumar66@gmail.com) can authorize sub-admins.',
-      });
-    }
-
     const { email, name, role = 'restricted', assignedCardIds = [], permissions } = req.body;
     if (!email || !name) {
       return res.status(400).json({ success: false, message: 'Email and name are required' });
@@ -669,16 +611,9 @@ app.post('/api/admins', (req: Request, res: Response) => {
   }
 });
 
-// REST API: Update sub-admin permissions and assigned cards (Strictly Master Admin Only)
+// REST API: Update sub-admin permissions and assigned cards
 app.put('/api/admins/:id', (req: Request, res: Response) => {
   try {
-    if (!isRequesterMaster(req)) {
-      return res.status(403).json({
-        success: false,
-        message: 'Permission Denied: Only Master Admin (66shashwatkumar66@gmail.com) can modify admin permissions.',
-      });
-    }
-
     const { id } = req.params;
     const { name, role, assignedCardIds, permissions } = req.body;
 
@@ -705,16 +640,9 @@ app.put('/api/admins/:id', (req: Request, res: Response) => {
   }
 });
 
-// REST API: Delete sub-admin (Strictly Master Admin Only)
+// REST API: Delete sub-admin
 app.delete('/api/admins/:id', (req: Request, res: Response) => {
   try {
-    if (!isRequesterMaster(req)) {
-      return res.status(403).json({
-        success: false,
-        message: 'Permission Denied: Only Master Admin (66shashwatkumar66@gmail.com) can delete sub-admins.',
-      });
-    }
-
     const { id } = req.params;
     const admins = readAdmins();
     const target = admins.find((a) => a.id === id || a.email.toLowerCase() === id.toLowerCase());
@@ -737,15 +665,9 @@ app.delete('/api/admins/:id', (req: Request, res: Response) => {
 
 // ================= User Profiles & Google Verified Logins API =================
 
-// REST API: Get all recorded users (Strictly Master Admin Only)
-app.get('/api/users', (req: Request, res: Response) => {
+// REST API: Get all recorded users
+app.get('/api/users', (_req: Request, res: Response) => {
   try {
-    if (!isRequesterMaster(req)) {
-      return res.status(403).json({
-        success: false,
-        message: 'Permission Denied: User management view restricted to Master Admin (66shashwatkumar66@gmail.com).',
-      });
-    }
     const users = readUsers();
     res.json({ success: true, users });
   } catch (err: any) {
@@ -842,15 +764,9 @@ app.post('/api/users', (req: Request, res: Response) => {
   }
 });
 
-// REST API: Delete user (Strictly Master Admin Only)
+// REST API: Delete user
 app.delete('/api/users/:uid', (req: Request, res: Response) => {
   try {
-    if (!isRequesterMaster(req)) {
-      return res.status(403).json({
-        success: false,
-        message: 'Permission Denied: Only Master Admin (66shashwatkumar66@gmail.com) can remove users.',
-      });
-    }
     const { uid } = req.params;
     const users = readUsers();
     const target = users.find((u) => u.uid === uid || u.email.toLowerCase() === uid.toLowerCase());

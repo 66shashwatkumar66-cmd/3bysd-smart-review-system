@@ -14,10 +14,10 @@ function escapeCsvCell(value: string | number | undefined | null): string {
 }
 
 /**
- * Exports cards list to a downloadable CSV file
+ * Generates an RFC-4180 compliant CSV string from CardRecord items
  */
-export function exportCardsToCsv(cards: CardRecord[]): void {
-  const origin = window.location.origin;
+export function generateCsvString(cards: CardRecord[], baseUrl: string = 'https://3dbysd.in'): string {
+  const origin = typeof window !== 'undefined' && window.location ? window.location.origin : baseUrl;
 
   const headers = [
     'Card ID',
@@ -45,22 +45,33 @@ export function exportCardsToCsv(cards: CardRecord[]): void {
     card.updatedAt ? new Date(card.updatedAt).toISOString() : '',
   ]);
 
-  const csvContent = [
+  return [
     headers.map(escapeCsvCell).join(','),
     ...rows.map((row) => row.map(escapeCsvCell).join(',')),
   ].join('\r\n');
+}
 
-  // Include UTF-8 BOM so Microsoft Excel correctly displays accents and formatting
-  const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
+/**
+ * Exports cards list to a downloadable CSV file in the browser
+ */
+export function exportCardsToCsv(cards: CardRecord[]): string {
+  const csvContent = generateCsvString(cards);
 
-  const today = new Date().toISOString().split('T')[0];
-  link.download = `3dbysd-cards-inventory-${today}.csv`;
-  link.href = url;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
+  if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+    // Include UTF-8 BOM so Microsoft Excel correctly displays accents and formatting
+    const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
 
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+    const today = new Date().toISOString().split('T')[0];
+    link.download = `3dbysd-cards-inventory-${today}.csv`;
+    link.href = url;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  return csvContent;
 }

@@ -185,6 +185,7 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
   const [customHeadline, setCustomHeadline] = useState<string>(selectedCard?.customHeadline || '');
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
+  const [saveError, setSaveError] = useState<string>('');
   const [applyToAll, setApplyToAll] = useState<boolean>(false);
 
   // Sync state when card selection changes
@@ -199,6 +200,7 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
       setPromptStarter(selectedCard.promptStarter || '');
       setCustomHeadline(selectedCard.customHeadline || '');
       setSaveSuccess(false);
+      setSaveError('');
     }
   }, [selectedCardId]);
 
@@ -233,6 +235,7 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
     if (!selectedCard) return;
     setIsSaving(true);
     setSaveSuccess(false);
+    setSaveError('');
 
     try {
       const updates: Partial<CardRecord> = {
@@ -252,8 +255,9 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
 
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to save keywords:', err);
+      setSaveError(err.message || 'Failed to persist keyword changes');
     } finally {
       setIsSaving(false);
     }
@@ -335,6 +339,13 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
           </button>
         </div>
       </div>
+
+      {saveError && (
+        <div className="p-3.5 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+          <span>{saveError}</span>
+        </div>
+      )}
 
       {/* Two Column Layout: Left Column Settings & Keywords, Right Column Real-Time Mobile Preview */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">

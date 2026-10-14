@@ -393,21 +393,29 @@ export async function bulkUpdateCardsStatus(
 }
 
 export async function deleteCard(id: string): Promise<boolean> {
+  const cleanId = id.trim();
   try {
-    await deleteDoc(doc(db, CARDS_COLLECTION, id));
+    await deleteDoc(doc(db, CARDS_COLLECTION, cleanId));
   } catch (err) {
-    console.warn(`Firestore delete card ${id} failed:`, err);
+    console.warn(`Firestore delete card ${cleanId} failed:`, err);
   }
 
   try {
-    await fetch(`/api/cards/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    await fetch(`/api/cards/${encodeURIComponent(cleanId)}`, { method: 'DELETE' });
   } catch {
     // ignore
   }
 
-  const cached = await fetchCards();
-  const filtered = cached.filter((c) => c.id.toLowerCase() !== id.toLowerCase());
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(filtered));
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const cached = JSON.parse(raw) as CardRecord[];
+      const filtered = cached.filter((c) => c.id.toLowerCase() !== cleanId.toLowerCase());
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(filtered));
+    }
+  } catch {
+    // ignore
+  }
   return true;
 }
 
