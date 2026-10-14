@@ -141,10 +141,10 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
       {/* Google 4-Color Gradient Stripe */}
       <div className="h-1 w-full bg-gradient-to-r from-[#4285F4] via-[#EA4335] via-[#FBBC05] to-[#34A853]" />
 
-      <div className="max-w-5xl lg:max-w-6xl mx-auto px-3 sm:px-6">
-        <div className="flex items-center justify-between gap-3 h-14 sm:h-16">
+      <div className="max-w-5xl lg:max-w-6xl w-full mx-auto px-3 sm:px-6 min-w-0">
+        <div className="flex items-center justify-between gap-2 sm:gap-3 h-14 sm:h-16 min-w-0">
           {/* Left Zone: Hamburger Menu Icon + Brand Logo & Title */}
-          <div className="flex items-center gap-2.5 sm:gap-3.5 min-w-0">
+          <div className="flex items-center gap-2 sm:gap-3.5 min-w-0">
             {/* Hamburger Icon to open Sliding Sidebar */}
             <button
               onClick={onOpenSidebar}
@@ -179,7 +179,7 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
           </div>
 
           {/* Middle Zone: Desktop Navigation Bar with direct 1-click access */}
-          <nav className="hidden lg:flex items-center gap-1 bg-slate-100/90 p-1 rounded-xl border border-slate-200/80 shrink-0">
+          <nav className="hidden xl:flex items-center gap-1 bg-slate-100/90 p-1 rounded-xl border border-slate-200/80 shrink-0">
             <button
               type="button"
               onClick={() => onSelectTab('cards')}

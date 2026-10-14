@@ -20,17 +20,20 @@ service cloud.firestore {
         data.id.size() <= 64 &&
         data.status is string &&
         (data.status == 'available' || data.status == 'assigned' || data.status == 'disabled') &&
-        (!('businessName' in data) || (data.businessName is string && data.businessName.size() <= 200)) &&
-        (!('category' in data) || (data.category is string && data.category.size() <= 100)) &&
-        (!('googleReviewUrl' in data) || (data.googleReviewUrl is string && data.googleReviewUrl.size() <= 1000)) &&
-        (!('notes' in data) || (data.notes is string && data.notes.size() <= 500)) &&
-        (!('aiReviewEnabled' in data) || data.aiReviewEnabled is bool) &&
-        (!('assignedToEmail' in data) || (data.assignedToEmail is string && data.assignedToEmail.size() <= 200)) &&
-        (!('assignedToUid' in data) || (data.assignedToUid is string && data.assignedToUid.size() <= 128)) &&
-        (!('assignedToName' in data) || (data.assignedToName is string && data.assignedToName.size() <= 200)) &&
-        (!('scansCount' in data) || (data.scansCount is int && data.scansCount >= 0)) &&
-        (!('customKeywords' in data) || data.customKeywords is list) &&
-        (!('reviewPageSettings' in data) || data.reviewPageSettings is map);
+        (!('businessName' in data) || data.businessName == null || (data.businessName is string && data.businessName.size() <= 200)) &&
+        (!('category' in data) || data.category == null || (data.category is string && data.category.size() <= 100)) &&
+        (!('googleReviewUrl' in data) || data.googleReviewUrl == null || (data.googleReviewUrl is string && data.googleReviewUrl.size() <= 1000)) &&
+        (!('notes' in data) || data.notes == null || (data.notes is string && data.notes.size() <= 500)) &&
+        (!('aiReviewEnabled' in data) || data.aiReviewEnabled == null || data.aiReviewEnabled is bool) &&
+        (!('assignedToEmail' in data) || data.assignedToEmail == null || (data.assignedToEmail is string && data.assignedToEmail.size() <= 200)) &&
+        (!('assignedToUid' in data) || data.assignedToUid == null || (data.assignedToUid is string && data.assignedToUid.size() <= 128)) &&
+        (!('assignedToName' in data) || data.assignedToName == null || (data.assignedToName is string && data.assignedToName.size() <= 200)) &&
+        (!('scansCount' in data) || data.scansCount == null || ((data.scansCount is int || data.scansCount is float) && data.scansCount >= 0)) &&
+        (!('customKeywords' in data) || data.customKeywords == null || data.customKeywords is list) &&
+        (!('reviewTone' in data) || data.reviewTone == null || (data.reviewTone is string && data.reviewTone.size() <= 50)) &&
+        (!('promptStarter' in data) || data.promptStarter == null || (data.promptStarter is string && data.promptStarter.size() <= 1000)) &&
+        (!('customHeadline' in data) || data.customHeadline == null || (data.customHeadline is string && data.customHeadline.size() <= 200)) &&
+        (!('reviewPageSettings' in data) || data.reviewPageSettings == null || data.reviewPageSettings is map);
     }
 
     function isValidAdmin(data) {
@@ -54,11 +57,6 @@ service cloud.firestore {
     // Default deny catch-all
     match /{document=**} {
       allow read, write: if false;
-    }
-
-    // Health check / Connection test endpoint
-    match /test/{testId} {
-      allow get: if true;
     }
 
     // Dynamic QR Cards Collection

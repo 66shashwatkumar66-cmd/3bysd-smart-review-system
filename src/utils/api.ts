@@ -19,9 +19,10 @@ const STORAGE_KEY = '3dbysd_smart_reviews_cards';
 const CARDS_COLLECTION = 'cards';
 
 /**
- * Deeply removes all keys with `undefined` values.
+ * Deeply removes all keys with `undefined` or `null` values.
  * Firestore strictly rejects documents containing undefined values with:
  * "FirebaseError: Function setDoc() called with invalid data. Unsupported field value: undefined"
+ * and strict security rules reject null values for string fields.
  */
 export function cleanForFirestore<T extends Record<string, any>>(obj: T): T {
   if (obj === null || typeof obj !== 'object') {
@@ -34,10 +35,10 @@ export function cleanForFirestore<T extends Record<string, any>>(obj: T): T {
   }
   const clean: any = {};
   for (const [key, val] of Object.entries(obj)) {
-    if (val === undefined) {
+    if (val === undefined || val === null) {
       continue;
     }
-    if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
+    if (typeof val === 'object' && !Array.isArray(val)) {
       clean[key] = cleanForFirestore(val);
     } else {
       clean[key] = val;
@@ -96,41 +97,71 @@ const INITIAL_CARDS: CardRecord[] = [
 ];
 
 export async function fetchCards(): Promise<CardRecord[]> {
+  let firestoreCards: CardRecord[] = [];
   try {
     const colRef = collection(db, CARDS_COLLECTION);
     const snapshot = await getDocs(colRef);
 
     if (!snapshot.empty) {
-      const cards: CardRecord[] = [];
       snapshot.forEach((docSnap) => {
-        cards.push(docSnap.data() as CardRecord);
+        firestoreCards.push(docSnap.data() as CardRecord);
       });
-      cards.sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(cards));
-      return cards;
+      firestoreCards.sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
     } else {
       // Seed initial cards to Firestore
       for (const card of INITIAL_CARDS) {
-        await setDoc(doc(db, CARDS_COLLECTION, card.id), card);
+        await setDoc(doc(db, CARDS_COLLECTION, card.id), cleanForFirestore(card));
       }
-      return INITIAL_CARDS;
+      firestoreCards = [...INITIAL_CARDS];
     }
   } catch (error) {
     console.warn('Firestore fetch failed, attempting server API fallback:', error);
   }
 
-  // Fallback to local server REST API
+  // Also query local server REST API to merge any cards not yet in Firestore or with newer data
+  let serverCards: CardRecord[] = [];
   try {
     const res = await fetch('/api/cards');
     if (res.ok) {
       const data = await res.json();
       if (data.cards && Array.isArray(data.cards)) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(data.cards));
-        return data.cards;
+        serverCards = data.cards;
       }
     }
   } catch (err) {
     console.warn('Network fetch failed, reading from local storage:', err);
+  }
+
+  // Smart harmonization: Merge Firestore and Server cards
+  if (firestoreCards.length > 0 || serverCards.length > 0) {
+    const mergedMap = new Map<string, CardRecord>();
+
+    // Add server cards first
+    for (const c of serverCards) {
+      mergedMap.set(c.id.toLowerCase(), c);
+    }
+
+    // Add or merge Firestore cards (Firestore wins unless server card has strictly newer updatedAt)
+    for (const fc of firestoreCards) {
+      const existing = mergedMap.get(fc.id.toLowerCase());
+      if (!existing) {
+        mergedMap.set(fc.id.toLowerCase(), fc);
+      } else {
+        const fcTime = fc.updatedAt ? new Date(fc.updatedAt).getTime() : 0;
+        const exTime = existing.updatedAt ? new Date(existing.updatedAt).getTime() : 0;
+        if (fcTime >= exTime) {
+          mergedMap.set(fc.id.toLowerCase(), fc);
+        } else {
+          // Server had newer data! Sync it back to Firestore so Firestore stays up to date
+          setDoc(doc(db, CARDS_COLLECTION, existing.id), cleanForFirestore(existing)).catch(() => {});
+        }
+      }
+    }
+
+    const mergedList = Array.from(mergedMap.values());
+    mergedList.sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(mergedList));
+    return mergedList;
   }
 
   // Fallback to localStorage
@@ -324,16 +355,17 @@ export async function assignCard(
     console.warn(`Server API assign card ${id} sync notice:`, serverErr);
   }
 
-  // 3. Update localStorage cache
+  // 3. Update localStorage cache directly without redundant network reads
   try {
-    const cached = await fetchCards();
-    const idx = cached.findIndex((c) => c.id.toLowerCase() === id.toLowerCase());
+    const raw = localStorage.getItem(STORAGE_KEY);
+    const list: CardRecord[] = raw ? JSON.parse(raw) : [];
+    const idx = list.findIndex((c) => c.id.toLowerCase() === id.toLowerCase());
     if (idx !== -1) {
-      cached[idx] = sanitizedCard;
+      list[idx] = sanitizedCard;
     } else {
-      cached.push(sanitizedCard);
+      list.push(sanitizedCard);
     }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(cached));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
   } catch {
     // ignore
   }
@@ -376,19 +408,25 @@ export async function bulkUpdateCardsStatus(
   }
 
   // 3. Update local cache
-  const cached = await fetchCards();
-  const idSet = new Set(normalizedIds.map((id) => id.toLowerCase()));
-  const updatedList = cached.map((c) => {
-    if (idSet.has(c.id.toLowerCase())) {
-      return {
-        ...c,
-        status,
-        updatedAt: now,
-      };
-    }
-    return c;
-  });
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedList));
+  let updatedList: CardRecord[] = [];
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    const cached: CardRecord[] = raw ? JSON.parse(raw) : [];
+    const idSet = new Set(normalizedIds.map((id) => id.toLowerCase()));
+    updatedList = cached.map((c) => {
+      if (idSet.has(c.id.toLowerCase())) {
+        return {
+          ...c,
+          status,
+          updatedAt: now,
+        };
+      }
+      return c;
+    });
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedList));
+  } catch {
+    // ignore
+  }
   return updatedList;
 }
 
@@ -423,13 +461,52 @@ export async function generateAiReview(payload: GenerateReviewRequest): Promise<
   try {
     const res = await fetch('/api/generate-review', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
       body: JSON.stringify(payload),
     });
-    const data = await res.json();
-    return data;
+
+    const rawText = await res.text();
+
+    if (!res.ok) {
+      let serverError = `HTTP ${res.status}: ${res.statusText || 'Request failed'}`;
+      if (rawText && rawText.trim()) {
+        try {
+          const parsed = JSON.parse(rawText);
+          serverError = parsed.error || parsed.message || serverError;
+        } catch {
+          // If HTML error page was returned by CDN or serverless proxy
+          if (res.status === 405) {
+            serverError = 'API endpoint method not allowed (405). Please verify Vercel serverless functions deployment.';
+          }
+        }
+      }
+      return {
+        success: false,
+        message: serverError,
+      };
+    }
+
+    if (!rawText || !rawText.trim()) {
+      return {
+        success: false,
+        message: 'Empty response received from review generation server',
+      };
+    }
+
+    try {
+      const data = JSON.parse(rawText);
+      return data;
+    } catch {
+      return {
+        success: false,
+        message: 'Invalid JSON returned by server',
+      };
+    }
   } catch (err: any) {
-    console.error('Error generating AI review:', err);
+    console.error('Error in generateAiReview network call:', err);
     return {
       success: false,
       message: err.message || 'Network request failed',

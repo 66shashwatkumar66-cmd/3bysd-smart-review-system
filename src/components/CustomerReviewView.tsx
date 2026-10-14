@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useId } from 'react';
+import React, { useState, useEffect, useId, useMemo } from 'react';
 import { CardRecord } from '../types';
 import { generateAiReview } from '../utils/api';
+import { generateSmartFallbackReview } from '../services/reviewGenerator';
 import {
   Star,
   Sparkles,
@@ -126,9 +127,25 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
 
       if (res.success && res.review) {
         setGeneratedReview(res.review);
+      } else {
+        // Fallback to contextual generator if server returned an error (e.g. 405 or network)
+        const fallback = generateSmartFallbackReview(
+          effectiveBusinessName,
+          rating,
+          selectedTags,
+          customNotes.trim()
+        );
+        setGeneratedReview(fallback);
       }
     } catch (err) {
-      console.error('Failed to generate review draft:', err);
+      console.warn('Network generate failed, using local generator:', err);
+      const fallback = generateSmartFallbackReview(
+        effectiveBusinessName,
+        rating,
+        selectedTags,
+        customNotes.trim()
+      );
+      setGeneratedReview(fallback);
     } finally {
       setIsGenerating(false);
     }

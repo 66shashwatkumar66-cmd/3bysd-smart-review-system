@@ -285,7 +285,7 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
   const scanUrl = getCardScanUrl(previewCard.id);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 w-full max-w-full min-w-0">
       {/* Header Bar */}
       <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="space-y-1">

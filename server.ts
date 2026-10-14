@@ -4,6 +4,7 @@ import fs from 'fs';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import { createClient } from '@supabase/supabase-js';
+import { generateReviewWithGemini } from './src/services/reviewGenerator';
 
 dotenv.config();
 
@@ -15,6 +16,17 @@ const ADMINS_FILE = path.join(DATA_DIR, 'admins.json');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 
 app.use(express.json());
+
+// Enable CORS and handle OPTIONS preflight for all API routes
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-admin-id');
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end();
+  }
+  next();
+});
 
 // Initialize Supabase Client for Cloud Database Sync
 function resolveSupabaseUrl(): string {
@@ -784,114 +796,16 @@ app.delete('/api/users/:uid', (req: Request, res: Response) => {
   }
 });
 
-// AI Review Generation Route using @google/genai
+// AI Review Generation Route using @google/genai (delegates to shared service)
 app.post('/api/generate-review', async (req: Request, res: Response) => {
   try {
-    const { businessName, rating, tags, notes, category } = req.body;
-
-    const ratingNum = Math.min(Math.max(Number(rating) || 5, 1), 5);
-    const tagsList = Array.isArray(tags) ? tags : [];
-    const safeBusinessName = businessName ? String(businessName).trim() : 'this business';
-    const safeNotes = notes ? String(notes).trim() : '';
-    const safeCategory = category ? String(category).trim() : 'café / local business';
-
-    // System instructions forbidding fake experiences or invented facts
-    const systemPrompt = `You are an authentic, honest, and helpful customer review assistant for "${safeBusinessName}" (${safeCategory}).
-Your goal is to write ONE natural, genuine customer review draft based strictly on the customer's selected rating, experience highlights, and optional notes.
-
-CRITICAL RULES:
-1. Star Rating: The customer gave a ${ratingNum}-star rating. The tone of the review MUST reflect this exact rating level (${ratingNum} out of 5 stars).
-2. Selected Highlights: The customer specifically chose: ${tagsList.length > 0 ? tagsList.join(', ') : 'Overall positive impression'}.
-3. Customer Notes: ${safeNotes ? `The customer specifically noted: "${safeNotes}". You MUST weave this in naturally.` : 'No additional customer notes provided.'}
-4. NO INVENTED DETAILS: Do not invent dishes, drinks, wait times, staff names, or events not mentioned by the customer.
-5. NO HASHTAGS, NO EMOJIS, NO QUOTATION MARKS around the review.
-6. LENGTH: 2 to 4 concise, genuine sentences (40-75 words).
-7. Format: Return ONLY the raw plain text of the review. Nothing else.`;
-
-    const userPrompt = `Draft an honest ${ratingNum}-star Google review for ${safeBusinessName}.`;
-
-    if (ai) {
-      try {
-        const geminiPromise = ai.models.generateContent({
-          model: 'gemini-3.8-flash',
-          contents: userPrompt,
-          config: {
-            systemInstruction: systemPrompt,
-            temperature: 0.7,
-          },
-        });
-
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Gemini API timeout')), 4000)
-        );
-
-        const response = await Promise.race([geminiPromise, timeoutPromise]);
-        const generatedText = response.text ? response.text.trim() : '';
-        if (generatedText) {
-          return res.json({ success: true, review: generatedText, reviewText: generatedText });
-        }
-      } catch (geminiError: any) {
-        console.warn('Gemini API call skipped or timed out, using fallback:', geminiError.message);
-      }
-    }
-
-    // High quality fallback generator if API key is not configured yet or fails
-    const fallbackReview = generateSmartFallbackReview(safeBusinessName, ratingNum, tagsList, safeNotes);
-    return res.json({ success: true, review: fallbackReview, reviewText: fallbackReview });
+    const result = await generateReviewWithGemini(req.body);
+    return res.json(result);
   } catch (error: any) {
     console.error('Error generating review:', error);
-    res.status(500).json({ success: false, message: error.message || 'Failed to generate review' });
+    res.status(500).json({ success: false, message: error?.message || 'Failed to generate review' });
   }
 });
-
-function generateSmartFallbackReview(
-  businessName: string,
-  rating: number,
-  tags: string[],
-  notes: string
-): string {
-  const highlights = tags.map((t) => t.toLowerCase());
-  const hasFood = highlights.some((h) => h.includes('food') || h.includes('drink'));
-  const hasStaff = highlights.some((h) => h.includes('staff') || h.includes('friendly') || h.includes('service'));
-  const hasAmbience = highlights.some((h) => h.includes('ambience') || h.includes('cosy') || h.includes('vibe'));
-  const hasValue = highlights.some((h) => h.includes('value'));
-
-  if (rating >= 5) {
-    let text = `Had a wonderful experience at ${businessName}. `;
-    if (hasStaff && hasFood) {
-      text += `The team was incredibly welcoming and everything we ordered was freshly prepared and delicious. `;
-    } else if (hasStaff) {
-      text += `The staff was genuinely attentive and made us feel right at home from the moment we walked in. `;
-    } else if (hasFood) {
-      text += `The quality and presentation exceeded expectations. `;
-    }
-    if (hasAmbience) {
-      text += `The atmosphere is comfortable and relaxed. `;
-    }
-    if (notes) {
-      text += `${notes}. `;
-    }
-    text += `Will definitely be returning and recommending to others!`;
-    return text.trim();
-  } else if (rating === 4) {
-    let text = `Really enjoyed our visit to ${businessName}. `;
-    if (hasFood) text += `The food and drinks were top notch. `;
-    if (hasStaff) text += `Staff was polite and helpful. `;
-    if (hasAmbience) text += `Great cosy environment. `;
-    if (notes) text += `${notes}. `;
-    text += `A solid 4-star spot worth checking out.`;
-    return text.trim();
-  } else {
-    let text = `Visited ${businessName} recently. `;
-    if (notes) {
-      text += `${notes}. `;
-    } else {
-      text += `There were a few positive aspects, but also room for improvement in overall service and speed. `;
-    }
-    text += `Hope to see continued refinement on future visits.`;
-    return text.trim();
-  }
-}
 
 // Helper to sync card changes to Supabase public.cards table
 async function syncCardToSupabase(card: CardRecord) {

@@ -459,7 +459,7 @@ export default function App() {
   const availableCount = displayedCards.filter((c) => c.status === 'available').length;
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] text-slate-900 flex flex-col w-full max-w-full overflow-x-hidden">
+    <div className="min-h-screen bg-[#F8FAFC] text-slate-900 flex flex-col w-full max-w-full overflow-x-hidden min-w-0">
       {/* Top Admin Navigation */}
       <AdminHeader
         currentTab={currentTab}
@@ -483,7 +483,7 @@ export default function App() {
       />
 
       {/* Main Admin Workspace Viewport - Optimized container for PC and mobile */}
-      <main className="flex-1 max-w-5xl lg:max-w-6xl w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 space-y-5 max-w-full overflow-x-hidden">
+      <main className="flex-1 max-w-5xl lg:max-w-6xl w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 space-y-5 max-w-full overflow-x-hidden min-w-0">
         {/* Restricted Admin Notice Banner if logged in as sub-admin */}
         {!isMaster && (
           <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-xs">
@@ -717,8 +717,8 @@ export default function App() {
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-slate-200 bg-white py-5 mt-10 text-center text-xs text-slate-500">
-        <div className="max-w-5xl lg:max-w-6xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
+      <footer className="border-t border-slate-200 bg-white py-5 mt-10 text-center text-xs text-slate-500 w-full max-w-full overflow-hidden">
+        <div className="max-w-5xl lg:max-w-6xl w-full mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2 min-w-0">
           <div className="flex items-center gap-2">
             <span className="font-bold text-slate-900">3DBYSD Smart Reviews</span>
             <span aria-hidden="true">·</span>

@@ -52,7 +52,7 @@ export const PrintSheetView: React.FC<PrintSheetViewProps> = ({ cards }) => {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 w-full max-w-full min-w-0">
       {/* Controls Bar (hidden during print) */}
       <div className="no-print bg-white rounded-xl border border-slate-200 p-4 shadow-xs">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">

@@ -186,7 +186,7 @@ export const CardsTable: React.FC<CardsTableProps> = ({
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 w-full max-w-full min-w-0">
       {/* Search Bar & Status Filter Dropdown Bar */}
       <div className="bg-white rounded-2xl border border-slate-200 p-3.5 sm:p-4 shadow-xs space-y-3">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -745,7 +745,7 @@ export const CardsTable: React.FC<CardsTableProps> = ({
 
             {/* 2. Desktop PC View: Streamlined Responsive Table (Fitted without horizontal scrollbar) */}
             <div className="hidden md:block w-full max-w-full overflow-x-auto custom-scrollbar">
-              <table className="w-full text-left text-xs border-collapse min-w-[680px]">
+              <table className="w-full text-left text-xs border-collapse min-w-[620px]">
                 <thead>
                   <tr className="bg-slate-50/90 border-b border-slate-200 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
                     <th className="py-3 px-3 sm:px-4 w-10 text-center">
