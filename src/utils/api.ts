@@ -305,12 +305,22 @@ export async function assignCard(
 ): Promise<CardRecord | null> {
   const docRef = doc(db, CARDS_COLLECTION, id);
 
-  // Read existing doc if available
+  // Read existing data from cache first as baseline
   let existingData: Partial<CardRecord> = { id, status: 'available', scansCount: 0 };
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const list = JSON.parse(raw) as CardRecord[];
+      const hit = list.find((c) => c.id.toLowerCase() === id.toLowerCase());
+      if (hit) existingData = { ...hit };
+    }
+  } catch {}
+
+  // Read existing doc if available in Firestore
   try {
     const existingSnap = await getDoc(docRef);
     if (existingSnap.exists()) {
-      existingData = existingSnap.data() as CardRecord;
+      existingData = { ...existingData, ...(existingSnap.data() as CardRecord) };
     }
   } catch (readErr) {
     console.warn(`Firestore read card ${id} notice:`, readErr);
@@ -348,7 +358,7 @@ export async function assignCard(
     if (res.ok) {
       const data = await res.json();
       if (data.card) {
-        // Updated in server
+        Object.assign(sanitizedCard, data.card);
       }
     }
   } catch (serverErr) {
@@ -371,6 +381,55 @@ export async function assignCard(
   }
 
   return sanitizedCard;
+}
+
+export async function uploadBusinessLogo(
+  file: File,
+  cardId?: string
+): Promise<{ success: boolean; url: string; message?: string }> {
+  const validTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
+  if (!validTypes.includes(file.type.toLowerCase())) {
+    throw new Error('Invalid file type. Supported image formats: PNG, JPG/JPEG, WebP.');
+  }
+
+  const MAX_SIZE = 2 * 1024 * 1024; // 2 MB
+  if (file.size > MAX_SIZE) {
+    throw new Error(
+      `File size exceeds 2 MB limit (${(file.size / (1024 * 1024)).toFixed(2)} MB). Please select an image under 2 MB.`
+    );
+  }
+
+  // Convert to Base64 Data URL
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error('Failed to read image file'));
+    reader.readAsDataURL(file);
+  });
+
+  try {
+    const res = await fetch('/api/upload-logo', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        image: dataUrl,
+        fileName: file.name,
+        cardId,
+      }),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && data.url) {
+        return { success: true, url: data.url };
+      }
+    }
+  } catch (netErr) {
+    console.warn('Server logo upload endpoint notice, falling back to data URL:', netErr);
+  }
+
+  // Fallback to validated dataUrl if server unreachable
+  return { success: true, url: dataUrl };
 }
 
 export async function bulkUpdateCardsStatus(

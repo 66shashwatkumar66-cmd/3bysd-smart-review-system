@@ -38,8 +38,10 @@ interface SlidingSidebarProps {
   activeAdmin: AdminUser;
   admins: AdminUser[];
   onSelectActiveAdmin: (admin: AdminUser) => void;
+  onExitSubAdminMode?: () => void;
   onOpenBatchModal: () => void;
   onExportCsv?: () => void;
+  currentUser?: UserProfile | null;
 }
 
 export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
@@ -53,8 +55,10 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
   activeAdmin,
   admins,
   onSelectActiveAdmin,
+  onExitSubAdminMode,
   onOpenBatchModal,
   onExportCsv,
+  currentUser: propCurrentUser,
 }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isGoogleModalOpen, setIsGoogleModalOpen] = useState<boolean>(false);
@@ -132,8 +136,32 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
     };
   }, [isOpen]);
 
-  const masterAdmin = admins.find((a) => a.role === 'master') || admins[0];
+  const masterAdmin =
+    admins.find((a) => a.role === 'master' || a.email.toLowerCase() === '66shashwatkumar66@gmail.com') || {
+      id: 'master-admin-01',
+      email: '66shashwatkumar66@gmail.com',
+      name: 'Master Administrator',
+      role: 'master' as const,
+      assignedCardIds: [],
+      permissions: {
+        canEditCards: true,
+        canToggleAi: true,
+        canExportCsv: true,
+        canCreateCards: true,
+      },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
   const isMaster = activeAdmin.role === 'master';
+  const effectiveEmail = (
+    propCurrentUser?.email ||
+    currentUser?.email ||
+    verifiedGoogleProfile?.email ||
+    ''
+  ).toLowerCase();
+  const isMasterUser = effectiveEmail === '66shashwatkumar66@gmail.com';
+  const isInSubAdminMode = isMasterUser && activeAdmin.role === 'restricted';
 
   const navItems = [
     {
@@ -296,16 +324,21 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
               </span>
             </div>
 
-            {/* Quick Admin Switcher: Only available if the authenticated Google user is actually the Master Admin */}
-            {!isMaster && masterAdmin && (currentUser?.email?.toLowerCase() === '66shashwatkumar66@gmail.com') && (
+            {/* Quick Admin Switcher: Exit Sub-Admin Mode if in Sub-Admin Mode */}
+            {isInSubAdminMode && (
               <button
+                type="button"
                 onClick={() => {
-                  onSelectActiveAdmin(masterAdmin);
+                  if (onExitSubAdminMode) {
+                    onExitSubAdminMode();
+                  } else {
+                    onSelectActiveAdmin(masterAdmin);
+                  }
                   onClose();
                 }}
-                className="w-full flex items-center justify-center gap-1.5 py-1 px-2 rounded-lg bg-blue-100/70 hover:bg-blue-100 text-[#1A73E8] text-[11px] font-bold transition-colors border border-blue-200"
+                className="w-full flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-xl bg-blue-50 hover:bg-blue-100 text-[#1A73E8] text-xs font-bold transition-all border border-blue-200 cursor-pointer shadow-2xs active:scale-95"
               >
-                <RotateCcw className="w-3 h-3" />
+                <RotateCcw className="w-3.5 h-3.5" />
                 <span>Exit Sub-Admin Mode</span>
               </button>
             )}

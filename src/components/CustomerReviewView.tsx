@@ -262,11 +262,25 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
 
         {/* Business Branding Card */}
         <div className="bg-white rounded-3xl p-5 border border-slate-200/80 shadow-xs text-center space-y-2">
-          <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-[#4285F4] to-[#34A853] p-0.5 mx-auto shadow-sm">
-            <div className="w-full h-full bg-white rounded-[14px] flex items-center justify-center font-bold text-xl text-slate-900">
-              {effectiveBusinessName.charAt(0).toUpperCase()}
+          {card?.logoUrl ? (
+            <div className="w-16 h-16 rounded-2xl p-1 mx-auto shadow-sm border border-slate-200 bg-white overflow-hidden flex items-center justify-center">
+              <img
+                src={card.logoUrl}
+                alt={effectiveBusinessName}
+                className="w-full h-full object-contain rounded-xl"
+                onError={(e) => {
+                  // Fallback if image fails to load
+                  (e.target as HTMLElement).style.display = 'none';
+                }}
+              />
             </div>
-          </div>
+          ) : (
+            <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-[#4285F4] to-[#34A853] p-0.5 mx-auto shadow-sm">
+              <div className="w-full h-full bg-white rounded-[14px] flex items-center justify-center font-bold text-xl text-slate-900">
+                {effectiveBusinessName.charAt(0).toUpperCase()}
+              </div>
+            </div>
+          )}
           <div>
             <h1 className="text-lg sm:text-xl font-extrabold text-slate-900 leading-tight">
               {card?.customHeadline || effectiveBusinessName}

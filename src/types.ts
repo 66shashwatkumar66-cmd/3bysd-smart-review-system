@@ -14,6 +14,7 @@ export interface CardRecord {
   reviewTone?: 'enthusiastic' | 'friendly' | 'professional' | 'concise'; // Tone for AI review generation
   promptStarter?: string; // Optional custom guidance for AI review generator
   customHeadline?: string; // Optional custom headline on customer review page
+  logoUrl?: string; // Optional business logo URL (Firebase/Supabase/server uploaded)
   createdAt: string;
   updatedAt: string;
 }

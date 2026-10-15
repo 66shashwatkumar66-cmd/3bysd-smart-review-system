@@ -28,9 +28,14 @@ import {
   Briefcase,
   AlertCircle,
   ExternalLink,
+  Upload,
+  Image as ImageIcon,
+  Loader2,
+  CheckCircle,
 } from 'lucide-react';
 import { CustomerReviewView } from './CustomerReviewView';
 import { getCardScanUrl } from '../utils/url';
+import { uploadBusinessLogo } from '../utils/api';
 
 interface ReviewCustomizerViewProps {
   cards: CardRecord[];
@@ -183,6 +188,10 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
   );
   const [promptStarter, setPromptStarter] = useState<string>(selectedCard?.promptStarter || '');
   const [customHeadline, setCustomHeadline] = useState<string>(selectedCard?.customHeadline || '');
+  const [logoUrl, setLogoUrl] = useState<string>(selectedCard?.logoUrl || '');
+  const [isUploadingLogo, setIsUploadingLogo] = useState<boolean>(false);
+  const [logoMessage, setLogoMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
   const [saveError, setSaveError] = useState<string>('');
@@ -199,6 +208,8 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
       setReviewTone(selectedCard.reviewTone || 'friendly');
       setPromptStarter(selectedCard.promptStarter || '');
       setCustomHeadline(selectedCard.customHeadline || '');
+      setLogoUrl(selectedCard.logoUrl || '');
+      setLogoMessage(null);
       setSaveSuccess(false);
       setSaveError('');
     }
@@ -231,6 +242,63 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
     setCustomHeadline('');
   };
 
+  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Reset input so same file can be selected again
+    e.target.value = '';
+
+    const validTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
+    if (!validTypes.includes(file.type.toLowerCase())) {
+      setLogoMessage({
+        type: 'error',
+        text: 'Invalid file format. Please upload a PNG, JPG, or WebP image.',
+      });
+      return;
+    }
+
+    const MAX_SIZE = 2 * 1024 * 1024; // 2 MB
+    if (file.size > MAX_SIZE) {
+      setLogoMessage({
+        type: 'error',
+        text: `File exceeds 2 MB limit (${(file.size / (1024 * 1024)).toFixed(2)} MB). Please select an image under 2 MB.`,
+      });
+      return;
+    }
+
+    setIsUploadingLogo(true);
+    setLogoMessage(null);
+
+    try {
+      const result = await uploadBusinessLogo(file, selectedCard?.id);
+      if (result.success && result.url) {
+        setLogoUrl(result.url);
+        setLogoMessage({
+          type: 'success',
+          text: 'Logo uploaded successfully! Click "Save Keyword & Customization Changes" below to persist changes.',
+        });
+      } else {
+        throw new Error(result.message || 'Failed to upload logo.');
+      }
+    } catch (err: any) {
+      setLogoMessage({
+        type: 'error',
+        text: err.message || 'Failed to upload business logo. Please try again.',
+      });
+    } finally {
+      setIsUploadingLogo(false);
+    }
+  };
+
+  const handleRemoveLogo = () => {
+    setLogoUrl('');
+    setLogoMessage({
+      type: 'success',
+      text: 'Logo removed. Click "Save Keyword & Customization Changes" below to persist changes.',
+    });
+  };
+
   const handleSave = async () => {
     if (!selectedCard) return;
     setIsSaving(true);
@@ -243,6 +311,7 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
         reviewTone,
         promptStarter: promptStarter.trim(),
         customHeadline: customHeadline.trim(),
+        logoUrl: logoUrl.trim() || undefined,
       };
 
       if (applyToAll) {
@@ -256,7 +325,7 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err: any) {
-      console.error('Failed to save keywords:', err);
+      console.error('Failed to save keywords and customization:', err);
       setSaveError(err.message || 'Failed to persist keyword changes');
     } finally {
       setIsSaving(false);
@@ -280,6 +349,7 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
     reviewTone,
     promptStarter,
     customHeadline,
+    logoUrl,
   };
 
   const scanUrl = getCardScanUrl(previewCard.id);
@@ -381,11 +451,112 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
             </div>
           </div>
 
-          {/* 2. Industry Keyword Presets */}
+          {/* 2. Business Logo */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="text-xs font-bold text-slate-800 uppercase tracking-wider block">
+                  2. Business Logo
+                </span>
+                <span className="text-[11px] text-slate-500">
+                  Displayed on the customer review page and interactive mobile draft generator.
+                </span>
+              </div>
+              <span className="text-[10px] text-slate-400 font-medium hidden sm:inline">PNG, JPG, WebP · Max 2MB</span>
+            </div>
+
+            {/* Logo Preview & Actions */}
+            <div className="flex flex-col sm:flex-row items-center sm:items-start gap-4 p-3.5 bg-slate-50 border border-slate-200/80 rounded-xl">
+              <div className="relative w-20 h-20 rounded-2xl bg-white border border-slate-200 shadow-2xs overflow-hidden flex items-center justify-center shrink-0">
+                {logoUrl ? (
+                  <img
+                    src={logoUrl}
+                    alt={selectedCard?.businessName || 'Business Logo'}
+                    className="w-full h-full object-contain p-1.5"
+                  />
+                ) : (
+                  <div className="flex flex-col items-center justify-center text-slate-400 p-2 text-center">
+                    <ImageIcon className="w-6 h-6 text-slate-300 mb-1" />
+                    <span className="text-[9px] font-medium leading-tight">No logo</span>
+                  </div>
+                )}
+                {isUploadingLogo && (
+                  <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-2xs flex flex-col items-center justify-center text-white">
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    <span className="text-[9px] font-bold mt-1">Uploading</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex-1 space-y-2 text-center sm:text-left w-full">
+                <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={handleLogoUpload}
+                    accept="image/png,image/jpeg,image/webp"
+                    className="hidden"
+                    disabled={isUploadingLogo}
+                  />
+
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isUploadingLogo}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all disabled:opacity-50 cursor-pointer shadow-2xs active:scale-95"
+                  >
+                    {isUploadingLogo ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Upload className="w-3.5 h-3.5 text-[#FBBC05]" />
+                    )}
+                    <span>{logoUrl ? 'Replace Logo' : 'Upload Logo'}</span>
+                  </button>
+
+                  {logoUrl && (
+                    <button
+                      type="button"
+                      onClick={handleRemoveLogo}
+                      disabled={isUploadingLogo}
+                      className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-red-600 hover:text-red-700 bg-red-50 hover:bg-red-100/80 border border-red-200/80 rounded-xl transition-colors cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Remove Logo</span>
+                    </button>
+                  )}
+                </div>
+
+                <p className="text-[11px] text-slate-500 leading-relaxed">
+                  {logoUrl
+                    ? 'Logo is active. You can replace or remove it at any time.'
+                    : 'Upload a square or horizontal logo (PNG, JPG, or WebP). Maximum file size 2 MB.'}
+                </p>
+
+                {logoMessage && (
+                  <div
+                    className={`text-[11px] p-2 rounded-lg flex items-center gap-1.5 font-medium ${
+                      logoMessage.type === 'success'
+                        ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                        : 'bg-red-50 text-red-700 border border-red-200'
+                    }`}
+                  >
+                    {logoMessage.type === 'success' ? (
+                      <CheckCircle className="w-3.5 h-3.5 shrink-0 text-emerald-600" />
+                    ) : (
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0 text-red-600" />
+                    )}
+                    <span>{logoMessage.text}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* 3. Industry Keyword Presets */}
           <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold text-slate-800 uppercase tracking-wider">
-                2. Quick Industry Keyword Packs
+                3. Quick Industry Keyword Packs
               </span>
               <button
                 type="button"
@@ -418,12 +589,12 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
             </div>
           </div>
 
-          {/* 3. Active Custom Keywords List & Add Tag Input */}
+          {/* 4. Active Custom Keywords List & Add Tag Input */}
           <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-4">
             <div className="flex items-center justify-between">
               <div>
                 <span className="text-xs font-bold text-slate-800 uppercase tracking-wider block">
-                  3. Active Experience Keywords ({keywords.length})
+                  4. Active Experience Keywords ({keywords.length})
                 </span>
                 <span className="text-[11px] text-slate-500">
                   Customers select these tags on the review page to generate personalized drafts.
@@ -488,10 +659,10 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
             </div>
           </div>
 
-          {/* 4. AI Prompt Tone & Headline Customization */}
+          {/* 5. AI Prompt Tone & Headline Customization */}
           <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-4">
             <span className="text-xs font-bold text-slate-800 uppercase tracking-wider block">
-              4. AI Tone & Headline Settings
+              5. AI Tone & Headline Settings
             </span>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

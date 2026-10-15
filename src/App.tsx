@@ -46,6 +46,22 @@ import {
   LogOut,
 } from 'lucide-react';
 
+const DEFAULT_MASTER_ADMIN: AdminUser = {
+  id: 'master-admin-01',
+  email: '66shashwatkumar66@gmail.com',
+  name: 'Master Administrator',
+  role: 'master',
+  assignedCardIds: [],
+  permissions: {
+    canEditCards: true,
+    canToggleAi: true,
+    canExportCsv: true,
+    canCreateCards: true,
+  },
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+};
+
 export default function App() {
   const [cards, setCards] = useState<CardRecord[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -198,11 +214,37 @@ export default function App() {
   const loadAdminsData = async () => {
     const list = await fetchAdmins();
     setAdmins(list);
-    // Set default active admin to Master Admin
-    const master = list.find((a) => a.role === 'master') || list[0];
-    if (master) {
-      setActiveAdmin(master);
+    const master =
+      list.find((a) => a.role === 'master' || a.email.toLowerCase() === '66shashwatkumar66@gmail.com') ||
+      DEFAULT_MASTER_ADMIN;
+
+    const impersonatedId = localStorage.getItem('3dbysd_impersonated_admin_id');
+    if (impersonatedId && currentUser?.email?.toLowerCase() === '66shashwatkumar66@gmail.com') {
+      const imp = list.find((a) => a.id === impersonatedId && a.role === 'restricted');
+      if (imp) {
+        setActiveAdmin(imp);
+        return;
+      }
     }
+    setActiveAdmin(master);
+  };
+
+  const handleSelectActiveAdmin = (adm: AdminUser) => {
+    setActiveAdmin(adm);
+    if (adm.role === 'restricted') {
+      localStorage.setItem('3dbysd_impersonated_admin_id', adm.id);
+    } else {
+      localStorage.removeItem('3dbysd_impersonated_admin_id');
+    }
+  };
+
+  const handleExitSubAdminMode = () => {
+    const master =
+      admins.find((a) => a.role === 'master' || a.email.toLowerCase() === '66shashwatkumar66@gmail.com') ||
+      DEFAULT_MASTER_ADMIN;
+    setActiveAdmin(master);
+    localStorage.removeItem('3dbysd_impersonated_admin_id');
+    setCurrentTab('admins');
   };
 
   const handleGenerateBatch = async (params: {
@@ -320,7 +362,7 @@ export default function App() {
   };
 
   // Master Admin check: STRICTLY ONLY for the email 66shashwatkumar66@gmail.com
-  const isMaster = Boolean(currentUser.email.toLowerCase() === '66shashwatkumar66@gmail.com');
+  const isMasterUser = Boolean(currentUser.email.toLowerCase() === '66shashwatkumar66@gmail.com');
 
   // Check if authorized as a sub-admin by Master Admin
   const authorizedAdmin = admins.find(
@@ -344,7 +386,7 @@ export default function App() {
   // NOT authorized by Master Admin in admins list,
   // and has NO allocated cards:
   // Render clean "Access Pending Authorization" gate!
-  if (!isMaster && !authorizedAdmin && userAllocatedCards.length === 0) {
+  if (!isMasterUser && !authorizedAdmin && userAllocatedCards.length === 0) {
     return (
       <div className="min-h-screen bg-[#F8FAFC] text-slate-900 flex flex-col justify-between antialiased">
         <header className="border-b border-slate-200 bg-white/90 backdrop-blur-md px-4 py-3.5">
@@ -419,27 +461,19 @@ export default function App() {
     activeAdmin ||
     (authorizedAdmin
       ? authorizedAdmin
-      : {
-          id: 'master-admin-01',
-          email: '66shashwatkumar66@gmail.com',
-          name: 'Master Administrator',
-          role: 'master',
-          assignedCardIds: [],
-          permissions: {
-            canEditCards: true,
-            canToggleAi: true,
-            canExportCsv: true,
-            canCreateCards: true,
-          },
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        });
+      : DEFAULT_MASTER_ADMIN);
 
-  const masterAdmin = admins.find((a) => a.role === 'master') || effectiveActiveAdmin;
+  const masterAdmin =
+    admins.find((a) => a.role === 'master' || a.email.toLowerCase() === '66shashwatkumar66@gmail.com') ||
+    DEFAULT_MASTER_ADMIN;
+
+  // Check if Master Admin is currently testing or impersonating Sub-Admin mode
+  const isInSubAdminMode = Boolean(isMasterUser && effectiveActiveAdmin.role === 'restricted');
 
   // Strict Role-Based Access Control (UBRA):
-  // Master Admin: sees and manages all cards
-  // Logged-in Client User: STRICTLY only sees cards assigned to their Google account
+  // When in Sub-Admin mode, user experiences the restricted sub-admin view and limited card set
+  const isMaster = isMasterUser && !isInSubAdminMode;
+
   const displayedCards = isMaster
     ? cards
     : cards.filter((c) => {
@@ -477,15 +511,16 @@ export default function App() {
         availableCount={availableCount}
         activeAdmin={effectiveActiveAdmin}
         admins={admins}
-        onSelectActiveAdmin={(adm) => setActiveAdmin(adm)}
+        onSelectActiveAdmin={handleSelectActiveAdmin}
+        onExitSubAdminMode={handleExitSubAdminMode}
         currentUser={currentUser}
         onSignOut={handleSignOut}
       />
 
       {/* Main Admin Workspace Viewport - Optimized container for PC and mobile */}
       <main className="flex-1 max-w-5xl lg:max-w-6xl w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 space-y-5 max-w-full overflow-x-hidden min-w-0">
-        {/* Restricted Admin Notice Banner if logged in as sub-admin */}
-        {!isMaster && (
+        {/* Restricted Admin Notice Banner if logged in as sub-admin or in Sub-Admin Mode */}
+        {isInSubAdminMode && (
           <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-xs">
             <div className="flex items-center gap-2.5 min-w-0">
               <div className="w-8 h-8 rounded-xl bg-amber-200/80 text-amber-900 flex items-center justify-center font-bold shrink-0">
@@ -493,23 +528,24 @@ export default function App() {
               </div>
               <div className="min-w-0">
                 <div className="font-bold text-amber-950 flex items-center gap-2 flex-wrap">
-                  <span>Restricted Sub-Admin: {effectiveActiveAdmin.name}</span>
+                  <span>Sub-Admin Mode: {effectiveActiveAdmin.name}</span>
                   <span className="font-mono text-[10px] bg-amber-200 text-amber-900 px-2 py-0.2 rounded-full font-bold">
                     {effectiveActiveAdmin.assignedCardIds.length} Cards
                   </span>
                 </div>
                 <p className="text-amber-800 text-[11px] mt-0.5 truncate">
-                  Authorized cards: [{effectiveActiveAdmin.assignedCardIds.map((id) => `#${id}`).join(', ')}]
+                  Testing restricted sub-admin view. Authorized cards: [{effectiveActiveAdmin.assignedCardIds.map((id) => `#${id}`).join(', ')}]
                 </p>
               </div>
             </div>
 
             <button
-              onClick={() => setActiveAdmin(masterAdmin)}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-200 hover:bg-amber-300 text-amber-950 rounded-xl font-bold transition-colors shrink-0 self-start sm:self-auto text-xs"
+              type="button"
+              onClick={handleExitSubAdminMode}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-200 hover:bg-amber-300 text-amber-950 rounded-xl font-bold transition-colors shrink-0 self-start sm:self-auto text-xs cursor-pointer shadow-2xs active:scale-95"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              <span>Switch to Master</span>
+              <span>Exit Sub-Admin Mode</span>
             </button>
           </div>
         )}
@@ -773,7 +809,9 @@ export default function App() {
         availableCount={availableCount}
         activeAdmin={effectiveActiveAdmin}
         admins={admins}
-        onSelectActiveAdmin={(adm) => setActiveAdmin(adm)}
+        onSelectActiveAdmin={handleSelectActiveAdmin}
+        onExitSubAdminMode={handleExitSubAdminMode}
+        currentUser={currentUser}
         onOpenBatchModal={() => setIsBatchModalOpen(true)}
         onExportCsv={() => exportCardsToCsv(displayedCards)}
       />

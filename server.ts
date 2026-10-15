@@ -14,8 +14,14 @@ const DATA_DIR = path.resolve(process.cwd(), 'data');
 const DATA_FILE = path.join(DATA_DIR, 'cards.json');
 const ADMINS_FILE = path.join(DATA_DIR, 'admins.json');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
+const UPLOADS_DIR = path.resolve(process.cwd(), 'public', 'uploads', 'logos');
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
 
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use('/uploads', express.static(path.resolve(process.cwd(), 'public', 'uploads')));
 
 // Enable CORS and handle OPTIONS preflight for all API routes
 app.use((req, res, next) => {
@@ -100,6 +106,7 @@ export interface CardRecord {
   reviewTone?: 'enthusiastic' | 'friendly' | 'professional' | 'concise';
   promptStarter?: string;
   customHeadline?: string;
+  logoUrl?: string;
   scansCount: number;
   assignedToEmail?: string;
   assignedToUid?: string;
@@ -489,6 +496,7 @@ app.put('/api/cards/:id/assign', (req: Request, res: Response) => {
       reviewTone: req.body.reviewTone !== undefined ? req.body.reviewTone : cards[index].reviewTone,
       promptStarter: req.body.promptStarter !== undefined ? String(req.body.promptStarter).trim() : cards[index].promptStarter,
       customHeadline: req.body.customHeadline !== undefined ? String(req.body.customHeadline).trim() : cards[index].customHeadline,
+      logoUrl: req.body.logoUrl !== undefined ? (req.body.logoUrl ? String(req.body.logoUrl).trim() : undefined) : cards[index].logoUrl,
       updatedAt: new Date().toISOString(),
     };
 
@@ -515,6 +523,109 @@ app.put('/api/cards/:id/assign', (req: Request, res: Response) => {
     res.json({ success: true, card: cards[index] });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message || 'Assignment failed' });
+  }
+});
+
+// REST API: Upload Business Logo with validation & persistent storage
+app.post('/api/upload-logo', (req: Request, res: Response) => {
+  try {
+    const { image, dataUrl, fileName, cardId } = req.body;
+    const rawImage = image || dataUrl;
+
+    if (!rawImage || typeof rawImage !== 'string') {
+      return res.status(400).json({
+        success: false,
+        message: 'No image data provided. Please upload a valid image file.',
+      });
+    }
+
+    // Match Base64 Data URL format and extract MIME type
+    const matches = rawImage.match(/^data:image\/(png|jpeg|jpg|webp);base64,(.+)$/i);
+    if (!matches) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid image format. Supported formats: PNG, JPG/JPEG, WebP.',
+      });
+    }
+
+    const mimeSubtype = matches[1].toLowerCase();
+    const base64Data = matches[2];
+    const buffer = Buffer.from(base64Data, 'base64');
+
+    // 2 MB size enforcement
+    const MAX_SIZE_BYTES = 2 * 1024 * 1024;
+    if (buffer.length > MAX_SIZE_BYTES) {
+      return res.status(400).json({
+        success: false,
+        message: `File size exceeds the 2 MB limit (Current: ${(buffer.length / (1024 * 1024)).toFixed(2)} MB). Please select a smaller image.`,
+      });
+    }
+
+    // Magic byte validation for actual file contents
+    let ext = 'png';
+    const isPng = buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47;
+    const isJpg = buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+    const isWebp =
+      buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
+      buffer.length > 12 && buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50;
+
+    if (isPng) {
+      ext = 'png';
+    } else if (isJpg) {
+      ext = 'jpg';
+    } else if (isWebp) {
+      ext = 'webp';
+    } else {
+      // Fallback to validated header subtype if magic bytes are obscured
+      if (['png', 'jpeg', 'jpg', 'webp'].includes(mimeSubtype)) {
+        ext = mimeSubtype === 'jpeg' ? 'jpg' : mimeSubtype;
+      } else {
+        return res.status(400).json({
+          success: false,
+          message: 'Uploaded file is not a recognized PNG, JPEG, or WebP image.',
+        });
+      }
+    }
+
+    const cleanCard = (cardId ? String(cardId).replace(/[^a-zA-Z0-9_-]/g, '') : 'business').slice(0, 30);
+    const uniqueName = `logo-${cleanCard}-${Date.now()}.${ext}`;
+    const targetPath = path.join(UPLOADS_DIR, uniqueName);
+
+    fs.writeFileSync(targetPath, buffer);
+    const publicUrl = `/uploads/logos/${uniqueName}`;
+
+    console.log(`✅ Business logo saved to disk: ${targetPath} (served at ${publicUrl})`);
+
+    return res.json({
+      success: true,
+      url: publicUrl,
+      fileName: uniqueName,
+      sizeBytes: buffer.length,
+      mimeType: `image/${ext}`,
+    });
+  } catch (err: any) {
+    console.error('Logo upload error:', err);
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Failed to upload and store business logo.',
+    });
+  }
+});
+
+// REST API: Remove Business Logo
+app.delete('/api/upload-logo', (req: Request, res: Response) => {
+  try {
+    const { url } = req.body;
+    if (typeof url === 'string' && url.startsWith('/uploads/logos/')) {
+      const fileName = path.basename(url);
+      const filePath = path.join(UPLOADS_DIR, fileName);
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    }
+    return res.json({ success: true, message: 'Logo removed' });
+  } catch {
+    return res.json({ success: true });
   }
 });
 

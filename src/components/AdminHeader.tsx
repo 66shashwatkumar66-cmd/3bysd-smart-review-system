@@ -15,6 +15,7 @@ import {
   Users,
   CheckCircle,
   Sliders,
+  RotateCcw,
 } from 'lucide-react';
 import { auth, signOut, onAuthStateChanged, User } from '../firebase';
 import { AdminUser, UserProfile } from '../types';
@@ -32,6 +33,7 @@ interface AdminHeaderProps {
   activeAdmin: AdminUser;
   admins: AdminUser[];
   onSelectActiveAdmin: (admin: AdminUser) => void;
+  onExitSubAdminMode?: () => void;
   currentUser?: UserProfile | null;
   onSignOut?: () => void;
 }
@@ -47,6 +49,7 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
   activeAdmin,
   admins,
   onSelectActiveAdmin,
+  onExitSubAdminMode,
   currentUser: propCurrentUser,
   onSignOut,
 }) => {
@@ -110,6 +113,14 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
   };
 
   const isMaster = activeAdmin.role === 'master';
+  const effectiveEmail = (
+    propCurrentUser?.email ||
+    currentUser?.email ||
+    verifiedGoogleProfile?.email ||
+    ''
+  ).toLowerCase();
+  const isMasterUser = effectiveEmail === '66shashwatkumar66@gmail.com';
+  const isInSubAdminMode = isMasterUser && activeAdmin.role === 'restricted';
 
   // Get active view label & badge styling
   const getTabMeta = () => {
@@ -252,6 +263,20 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
 
           {/* Right Zone: Primary Actions & Google Auth */}
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            {/* Exit Sub-Admin Mode Quick Button */}
+            {isInSubAdminMode && (
+              <button
+                type="button"
+                onClick={onExitSubAdminMode}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-amber-950 bg-amber-100 hover:bg-amber-200 border border-amber-300 rounded-xl shadow-2xs transition-all whitespace-nowrap active:scale-95 cursor-pointer"
+                title="Exit Sub-Admin mode and restore Master Admin"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Exit Sub-Admin</span>
+                <span className="sm:hidden">Exit</span>
+              </button>
+            )}
+
             {/* Quick Add Batch Button */}
             {(isMaster || activeAdmin.permissions?.canCreateCards) && (
               <button

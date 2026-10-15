@@ -208,11 +208,23 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
                 <span>Master Admin Mode ({activeAdmin.name}) · Full Unrestricted Control</span>
               </span>
             ) : (
-              <span className="text-amber-300 flex items-center gap-1.5">
-                <Lock className="w-4 h-4" />
-                <span>
-                  Restricted Sub-Admin Mode ({activeAdmin.name}) · Limited to {activeAdmin.assignedCardIds.length} cards
+              <span className="text-amber-300 flex items-center gap-2 flex-wrap">
+                <span className="flex items-center gap-1.5">
+                  <Lock className="w-4 h-4" />
+                  <span>
+                    Restricted Sub-Admin Mode ({activeAdmin.name}) · Limited to {activeAdmin.assignedCardIds.length} cards
+                  </span>
                 </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const master = admins.find((a) => a.role === 'master' || a.email.toLowerCase() === '66shashwatkumar66@gmail.com') || admins[0];
+                    if (master) onSelectActiveAdmin(master);
+                  }}
+                  className="px-2.5 py-0.5 rounded-lg bg-amber-400/20 hover:bg-amber-400/30 text-amber-200 text-xs font-bold border border-amber-400/40 cursor-pointer transition-colors"
+                >
+                  Exit to Master Admin
+                </button>
               </span>
             )}
           </div>
