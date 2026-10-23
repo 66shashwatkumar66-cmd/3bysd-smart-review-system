@@ -37,12 +37,18 @@ export interface AdminUser {
   updatedAt: string;
 }
 
+export type ReviewLanguage = 'en' | 'hinglish';
+export type ReviewTone = 'casual' | 'warm' | 'professional' | 'enthusiastic' | 'direct';
+
 export interface GenerateReviewRequest {
   businessName: string;
   rating: number;
   tags: string[];
   notes?: string;
   category?: string;
+  language?: ReviewLanguage;
+  tone?: ReviewTone;
+  recentDrafts?: string[];
 }
 
 export interface GenerateReviewResponse {

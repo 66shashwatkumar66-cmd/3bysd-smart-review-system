@@ -159,4 +159,30 @@ interface CardRecord {
    - Star selector (1 to 5 stars) with friendly rating labels.
    - Quick tags: `Food & Drinks`, `Friendly Staff`, `Cosy Ambience`, `Fast Service`, `Great Value`, `Clean & Welcoming`.
    - Customer notes: Optional textarea for custom dishes, barista names, or special experiences.
+   - Language selector: English & Roman-script Hinglish.
+   - Tone selector: 5 options (Casual & Friendly, Warm & Appreciative, Professional & Polished, Enthusiastic, Simple & Direct).
    - Review generation state: Loading skeleton with reassuring status -> editable draft -> copy confirmation feedback -> "Continue to Google Review" link opening.
+
+---
+
+## 8. AI Review Generator Enhancements (Completed)
+
+### 1. Genuine Review Uniqueness & Anti-Duplication
+- **Dynamic Angle & Vocabulary Strategy**: Generates fresh openings, varied sentence patterns, and natural conclusions (35–80 words), strictly avoiding formulaic clichés like "I recently visited...", "Look no further...", or forced "Highly recommend!".
+- **Session-Scoped De-duplication**: Tracks recent generated drafts within the customer's session (`recentDrafts`) and compares drafts using tokenized Jaccard similarity. Re-rolls if similarity exceeds 65%.
+- **Zero Hallucination Constraint**: Never invents dishes, drinks, wait times, or transactions not explicitly selected or written by the user.
+
+### 2. Language Selection (English & Hinglish)
+- **English**: Fluent, natural English with appropriate phrasing and varied rhythm.
+- **Hinglish**: Natural conversational Hindi-English in Roman script as commonly used across India (e.g. "Service kaafi achhi thi aur staff bhi polite tha", "Quality ekdum top notch thi", "Overall experience really good raha"). Strictly avoids Devanagari script; preserves business and dish names in English.
+- **Seamless Segmented Selector**: Google-styled toggle between English and Hinglish (हिन्दी-Eng).
+
+### 3. Tone Selector (5 Distinct Tones)
+1. **Casual & Friendly** (Default): Relaxed, approachable, everyday contractions.
+2. **Warm & Appreciative**: Heartfelt gratitude, emphasizing welcoming hospitality and feeling valued.
+3. **Professional & Polished**: Articulate, objective, well-structured, measured praise.
+4. **Enthusiastic**: High energy, vibrant delight, genuine excitement without excessive punctuation.
+5. **Simple & Direct**: Concise, punchy, minimal fluff (35–50 words).
+
+### 4. Resilient Fallback Engine
+- `generateSmartFallbackReview` fully mirrors both languages (English/Hinglish) and all 5 tones with randomized opening, middle, and closing phrases, de-duplicating against `recentDrafts` even if API keys or network quotas are constrained.

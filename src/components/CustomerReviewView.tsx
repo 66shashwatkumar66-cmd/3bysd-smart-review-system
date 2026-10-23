@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useId, useMemo } from 'react';
-import { CardRecord } from '../types';
+import React, { useState, useEffect, useId } from 'react';
+import { CardRecord, ReviewLanguage, ReviewTone } from '../types';
 import { generateAiReview } from '../utils/api';
 import { generateSmartFallbackReview } from '../services/reviewGenerator';
 import {
@@ -15,9 +15,12 @@ import {
   Clock,
   DollarSign,
   Sparkle,
-  Store,
-  Globe,
-  Radio,
+  Smile,
+  Award,
+  Zap,
+  MessageSquare,
+  RefreshCw,
+  Languages,
 } from 'lucide-react';
 
 interface CustomerReviewViewProps {
@@ -45,6 +48,14 @@ const RATING_LABELS: Record<number, string> = {
   1: '1 Star · Below Expectations',
 };
 
+const TONE_OPTIONS: { id: ReviewTone; label: string; desc: string; icon: React.FC<{ className?: string }> }[] = [
+  { id: 'casual', label: 'Casual & Friendly', desc: 'Warm, conversational & approachable', icon: Smile },
+  { id: 'warm', label: 'Warm & Appreciative', desc: 'Heartfelt thanks & hospitality', icon: Heart },
+  { id: 'professional', label: 'Professional & Polished', desc: 'Clear, articulate & objective', icon: Award },
+  { id: 'enthusiastic', label: 'Enthusiastic', desc: 'High energy & vibrant praise', icon: Zap },
+  { id: 'direct', label: 'Simple & Direct', desc: 'Concise & straight to the point', icon: MessageSquare },
+];
+
 export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
   card,
   cardId,
@@ -68,7 +79,7 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
   }, [card?.customKeywords]);
 
   // Allow simulator to preview AI enabled even if disabled on card, for testing
-  const [simulatorOverrideAi, setSimulatorOverrideAi] = useState<boolean | null>(null);
+  const [simulatorOverrideAi] = useState<boolean | null>(null);
 
   const effectiveAiReviewEnabled =
     simulatorOverrideAi !== null
@@ -83,6 +94,20 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
     return ['Food & Drinks', 'Friendly Staff'];
   });
   const [customNotes, setCustomNotes] = useState<string>('');
+
+  // Language selection: 'en' (default) or 'hinglish'
+  const [language, setLanguage] = useState<ReviewLanguage>('en');
+
+  // Tone selection: 5 distinct tones (default: 'casual')
+  const [tone, setTone] = useState<ReviewTone>(() => {
+    if (card?.reviewTone === 'concise') return 'direct';
+    if (card?.reviewTone === 'enthusiastic') return 'enthusiastic';
+    if (card?.reviewTone === 'professional') return 'professional';
+    return 'casual';
+  });
+
+  // Recent drafts session history (kept in component state to avoid duplicates)
+  const [recentDrafts, setRecentDrafts] = useState<string[]>([]);
   const [generatedReview, setGeneratedReview] = useState<string>('');
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [copied, setCopied] = useState<boolean>(false);
@@ -100,6 +125,65 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
     card?.businessName?.trim() || (isAssigned ? 'Our Business' : `Card #${cardId} Review Stand`);
   const effectiveCategory = card?.category?.trim() || 'Customer Experience';
 
+  const handleGenerate = async (
+    explicitTone?: ReviewTone,
+    explicitLang?: ReviewLanguage,
+    explicitRating?: number,
+    explicitTags?: string[]
+  ) => {
+    setIsGenerating(true);
+    setCopied(false);
+    const activeTone = explicitTone || tone;
+    const activeLang = explicitLang || language;
+    const activeRating = explicitRating !== undefined ? explicitRating : rating;
+    const activeTags = explicitTags || selectedTags;
+
+    try {
+      const res = await generateAiReview({
+        businessName: effectiveBusinessName,
+        category: effectiveCategory,
+        rating: activeRating,
+        tags: activeTags,
+        notes: customNotes.trim() || undefined,
+        language: activeLang,
+        tone: activeTone,
+        recentDrafts,
+      });
+
+      if (res.success && res.review) {
+        setGeneratedReview(res.review);
+        setRecentDrafts((prev) => [res.review!, ...prev.filter((d) => d !== res.review)].slice(0, 4));
+      } else {
+        // Fallback to contextual generator if server returned an error (e.g. 405 or network)
+        const fallback = generateSmartFallbackReview(
+          effectiveBusinessName,
+          activeRating,
+          activeTags,
+          customNotes.trim(),
+          activeLang,
+          activeTone,
+          recentDrafts
+        );
+        setGeneratedReview(fallback);
+        setRecentDrafts((prev) => [fallback, ...prev.filter((d) => d !== fallback)].slice(0, 4));
+      }
+    } catch (err) {
+      console.warn('Network generate failed, using local generator:', err);
+      const fallback = generateSmartFallbackReview(
+        effectiveBusinessName,
+        activeRating,
+        activeTags,
+        customNotes.trim(),
+        activeLang,
+        activeTone
+      );
+      setGeneratedReview(fallback);
+      setRecentDrafts((prev) => [fallback, ...prev.filter((d) => d !== fallback)].slice(0, 4));
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
   // Auto-generate starter review draft when AI review assistant is active
   useEffect(() => {
     if (effectiveAiReviewEnabled && !generatedReview && !isGenerating) {
@@ -107,48 +191,29 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
     }
   }, [card?.id, effectiveAiReviewEnabled]);
 
-  const toggleTag = (tagId: string) => {
-    setSelectedTags((prev) =>
-      prev.includes(tagId) ? prev.filter((t) => t !== tagId) : [...prev, tagId]
-    );
+  const handleLanguageChange = (newLang: ReviewLanguage) => {
+    if (newLang === language) return;
+    setLanguage(newLang);
+    handleGenerate(tone, newLang);
   };
 
-  const handleGenerate = async () => {
-    setIsGenerating(true);
-    setCopied(false);
-    try {
-      const res = await generateAiReview({
-        businessName: effectiveBusinessName,
-        category: effectiveCategory,
-        rating,
-        tags: selectedTags,
-        notes: customNotes.trim() || undefined,
-      });
+  const handleToneChange = (newTone: ReviewTone) => {
+    if (newTone === tone) return;
+    setTone(newTone);
+    handleGenerate(newTone, language);
+  };
 
-      if (res.success && res.review) {
-        setGeneratedReview(res.review);
-      } else {
-        // Fallback to contextual generator if server returned an error (e.g. 405 or network)
-        const fallback = generateSmartFallbackReview(
-          effectiveBusinessName,
-          rating,
-          selectedTags,
-          customNotes.trim()
-        );
-        setGeneratedReview(fallback);
-      }
-    } catch (err) {
-      console.warn('Network generate failed, using local generator:', err);
-      const fallback = generateSmartFallbackReview(
-        effectiveBusinessName,
-        rating,
-        selectedTags,
-        customNotes.trim()
-      );
-      setGeneratedReview(fallback);
-    } finally {
-      setIsGenerating(false);
-    }
+  const handleRatingChange = (newRating: number) => {
+    setRating(newRating);
+    handleGenerate(tone, language, newRating);
+  };
+
+  const toggleTag = (tagId: string) => {
+    const updated = selectedTags.includes(tagId)
+      ? selectedTags.filter((t) => t !== tagId)
+      : [...selectedTags, tagId];
+    setSelectedTags(updated);
+    handleGenerate(tone, language, rating, updated);
   };
 
   const handleCopyAndRedirect = async () => {
@@ -269,7 +334,6 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
                 alt={effectiveBusinessName}
                 className="w-full h-full object-contain rounded-xl"
                 onError={(e) => {
-                  // Fallback if image fails to load
                   (e.target as HTMLElement).style.display = 'none';
                 }}
               />
@@ -312,7 +376,7 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
                 <button
                   key={star}
                   type="button"
-                  onClick={() => setRating(star)}
+                  onClick={() => handleRatingChange(star)}
                   className="p-1 sm:p-2 rounded-2xl transition-transform active:scale-90 hover:scale-105 focus:outline-none"
                   aria-label={`Rate ${star} stars`}
                 >
@@ -367,40 +431,129 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
           {/* Optional Customer Words / Notes */}
           <div className="pt-2">
             <label htmlFor={notesInputId} className="block text-[11px] font-semibold text-slate-600 mb-1">
-              Any specific dish, drink, or barista mention? (Optional)
+              Any specific dish, drink, or staff member mention? (Optional)
             </label>
             <input
               id={notesInputId}
               type="text"
               value={customNotes}
               onChange={(e) => setCustomNotes(e.target.value)}
-              placeholder="e.g. delicious oat cappuccino, quick service..."
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  handleGenerate();
+                }
+              }}
+              placeholder="e.g. delicious iced latte, quick service, friendly Rahul..."
               className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#1A73E8] focus:bg-white transition-all"
             />
           </div>
+        </div>
 
-          {/* Re-generate trigger */}
+        {/* Step 3: Language & Tone Customizer */}
+        <div className="bg-white rounded-3xl p-5 border border-slate-200/80 shadow-xs space-y-4">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
+              3. Language & Tone
+            </span>
+            <span className="text-[11px] font-semibold text-blue-600 flex items-center gap-1">
+              <Languages className="w-3.5 h-3.5" />
+              <span>Multi-Style</span>
+            </span>
+          </div>
+
+          {/* Language Selector */}
+          <div className="space-y-1.5">
+            <span className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+              Language
+            </span>
+            <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 rounded-2xl">
+              <button
+                type="button"
+                onClick={() => handleLanguageChange('en')}
+                className={`py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                  language === 'en'
+                    ? 'bg-white text-slate-900 shadow-xs ring-1 ring-slate-200/60'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <span>English</span>
+                <span className="text-[10px] text-slate-400 font-normal">(Fluent)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleLanguageChange('hinglish')}
+                className={`py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                  language === 'hinglish'
+                    ? 'bg-white text-slate-900 shadow-xs ring-1 ring-slate-200/60'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <span>Hinglish</span>
+                <span className="text-[10px] text-slate-400 font-normal">(हिन्दी-Eng)</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Tone Selector */}
+          <div className="space-y-1.5">
+            <span className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+              Review Tone
+            </span>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {TONE_OPTIONS.map((t) => {
+                const isSelected = tone === t.id;
+                const Icon = t.icon;
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => handleToneChange(t.id)}
+                    className={`flex items-start gap-2.5 p-2.5 rounded-xl border text-left transition-all active:scale-95 ${
+                      isSelected
+                        ? 'bg-blue-50/70 border-blue-300 text-blue-950 shadow-2xs ring-1 ring-blue-400/40'
+                        : 'bg-slate-50/80 border-slate-200 text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    <Icon className={`w-4 h-4 shrink-0 mt-0.5 ${isSelected ? 'text-[#1A73E8]' : 'text-slate-400'}`} />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-bold leading-tight truncate">
+                        {t.label}
+                      </div>
+                      <div className="text-[10px] text-slate-500 leading-tight mt-0.5">
+                        {t.desc}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Re-generate trigger button */}
           <button
             type="button"
-            onClick={handleGenerate}
+            onClick={() => handleGenerate()}
             disabled={isGenerating}
             className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-900 text-xs font-bold transition-all disabled:opacity-50"
           >
             <Sparkles className={`w-3.5 h-3.5 text-amber-500 ${isGenerating ? 'animate-spin' : ''}`} />
-            <span>{isGenerating ? 'Drafting review...' : 'Update Review Draft'}</span>
+            <span>{isGenerating ? 'Drafting fresh review...' : 'Update Review Draft'}</span>
           </button>
         </div>
 
-        {/* Step 3: Generated Review Draft */}
+        {/* Step 4: Generated Review Draft */}
         <div className="bg-white rounded-3xl p-5 border border-slate-200/80 shadow-xs space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              3. Review Draft (Editable)
+              4. Review Draft (Editable)
             </span>
-            <span className="text-[11px] text-emerald-600 font-semibold flex items-center gap-1">
-              <Sparkles className="w-3 h-3" />
-              <span>AI Draft</span>
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-emerald-600 font-semibold flex items-center gap-1">
+                <Sparkles className="w-3 h-3" />
+                <span className="capitalize">{tone} · {language === 'hinglish' ? 'Hinglish' : 'English'}</span>
+              </span>
+            </div>
           </div>
 
           <div className="relative">
@@ -420,6 +573,22 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
               />
             )}
           </div>
+
+          {/* Word count & fresh variation quick trigger */}
+          {!isGenerating && generatedReview && (
+            <div className="flex items-center justify-between text-[11px] text-slate-500 px-1">
+              <span>{generatedReview.split(/\s+/).filter(Boolean).length} words</span>
+              <button
+                type="button"
+                onClick={() => handleGenerate()}
+                disabled={isGenerating}
+                className="text-[#1A73E8] hover:underline font-semibold flex items-center gap-1 disabled:opacity-50"
+              >
+                <RefreshCw className="w-3 h-3" />
+                <span>Try another version</span>
+              </button>
+            </div>
+          )}
 
           {/* Primary Action Button: Copy & Open Google */}
           <button
