@@ -1,0 +1,30 @@
+{
+  "timestamp": "2026-10-23T15:11:48.616Z",
+  "sources": {
+    "firestore_cards": {
+      "status": "SUCCESS",
+      "count": 15
+    },
+    "local_cards": {
+      "status": "SUCCESS",
+      "count": 15
+    },
+    "local_admins": {
+      "status": "SUCCESS",
+      "count": 1
+    },
+    "local_users": {
+      "status": "SUCCESS",
+      "count": 3
+    },
+    "local_ads": {
+      "status": "SUCCESS",
+      "count": 2
+    },
+    "supabase_cloud": {
+      "status": "INACCESSIBLE",
+      "reason": "Domain lebpkfffdygcwqagjart.supabase.co has no DNS record (ENOTFOUND / timeout)",
+      "error": "request to https://lebpkfffdygcwqagjart.supabase.co/rest/v1/cards failed, reason: getaddrinfo ENOTFOUND lebpkfffdygcwqagjart.supabase.co"
+    }
+  }
+}

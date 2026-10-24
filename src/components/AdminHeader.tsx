@@ -16,6 +16,7 @@ import {
   CheckCircle,
   Sliders,
   RotateCcw,
+  Megaphone,
 } from 'lucide-react';
 import { auth, signOut, onAuthStateChanged, User } from '../firebase';
 import { AdminUser, UserProfile } from '../types';
@@ -23,8 +24,8 @@ import { GoogleAuthModal } from './GoogleAuthModal';
 import { saveUser } from '../utils/api';
 
 interface AdminHeaderProps {
-  currentTab: 'cards' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users';
-  onSelectTab: (tab: 'cards' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users') => void;
+  currentTab: 'cards' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users' | 'ads';
+  onSelectTab: (tab: 'cards' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users' | 'ads') => void;
   onOpenBatchModal: () => void;
   onOpenSidebar: () => void;
   totalCards: number;
@@ -139,6 +140,8 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
         return { label: 'Users & Logins', icon: Users, color: 'text-blue-700 bg-blue-50 border-blue-200' };
       case 'admins':
         return { label: 'Master Admin', icon: ShieldCheck, color: 'text-purple-700 bg-purple-50 border-purple-200' };
+      case 'ads':
+        return { label: 'Advertisements', icon: Megaphone, color: 'text-red-700 bg-red-50 border-red-200' };
       default:
         return { label: 'Dashboard', icon: Layers, color: 'text-slate-700 bg-slate-50 border-slate-200' };
     }
@@ -259,6 +262,22 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
               <Smartphone className="w-3.5 h-3.5 text-emerald-600" />
               <span>Simulator</span>
             </button>
+
+            {isMaster && (
+              <button
+                type="button"
+                onClick={() => onSelectTab('ads')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  currentTab === 'ads'
+                    ? 'bg-white text-red-700 shadow-2xs font-extrabold ring-1 ring-red-200'
+                    : 'text-slate-600 hover:text-red-700 hover:bg-slate-200/60'
+                }`}
+                title="Advertisement & Sponsor Management"
+              >
+                <Megaphone className="w-3.5 h-3.5 text-red-600" />
+                <span>Ads</span>
+              </button>
+            )}
           </nav>
 
           {/* Right Zone: Primary Actions & Google Auth */}

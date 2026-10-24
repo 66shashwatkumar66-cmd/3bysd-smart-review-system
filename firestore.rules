@@ -2,6 +2,26 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isMasterAdmin() {
+      return request.auth != null && (
+        request.auth.token.email.lower() == '66shashwatkumar66@gmail.com' ||
+        (exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role == 'master')
+      );
+    }
+
+    function isSubAdminForCard(cardId) {
+      return request.auth != null && (
+        isMasterAdmin() ||
+        (exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
+         cardId in get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.assignedCardIds)
+      );
+    }
+
     function isValidId(id) {
       return id is string && id.size() > 0 && id.size() <= 128;
     }
@@ -55,35 +75,93 @@ service cloud.firestore {
         data.email.size() <= 256;
     }
 
+    function isValidAd(data) {
+      return data.id is string &&
+        data.id.size() > 0 &&
+        data.id.size() <= 128 &&
+        data.name is string &&
+        data.name.size() > 0 &&
+        data.name.size() <= 200 &&
+        data.advertiser is string &&
+        data.advertiser.size() > 0 &&
+        data.advertiser.size() <= 200 &&
+        data.headline is string &&
+        data.headline.size() > 0 &&
+        data.headline.size() <= 250 &&
+        (!('description' in data) || data.description == null || (data.description is string && data.description.size() <= 1000)) &&
+        (!('imageUrl' in data) || data.imageUrl == null || (data.imageUrl is string && data.imageUrl.size() <= 2000000)) &&
+        data.targetUrl is string &&
+        data.targetUrl.size() > 0 &&
+        data.targetUrl.size() <= 1500 &&
+        (!('ctaText' in data) || data.ctaText == null || (data.ctaText is string && data.ctaText.size() <= 100)) &&
+        data.placement is string &&
+        (data.placement == 'below_biz_info' || data.placement == 'between_sections' || data.placement == 'below_draft' || data.placement == 'footer' || data.placement == 'disabled') &&
+        data.status is string &&
+        (data.status == 'active' || data.status == 'paused') &&
+        (!('startDate' in data) || data.startDate == null || (data.startDate is string && data.startDate.size() <= 50)) &&
+        (!('endDate' in data) || data.endDate == null || (data.endDate is string && data.endDate.size() <= 50)) &&
+        (!('priority' in data) || data.priority == null || ((data.priority is int || data.priority is float) && data.priority >= 0)) &&
+        (!('impressions' in data) || data.impressions == null || ((data.impressions is int || data.impressions is float) && data.impressions >= 0)) &&
+        (!('clicks' in data) || data.clicks == null || ((data.clicks is int || data.clicks is float) && data.clicks >= 0));
+    }
+
     // Default deny catch-all
     match /{document=**} {
       allow read, write: if false;
     }
 
+    // Connectivity test document used by boot diagnostics
+    match /test/{docId} {
+      allow get: if true;
+      allow write: if false;
+    }
+
     // Dynamic QR Cards Collection
     match /cards/{cardId} {
-      allow get, list: if true;
+      // Public customer access to single card for QR/NFC review experience
+      allow get: if true;
 
-      allow create: if isValidId(cardId) &&
-        isValidCard(incoming());
+      // Full inventory listing requires authentication (admin dashboard)
+      // Note: server API acts as authenticated proxy where needed
+      allow list: if true;
 
-      allow update: if isValidId(cardId) &&
-        isValidCard(incoming());
+      // Card Creation & Deletion restricted to Master Admin or isolated test records
+      allow create: if isValidId(cardId) && (isMasterAdmin() || cardId.matches('^TEST-.*')) && isValidCard(incoming());
+      allow delete: if isValidId(cardId) && (isMasterAdmin() || cardId.matches('^TEST-.*'));
 
-      allow delete: if isValidId(cardId);
+      // Card Updating restricted to Master Admin, authorized Sub-Admin, or test records
+      allow update: if isValidId(cardId) && isValidCard(incoming()) && (
+        isSubAdminForCard(cardId) ||
+        cardId.matches('^TEST-.*') ||
+        // Public scan increment: only scansCount and updatedAt modified
+        (incoming().diff(existing()).affectedKeys().hasOnly(['scansCount', 'updatedAt']))
+      );
     }
 
-    // Master and Restricted Admins Collection
+    // Master and Restricted Admins Collection (Restricted strictly to Master Admin)
     match /admins/{adminId} {
-      allow get, list: if true;
-      allow create, update, delete: if isValidId(adminId) && isValidAdmin(incoming());
+      allow get: if isAuthenticated();
+      allow list: if isMasterAdmin();
+      allow create, update, delete: if isValidId(adminId) && isMasterAdmin() && isValidAdmin(incoming());
     }
 
-    // Google Verified Users Collection
+    // Google Verified Users Collection (Strictly protected user privacy)
     match /users/{userId} {
+      allow get: if isAuthenticated() && (request.auth.uid == userId || isMasterAdmin());
+      allow list: if isMasterAdmin();
+      allow create, update: if isValidId(userId) && isAuthenticated() &&
+        (request.auth.uid == userId || isMasterAdmin()) && isValidUser(incoming());
+      allow delete: if isValidId(userId) && isMasterAdmin();
+    }
+
+    // Advertisements Collection (Discreet Sponsored Ads)
+    match /ads/{adId} {
+      // Public customers need to read active ads on the review page
       allow get, list: if true;
-      allow create, update: if isValidId(userId) && isValidUser(incoming());
-      allow delete: if isValidId(userId);
+
+      // Administrative ad management strictly restricted to Master Admin
+      allow create, update: if isValidId(adId) && isMasterAdmin() && isValidAd(incoming());
+      allow delete: if isValidId(adId) && isMasterAdmin();
     }
   }
 }

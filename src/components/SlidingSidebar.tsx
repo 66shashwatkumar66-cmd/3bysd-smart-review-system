@@ -21,6 +21,7 @@ import {
   Database,
   Cpu,
   Sliders,
+  Megaphone,
 } from 'lucide-react';
 import { AdminUser, UserProfile } from '../types';
 import { auth, signOut, onAuthStateChanged, User } from '../firebase';
@@ -30,8 +31,8 @@ import { saveUser } from '../utils/api';
 interface SlidingSidebarProps {
   isOpen: boolean;
   onClose: () => void;
-  currentTab: 'cards' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users';
-  onSelectTab: (tab: 'cards' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users') => void;
+  currentTab: 'cards' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users' | 'ads';
+  onSelectTab: (tab: 'cards' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users' | 'ads') => void;
   totalCards: number;
   assignedCount: number;
   availableCount: number;
@@ -203,9 +204,16 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
       icon: Smartphone,
       color: '#34A853',
     },
-    // Strictly isolate management views (Users & Master Admin) to Master Admin only
+    // Strictly isolate management views (Users, Master Admin & Ads) to Master Admin only
     ...(isMaster
       ? [
+          {
+            id: 'ads' as const,
+            label: 'Advertisements',
+            description: 'Manage sponsor ads on review stands',
+            icon: Megaphone,
+            color: '#EA4335',
+          },
           {
             id: 'users' as const,
             label: 'Users & Logins',

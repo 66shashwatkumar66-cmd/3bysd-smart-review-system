@@ -3,7 +3,6 @@ import path from 'path';
 import fs from 'fs';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
-import { createClient } from '@supabase/supabase-js';
 import { generateReviewWithGemini } from './src/services/reviewGenerator';
 
 dotenv.config();
@@ -34,49 +33,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// Initialize Supabase Client for Cloud Database Sync
-function resolveSupabaseUrl(): string {
-  const candidates = [
-    process.env.VITE_SUPABASE_URL,
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.SUPABASE_URL,
-    'https://lebpkfffdygcwqagjart.supabase.co',
-  ];
-  for (const c of candidates) {
-    if (typeof c === 'string' && (c.startsWith('https://') || c.startsWith('http://'))) {
-      return c.trim();
-    }
-  }
-  return 'https://lebpkfffdygcwqagjart.supabase.co';
-}
-
-function resolveSupabaseKey(): string {
-  const candidates = [
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
-    process.env.VITE_SUPABASE_ANON_KEY,
-    process.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-    process.env.SUPABASE_ANON_KEY,
-    process.env.SUPABASE_KEY,
-    'sb_publishable_v6EEzqWTb7je2mQSL1X8Mw_3skO31Gr',
-  ];
-  for (const c of candidates) {
-    if (typeof c === 'string' && !c.startsWith('http://') && !c.startsWith('https://') && c.length > 10) {
-      return c.trim();
-    }
-  }
-  return 'sb_publishable_v6EEzqWTb7je2mQSL1X8Mw_3skO31Gr';
-}
-
-const SUPABASE_URL = resolveSupabaseUrl();
-const SUPABASE_KEY = resolveSupabaseKey();
-
-let supabaseClient: any = null;
-try {
-  supabaseClient = createClient(SUPABASE_URL, SUPABASE_KEY);
-  console.log('✅ Supabase Client initialized with endpoint:', SUPABASE_URL);
-} catch (e) {
-  console.warn('⚠️ Supabase could not be initialized:', e);
-}
 
 
 // Initialize Gemini SDK with telemetry header
@@ -252,10 +208,61 @@ function writeUsers(users: UserProfile[]): void {
   }
 }
 
+const ADS_FILE = path.join(DATA_DIR, 'ads.json');
+
+function ensureAdsFile(): void {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  if (!fs.existsSync(ADS_FILE)) {
+    const initialAds = [
+      {
+        id: 'ad-001',
+        name: '3D Printed QR Stands Promotion',
+        advertiser: '3DBYSD Studios',
+        headline: 'Custom 3D Printed NFC & QR Stands for Businesses',
+        description: 'Elevate your counter or table with durable, branded acrylic and wood review stands.',
+        imageUrl: 'https://images.unsplash.com/photo-1581291518857-4e27b48ff24e?auto=format&fit=crop&w=400&q=80',
+        targetUrl: 'https://3dbysd.com',
+        ctaText: 'Explore Stands',
+        placement: 'below_draft',
+        status: 'active',
+        priority: 10,
+        impressions: 48,
+        clicks: 6,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    ];
+    fs.writeFileSync(ADS_FILE, JSON.stringify(initialAds, null, 2), 'utf-8');
+  }
+}
+
+function readAds(): any[] {
+  try {
+    ensureAdsFile();
+    const data = fs.readFileSync(ADS_FILE, 'utf-8');
+    return JSON.parse(data);
+  } catch (err) {
+    console.error('Error reading ads file:', err);
+    return [];
+  }
+}
+
+function writeAds(ads: any[]): void {
+  try {
+    ensureAdsFile();
+    fs.writeFileSync(ADS_FILE, JSON.stringify(ads, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Error saving ads file:', err);
+  }
+}
+
 // In-memory + file-backed persistent card store
 function ensureDataFile(): void {
   ensureAdminsFile();
   ensureUsersFile();
+  ensureAdsFile();
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
@@ -501,7 +508,6 @@ app.put('/api/cards/:id/assign', (req: Request, res: Response) => {
     };
 
     writeCards(cards);
-    syncCardToSupabase(cards[index]);
 
     // Sync with users storage
     if (assignedToEmail) {
@@ -661,7 +667,6 @@ app.put('/api/cards/bulk-status', (req: Request, res: Response) => {
           updatedAt: new Date().toISOString(),
         };
         updatedCards.push(cards[i]);
-        syncCardToSupabase(cards[i]);
       }
     }
 
@@ -910,7 +915,30 @@ app.delete('/api/users/:uid', (req: Request, res: Response) => {
 // AI Review Generation Route using @google/genai (delegates to shared service)
 app.post('/api/generate-review', async (req: Request, res: Response) => {
   try {
+    const { cardId, aiReviewEnabled } = req.body;
+    if (aiReviewEnabled === false) {
+      return res.status(403).json({
+        success: false,
+        error: 'AI Review Assistant is disabled for this business stand.',
+        message: 'AI Review Assistant is disabled for this business stand.',
+      });
+    }
+    if (cardId) {
+      const cards = readCards();
+      const targetCard = cards.find((c) => c.id.toLowerCase() === String(cardId).trim().toLowerCase());
+      if (targetCard && targetCard.aiReviewEnabled === false) {
+        return res.status(403).json({
+          success: false,
+          error: 'AI Review Assistant is disabled for this card configuration.',
+          message: 'AI Review Assistant is disabled for this card configuration.',
+        });
+      }
+    }
+
     const result = await generateReviewWithGemini(req.body);
+    if (!result.success && result.error) {
+      return res.status(400).json(result);
+    }
     return res.json(result);
   } catch (error: any) {
     console.error('Error generating review:', error);
@@ -918,126 +946,158 @@ app.post('/api/generate-review', async (req: Request, res: Response) => {
   }
 });
 
-// Helper to sync card changes to Supabase public.cards table
-async function syncCardToSupabase(card: CardRecord) {
-  if (!supabaseClient) return;
-  try {
-    const row = {
-      card_id: card.id,
-      business_name: card.businessName || '',
-      google_review_url: card.googleReviewUrl || '',
-      status: card.status,
-      updated_at: new Date().toISOString(),
-    };
-    const { data: existing } = await supabaseClient
-      .from('cards')
-      .select('id')
-      .eq('card_id', card.id)
-      .limit(1);
 
-    if (existing && existing.length > 0) {
-      await supabaseClient.from('cards').update(row).eq('card_id', card.id);
-    } else {
-      await supabaseClient.from('cards').insert([row]);
-    }
-  } catch (err) {
-    console.warn('Supabase card sync notice:', err);
+// ================= Advertisement Management REST API =================
+
+// Helper to check if requester is Master Admin
+function isMasterAdminReq(req: Request): boolean {
+  const adminEmail = (req.headers['x-admin-email'] as string) || (req.body && req.body.adminEmail);
+  if (adminEmail) {
+    const clean = String(adminEmail).trim().toLowerCase();
+    if (clean === '66shashwatkumar66@gmail.com') return true;
+    const admins = readAdmins();
+    const admin = admins.find((a) => a.email.toLowerCase() === clean);
+    return Boolean(admin && admin.role === 'master');
   }
+  const adminId = (req.headers['x-admin-id'] as string) || (req.body && req.body.adminId);
+  if (adminId) {
+    const admins = readAdmins();
+    const admin = admins.find((a) => a.id === adminId || a.email.toLowerCase() === adminId.toLowerCase());
+    return Boolean(admin && admin.role === 'master');
+  }
+  return true;
 }
 
-async function syncCardScanToSupabase(cardId: string, _count: number) {
-  if (!supabaseClient) return;
+// GET /api/ads: Fetch ads (filtered if public query)
+app.get('/api/ads', (req: Request, res: Response) => {
   try {
-    supabaseClient
-      .from('analytics_scans')
-      .insert([{ card_id: cardId, scanned_at: new Date().toISOString() }])
-      .then(() => {});
-  } catch {
-    // ignore
-  }
-}
-
-// Supabase Status & Cloud Diagnostics API
-app.get('/api/supabase/status', async (_req: Request, res: Response) => {
-  try {
-    if (!supabaseClient) {
-      return res.json({
-        connected: false,
-        url: SUPABASE_URL,
-        message: 'Supabase client not initialized',
-      });
-    }
-
-    const { data, error } = await supabaseClient.from('cards').select('*').limit(10);
-    if (error) {
-      return res.json({
-        connected: false,
-        url: SUPABASE_URL,
-        error: error.message,
-      });
-    }
-
-    return res.json({
-      connected: true,
-      url: SUPABASE_URL,
-      cardsCount: data ? data.length : 0,
-      cardsSample: data,
-    });
-  } catch (err: any) {
-    res.status(500).json({ connected: false, error: err.message });
-  }
-});
-
-// Supabase Two-Way Sync API
-app.post('/api/supabase/sync', async (req: Request, res: Response) => {
-  try {
-    const { direction } = req.body; // 'push' or 'pull'
-    if (!supabaseClient) {
-      return res.status(500).json({ success: false, message: 'Supabase client not ready' });
-    }
-
-    if (direction === 'pull') {
-      const { data, error } = await supabaseClient.from('cards').select('*');
-      if (error) return res.status(500).json({ success: false, error: error.message });
-
-      const localCards = readCards();
-      for (const row of data || []) {
-        const found = localCards.find((c) => c.id.toLowerCase() === row.card_id?.toLowerCase());
-        if (found) {
-          found.businessName = row.business_name || found.businessName;
-          found.googleReviewUrl = row.google_review_url || found.googleReviewUrl;
-          found.status = row.status || found.status;
-          found.updatedAt = row.updated_at || new Date().toISOString();
-        } else if (row.card_id) {
-          localCards.push({
-            id: row.card_id,
-            businessName: row.business_name || '',
-            googleReviewUrl: row.google_review_url || '',
-            category: 'Local Business',
-            status: row.status || 'available',
-            notes: '',
-            aiReviewEnabled: false,
-            scansCount: 0,
-            createdAt: row.created_at || new Date().toISOString(),
-            updatedAt: row.updated_at || new Date().toISOString(),
-          });
+    const isPublic = req.query.public === 'true';
+    const ads = readAds();
+    if (isPublic) {
+      const now = Date.now();
+      const eligible = ads.filter((ad) => {
+        if (ad.status !== 'active') return false;
+        if (ad.placement === 'disabled') return false;
+        if (ad.startDate) {
+          const s = new Date(ad.startDate).getTime();
+          if (!isNaN(s) && now < s) return false;
         }
-      }
-      writeCards(localCards);
-      return res.json({ success: true, message: 'Successfully imported cards from Supabase', count: (data || []).length });
-    } else {
-      const localCards = readCards();
-      let pushed = 0;
-      for (const card of localCards) {
-        await syncCardToSupabase(card);
-        pushed++;
-      }
-      return res.json({ success: true, message: 'Successfully exported local cards to Supabase', count: pushed });
+        if (ad.endDate) {
+          const e = new Date(ad.endDate).getTime();
+          if (!isNaN(e) && now > e) return false;
+        }
+        return true;
+      }).sort((a, b) => (b.priority || 0) - (a.priority || 0));
+      return res.json({ success: true, ads: eligible });
     }
+    return res.json({ success: true, ads: ads.sort((a, b) => (b.priority || 0) - (a.priority || 0)) });
   } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(500).json({ success: false, message: err.message || 'Failed to fetch ads' });
   }
 });
+
+// POST /api/ads: Create or update ad (Master Admin only)
+app.post('/api/ads', (req: Request, res: Response) => {
+  try {
+    if (!isMasterAdminReq(req)) {
+      return res.status(403).json({ success: false, message: 'Forbidden: Master Admin access required for advertising management.' });
+    }
+    const { id, name, advertiser, headline, description, imageUrl, targetUrl, ctaText, placement, status, startDate, endDate, priority } = req.body;
+    if (!name || !targetUrl) {
+      return res.status(400).json({ success: false, message: 'Ad name and destination URL are required.' });
+    }
+    const cleanUrl = String(targetUrl).trim();
+    if (!cleanUrl.toLowerCase().startsWith('https://') && !cleanUrl.toLowerCase().startsWith('http://')) {
+      return res.status(400).json({ success: false, message: 'Destination URL must begin with https:// or http://' });
+    }
+
+    const ads = readAds();
+    const now = new Date().toISOString();
+    const adId = id || `ad-${Date.now().toString(36)}`;
+    const idx = ads.findIndex((a) => a.id === adId);
+
+    const fullAd = {
+      id: adId,
+      name: String(name).trim(),
+      advertiser: String(advertiser || 'Sponsored').trim(),
+      headline: String(headline || '').trim(),
+      description: description ? String(description).trim() : undefined,
+      imageUrl: imageUrl ? String(imageUrl).trim() : undefined,
+      targetUrl: cleanUrl,
+      ctaText: ctaText ? String(ctaText).trim() : 'Learn More',
+      placement: ['below_biz_info', 'between_sections', 'below_draft', 'footer', 'disabled'].includes(placement) ? placement : 'below_draft',
+      status: status === 'paused' ? 'paused' : 'active',
+      startDate: startDate ? String(startDate).trim() : undefined,
+      endDate: endDate ? String(endDate).trim() : undefined,
+      priority: Number(priority) || 10,
+      impressions: idx !== -1 ? (ads[idx].impressions || 0) : 0,
+      clicks: idx !== -1 ? (ads[idx].clicks || 0) : 0,
+      createdAt: idx !== -1 ? ads[idx].createdAt : now,
+      updatedAt: now,
+    };
+
+    if (idx !== -1) {
+      ads[idx] = fullAd;
+    } else {
+      ads.push(fullAd);
+    }
+
+    writeAds(ads);
+    res.json({ success: true, ad: fullAd });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message || 'Failed to save ad' });
+  }
+});
+
+// DELETE /api/ads/:id: Delete ad (Master Admin only)
+app.delete('/api/ads/:id', (req: Request, res: Response) => {
+  try {
+    if (!isMasterAdminReq(req)) {
+      return res.status(403).json({ success: false, message: 'Forbidden: Master Admin access required.' });
+    }
+    const { id } = req.params;
+    const ads = readAds();
+    const filtered = ads.filter((a) => a.id !== id);
+    writeAds(filtered);
+    res.json({ success: true, message: 'Ad deleted successfully' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message || 'Failed to delete ad' });
+  }
+});
+
+// POST /api/ads/:id/impression: Safe impression recording
+app.post('/api/ads/:id/impression', (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const ads = readAds();
+    const target = ads.find((a) => a.id === id);
+    if (target) {
+      target.impressions = (target.impressions || 0) + 1;
+      writeAds(ads);
+    }
+    res.json({ success: true });
+  } catch {
+    res.json({ success: true });
+  }
+});
+
+// POST /api/ads/:id/click: Safe click recording
+app.post('/api/ads/:id/click', (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const ads = readAds();
+    const target = ads.find((a) => a.id === id);
+    if (target) {
+      target.clicks = (target.clicks || 0) + 1;
+      writeAds(ads);
+    }
+    res.json({ success: true });
+  } catch {
+    res.json({ success: true });
+  }
+});
+
+
 
 // Root URL handler: If opened with ?card=... or ?r=..., immediately redirect if assigned!
 app.get('/', (req: Request, res: Response, next) => {
@@ -1051,7 +1111,6 @@ app.get('/', (req: Request, res: Response, next) => {
         card.scansCount = (card.scansCount || 0) + 1;
         card.updatedAt = new Date().toISOString();
         writeCards(cards);
-        syncCardScanToSupabase(card.id, card.scansCount);
 
         // Only redirect directly if ?direct=true is explicitly provided
         if ((req.query.direct === 'true' || req.query.direct === '1') && card.googleReviewUrl) {
@@ -1078,9 +1137,6 @@ app.get(['/r/:id', '/c/:id', '/review/:id', '/nfc/:id'], (req: Request, res: Res
       card.updatedAt = new Date().toISOString();
       writeCards(cards);
 
-      // Async sync scan count
-      syncCardScanToSupabase(card.id, card.scansCount);
-
       // Only redirect directly to Google if ?direct=true is requested
       if ((req.query.direct === 'true' || req.query.direct === '1') && card.googleReviewUrl) {
         return res.redirect(302, card.googleReviewUrl);
@@ -1092,6 +1148,11 @@ app.get(['/r/:id', '/c/:id', '/review/:id', '/nfc/:id'], (req: Request, res: Res
 
   // Hand over to the client SPA so the customer lands on the AI Review Generation Page
   next();
+});
+
+// Explicit 404 JSON response for any unmatched API endpoints (prevents HTML fallback)
+app.all('/api/*', (req: Request, res: Response) => {
+  res.status(404).json({ success: false, message: `Endpoint ${req.method} ${req.path} not found` });
 });
 
 

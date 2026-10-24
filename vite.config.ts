@@ -25,9 +25,6 @@ export default defineConfig(() => {
               if (id.includes('firebase')) {
                 return 'vendor-firebase';
               }
-              if (id.includes('@supabase')) {
-                return 'vendor-supabase';
-              }
               if (id.includes('lucide-react')) {
                 return 'vendor-icons';
               }

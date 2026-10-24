@@ -26,6 +26,7 @@ import { NfcGeneratorView } from './components/NfcGeneratorView';
 import { ReviewCustomizerView } from './components/ReviewCustomizerView';
 import { MasterAdminView } from './components/MasterAdminView';
 import { UsersManagementView } from './components/UsersManagementView';
+import { AdvertisementManagementView } from './components/AdvertisementManagementView';
 import { SlidingSidebar } from './components/SlidingSidebar';
 import { AuthGateway } from './components/AuthGateway';
 import { exportCardsToCsv } from './utils/csv';
@@ -65,7 +66,7 @@ const DEFAULT_MASTER_ADMIN: AdminUser = {
 export default function App() {
   const [cards, setCards] = useState<CardRecord[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
-  const [currentTab, setCurrentTab] = useState<'cards' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users'>('cards');
+  const [currentTab, setCurrentTab] = useState<'cards' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users' | 'ads'>('cards');
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
 
   // Authenticated User State (Real Google Auth)
@@ -749,6 +750,11 @@ export default function App() {
             activeAdmin={effectiveActiveAdmin}
             onRefreshAdmins={loadAdminsData}
           />
+        )}
+
+        {/* Tab 6: Master Admin Advertisement Management */}
+        {currentTab === 'ads' && isMaster && (
+          <AdvertisementManagementView activeAdmin={effectiveActiveAdmin} />
         )}
       </main>
 

@@ -49,6 +49,8 @@ export interface GenerateReviewRequest {
   language?: ReviewLanguage;
   tone?: ReviewTone;
   recentDrafts?: string[];
+  cardId?: string;
+  aiReviewEnabled?: boolean;
 }
 
 export interface GenerateReviewResponse {
@@ -56,6 +58,30 @@ export interface GenerateReviewResponse {
   review?: string;
   reviewText?: string;
   message?: string;
+  error?: string;
+}
+
+export type AdPlacement = 'below_biz_info' | 'between_sections' | 'below_draft' | 'footer' | 'disabled';
+export type AdStatus = 'active' | 'paused';
+
+export interface Advertisement {
+  id: string;
+  name: string;
+  advertiser: string;
+  headline: string;
+  description?: string;
+  imageUrl?: string;
+  targetUrl: string;
+  ctaText?: string;
+  placement: AdPlacement;
+  status: AdStatus;
+  startDate?: string;
+  endDate?: string;
+  priority: number;
+  impressions: number;
+  clicks: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface UserProfile {

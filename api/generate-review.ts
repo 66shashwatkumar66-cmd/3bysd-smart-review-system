@@ -32,6 +32,10 @@ export default async function handler(req: any, res: any) {
     }
 
     const result = await generateReviewWithGemini(body || {});
+    if (!result.success && result.error) {
+      const statusCode = result.error.includes('disabled') ? 403 : 400;
+      return res.status(statusCode).json(result);
+    }
     return res.status(200).json(result);
   } catch (error: any) {
     console.error('Serverless function error in /api/generate-review:', error);

@@ -10,7 +10,6 @@ import {
 } from 'firebase/firestore';
 import cfg from '../firebase-applet-config.json' with { type: 'json' };
 import { cleanForFirestore } from '../src/utils/api';
-import { testSupabaseConnection } from '../src/supabase';
 import { generateQrPng, generateQrSvg } from '../src/utils/qr';
 import { exportCardsToCsv } from '../src/utils/csv';
 import { CardRecord } from '../src/types';
@@ -74,12 +73,13 @@ async function main() {
     return `Connected to Firestore '${cfg.firestoreDatabaseId}'. Total existing cards: ${snap.size}`;
   });
 
-  await runTest('Database', 'Supabase Cloud Synchronization Status', async () => {
-    const status = await testSupabaseConnection();
-    if (!status.connected) {
-      throw new Error(`Supabase connection failed: ${status.error}`);
+  await runTest('Database', 'Supabase Decommission & Pure Firestore Verification', async () => {
+    // Verify that /api/supabase/status is 404 (removed from server)
+    const res = await fetch(`${BASE_URL}/api/supabase/status`);
+    if (res.status !== 404) {
+      throw new Error(`Expected 404 for removed Supabase endpoint, received HTTP ${res.status}`);
     }
-    return `Supabase active at lebpkfffdygcwqagjart.supabase.co. public.cards table verified.`;
+    return 'Supabase API endpoints successfully retired. Server operates exclusively on Cloud Firestore & local fallback.';
   });
 
   await runTest('Database', 'Local Server REST API Connectivity', async () => {

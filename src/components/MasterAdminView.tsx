@@ -22,7 +22,7 @@ import {
   HelpCircle,
   Eye,
 } from 'lucide-react';
-import { SupabasePanel } from './SupabasePanel';
+import { FirebaseCloudPanel } from './FirebaseCloudPanel';
 
 interface MasterAdminViewProps {
   cards: CardRecord[];
@@ -400,8 +400,8 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
         })}
       </div>
 
-      {/* Supabase Cloud Database Integration Panel */}
-      <SupabasePanel cards={cards} onRefreshCards={onRefreshCards || (async () => {})} />
+      {/* Google Cloud Firestore Database Panel */}
+      <FirebaseCloudPanel cards={cards} onRefreshCards={onRefreshCards || (async () => {})} />
 
       {/* Add / Edit Admin Modal */}
       {isModalOpen && (

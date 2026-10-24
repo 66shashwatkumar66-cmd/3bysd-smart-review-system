@@ -1,0 +1,17 @@
+[
+  {
+    "id": "master-admin-01",
+    "email": "66shashwatkumar66@gmail.com",
+    "name": "Shashwat Kumar",
+    "role": "master",
+    "assignedCardIds": [],
+    "permissions": {
+      "canEditCards": true,
+      "canToggleAi": true,
+      "canExportCsv": true,
+      "canCreateCards": true
+    },
+    "createdAt": "2026-10-10T21:36:13.801Z",
+    "updatedAt": "2026-10-13T19:01:58.673Z"
+  }
+]

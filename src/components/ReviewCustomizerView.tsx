@@ -189,6 +189,7 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
   const [promptStarter, setPromptStarter] = useState<string>(selectedCard?.promptStarter || '');
   const [customHeadline, setCustomHeadline] = useState<string>(selectedCard?.customHeadline || '');
   const [logoUrl, setLogoUrl] = useState<string>(selectedCard?.logoUrl || '');
+  const [aiReviewEnabled, setAiReviewEnabled] = useState<boolean>(selectedCard?.aiReviewEnabled !== false);
   const [isUploadingLogo, setIsUploadingLogo] = useState<boolean>(false);
   const [logoMessage, setLogoMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
@@ -209,6 +210,7 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
       setPromptStarter(selectedCard.promptStarter || '');
       setCustomHeadline(selectedCard.customHeadline || '');
       setLogoUrl(selectedCard.logoUrl || '');
+      setAiReviewEnabled(selectedCard.aiReviewEnabled !== false);
       setLogoMessage(null);
       setSaveSuccess(false);
       setSaveError('');
@@ -312,6 +314,7 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
         promptStarter: promptStarter.trim(),
         customHeadline: customHeadline.trim(),
         logoUrl: logoUrl.trim() || undefined,
+        aiReviewEnabled,
       };
 
       if (applyToAll) {
@@ -350,6 +353,7 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
     promptStarter,
     customHeadline,
     logoUrl,
+    aiReviewEnabled,
   };
 
   const scanUrl = getCardScanUrl(previewCard.id);
@@ -552,11 +556,67 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
             </div>
           </div>
 
-          {/* 3. Industry Keyword Presets */}
+          {/* 3. AI Review Assistant Mode Toggle */}
+          <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-start gap-3 min-w-0">
+                <div
+                  className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 transition-colors ${
+                    aiReviewEnabled
+                      ? 'bg-blue-50 text-[#1A73E8] border border-blue-200'
+                      : 'bg-slate-100 text-slate-500 border border-slate-200'
+                  }`}
+                >
+                  <Sparkles className="w-5 h-5" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+                      3. AI Assistant Mode
+                    </h3>
+                    <span
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                        aiReviewEnabled
+                          ? 'bg-blue-100 text-[#1A73E8] border border-blue-200'
+                          : 'bg-slate-200 text-slate-700 border border-slate-300'
+                      }`}
+                    >
+                      {aiReviewEnabled ? 'ACTIVE (ON)' : 'BYPASS (OFF)'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                    {aiReviewEnabled
+                      ? 'ON: Customers see the full AI review assistant, ratings, tags, custom notes, language & tone customizer, and generated drafts.'
+                      : 'OFF: Disables the AI-assisted workflow. Customers see normal star ratings and a direct button to write their review directly on Google.'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Toggle Switch */}
+              <button
+                type="button"
+                onClick={() => setAiReviewEnabled(!aiReviewEnabled)}
+                role="switch"
+                aria-checked={aiReviewEnabled}
+                aria-label="Toggle AI Assistant Mode"
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                  aiReviewEnabled ? 'bg-[#1A73E8]' : 'bg-slate-300'
+                }`}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                    aiReviewEnabled ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+          </div>
+
+          {/* 4. Industry Keyword Presets */}
           <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold text-slate-800 uppercase tracking-wider">
-                3. Quick Industry Keyword Packs
+                4. Quick Industry Keyword Packs
               </span>
               <button
                 type="button"
@@ -589,12 +649,12 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
             </div>
           </div>
 
-          {/* 4. Active Custom Keywords List & Add Tag Input */}
+          {/* 5. Active Custom Keywords List & Add Tag Input */}
           <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-4">
             <div className="flex items-center justify-between">
               <div>
                 <span className="text-xs font-bold text-slate-800 uppercase tracking-wider block">
-                  4. Active Experience Keywords ({keywords.length})
+                  5. Active Experience Keywords ({keywords.length})
                 </span>
                 <span className="text-[11px] text-slate-500">
                   Customers select these tags on the review page to generate personalized drafts.
@@ -659,10 +719,10 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
             </div>
           </div>
 
-          {/* 5. AI Prompt Tone & Headline Customization */}
+          {/* 6. AI Prompt Tone & Headline Customization */}
           <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-4">
             <span className="text-xs font-bold text-slate-800 uppercase tracking-wider block">
-              5. AI Tone & Headline Settings
+              6. AI Tone & Headline Settings
             </span>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

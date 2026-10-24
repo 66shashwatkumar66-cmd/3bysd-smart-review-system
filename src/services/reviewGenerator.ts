@@ -10,6 +10,8 @@ export interface GenerateReviewInput {
   language?: ReviewLanguage;
   tone?: ReviewTone;
   recentDrafts?: string[];
+  cardId?: string;
+  aiReviewEnabled?: boolean;
 }
 
 export interface GenerateReviewOutput {
@@ -390,6 +392,14 @@ function getLanguagePromptDirective(language: ReviewLanguage): string {
 export async function generateReviewWithGemini(
   input: GenerateReviewInput
 ): Promise<GenerateReviewOutput> {
+  if (input.aiReviewEnabled === false) {
+    return {
+      success: false,
+      error: 'AI Review Assistant is disabled for this business stand.',
+      message: 'AI Review Assistant is disabled for this business stand.',
+    };
+  }
+
   const ratingNum = Math.min(Math.max(Number(input.rating) || 5, 1), 5);
   const tagsList = Array.isArray(input.tags) ? input.tags.filter(Boolean) : [];
   const safeBusinessName = input.businessName ? String(input.businessName).trim() : 'this business';
