@@ -63,6 +63,7 @@ export interface CardRecord {
   promptStarter?: string;
   customHeadline?: string;
   logoUrl?: string;
+  businessDescription?: string;
   scansCount: number;
   assignedToEmail?: string;
   assignedToUid?: string;
@@ -504,6 +505,7 @@ app.put('/api/cards/:id/assign', (req: Request, res: Response) => {
       promptStarter: req.body.promptStarter !== undefined ? String(req.body.promptStarter).trim() : cards[index].promptStarter,
       customHeadline: req.body.customHeadline !== undefined ? String(req.body.customHeadline).trim() : cards[index].customHeadline,
       logoUrl: req.body.logoUrl !== undefined ? (req.body.logoUrl ? String(req.body.logoUrl).trim() : undefined) : cards[index].logoUrl,
+      businessDescription: req.body.businessDescription !== undefined ? (req.body.businessDescription ? String(req.body.businessDescription).trim() : undefined) : cards[index].businessDescription,
       updatedAt: new Date().toISOString(),
     };
 
@@ -923,19 +925,33 @@ app.post('/api/generate-review', async (req: Request, res: Response) => {
         message: 'AI Review Assistant is disabled for this business stand.',
       });
     }
+
+    const enrichedPayload = { ...req.body };
     if (cardId) {
       const cards = readCards();
       const targetCard = cards.find((c) => c.id.toLowerCase() === String(cardId).trim().toLowerCase());
-      if (targetCard && targetCard.aiReviewEnabled === false) {
-        return res.status(403).json({
-          success: false,
-          error: 'AI Review Assistant is disabled for this card configuration.',
-          message: 'AI Review Assistant is disabled for this card configuration.',
-        });
+      if (targetCard) {
+        if (targetCard.aiReviewEnabled === false) {
+          return res.status(403).json({
+            success: false,
+            error: 'AI Review Assistant is disabled for this card configuration.',
+            message: 'AI Review Assistant is disabled for this card configuration.',
+          });
+        }
+        if (!enrichedPayload.businessName && targetCard.businessName) {
+          enrichedPayload.businessName = targetCard.businessName;
+        }
+        if (!enrichedPayload.category && targetCard.category) {
+          enrichedPayload.category = targetCard.category;
+        }
+        if (!enrichedPayload.businessDescription) {
+          enrichedPayload.businessDescription =
+            targetCard.businessDescription || targetCard.promptStarter || targetCard.notes;
+        }
       }
     }
 
-    const result = await generateReviewWithGemini(req.body);
+    const result = await generateReviewWithGemini(enrichedPayload);
     if (!result.success && result.error) {
       return res.status(400).json(result);
     }

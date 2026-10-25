@@ -84,6 +84,7 @@ export const MobileSimulatorModal: React.FC<MobileSimulatorModalProps> = ({
 
               {/* Render the customer review component */}
               <CustomerReviewView
+                key={selectedCardId}
                 card={activeCard}
                 cardId={selectedCardId}
                 isSimulator={true}

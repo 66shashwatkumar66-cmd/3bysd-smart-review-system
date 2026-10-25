@@ -54,6 +54,7 @@ service cloud.firestore {
         (!('promptStarter' in data) || data.promptStarter == null || (data.promptStarter is string && data.promptStarter.size() <= 1000)) &&
         (!('customHeadline' in data) || data.customHeadline == null || (data.customHeadline is string && data.customHeadline.size() <= 200)) &&
         (!('logoUrl' in data) || data.logoUrl == null || (data.logoUrl is string && data.logoUrl.size() <= 2000000)) &&
+        (!('businessDescription' in data) || data.businessDescription == null || (data.businessDescription is string && data.businessDescription.size() <= 2000)) &&
         (!('reviewPageSettings' in data) || data.reviewPageSettings == null || data.reviewPageSettings is map);
     }
 

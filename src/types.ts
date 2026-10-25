@@ -15,6 +15,7 @@ export interface CardRecord {
   promptStarter?: string; // Optional custom guidance for AI review generator
   customHeadline?: string; // Optional custom headline on customer review page
   logoUrl?: string; // Optional business logo URL (Firebase/Supabase/server uploaded)
+  businessDescription?: string; // Business description and product offerings
   createdAt: string;
   updatedAt: string;
 }
@@ -46,6 +47,7 @@ export interface GenerateReviewRequest {
   tags: string[];
   notes?: string;
   category?: string;
+  businessDescription?: string;
   language?: ReviewLanguage;
   tone?: ReviewTone;
   recentDrafts?: string[];

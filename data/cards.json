@@ -1,6 +1,6 @@
 [
   {
-    "scansCount": 92,
+    "scansCount": 93,
     "googleReviewUrl": "https://g.page/r/artisan-cafe/review",
     "notes": "Table 4 Stand - NFC & QR display",
     "status": "assigned",
@@ -11,7 +11,7 @@
     "id": "0001",
     "category": "Cafe & Dining",
     "assignedToEmail": "66shashwatkumar66@gmail.com",
-    "updatedAt": "2026-10-23T15:22:12.640Z",
+    "updatedAt": "2026-10-25T10:00:25.612Z",
     "logoUrl": "/uploads/logos/logo-0001-1792071425634.png"
   },
   {
@@ -24,8 +24,12 @@
     "id": "0002",
     "businessName": "SD Wood-Fired Pizzeria",
     "category": "Italian Restaurant",
-    "updatedAt": "2026-10-23T13:13:27.456Z",
-    "customKeywords": [],
+    "updatedAt": "2026-10-25T10:00:09.053Z",
+    "customKeywords": [
+      "Custom Tag A",
+      "Custom Tag B",
+      "Custom Tag C"
+    ],
     "assignedToEmail": "66shashwatkumar66@gmail.com",
     "assignedToName": "Master Administrator",
     "assignedToUid": "google-uid-66shashwatkumar66gmailcom"

@@ -22,6 +22,7 @@ import {
   MessageSquare,
   RefreshCw,
   Languages,
+  AlertCircle,
 } from 'lucide-react';
 
 interface CustomerReviewViewProps {
@@ -161,6 +162,7 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
   const [recentDrafts, setRecentDrafts] = useState<string[]>([]);
   const [generatedReview, setGeneratedReview] = useState<string>('');
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
+  const [generationError, setGenerationError] = useState<string | null>(null);
   const [copied, setCopied] = useState<boolean>(false);
   const [redirected, setRedirected] = useState<boolean>(false);
 
@@ -215,10 +217,37 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
     return map;
   }, [ads]);
 
-  // Sync selected tags if card changes
+  // Cross-card isolation: cleanly reset state whenever the active card changes
+  const currentCardKey = card?.id || cardId;
+  const prevCardKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (prevCardKeyRef.current !== null && prevCardKeyRef.current !== currentCardKey) {
+      if (card?.customKeywords && card.customKeywords.length > 0) {
+        setSelectedTags(card.customKeywords.slice(0, 2));
+      } else {
+        setSelectedTags(['Food & Drinks', 'Friendly Staff']);
+      }
+      setRating(5);
+      setCustomNotes('');
+      setRecentDrafts([]);
+      setGeneratedReview('');
+      setGenerationError(null);
+      if (card?.reviewTone === 'concise') setTone('direct');
+      else if (card?.reviewTone === 'enthusiastic') setTone('enthusiastic');
+      else if (card?.reviewTone === 'professional') setTone('professional');
+      else setTone('casual');
+    }
+    prevCardKeyRef.current = currentCardKey;
+  }, [currentCardKey]);
+
+  // Sync selected tags if card's custom keywords list changes in customizer
   useEffect(() => {
     if (card?.customKeywords && card.customKeywords.length > 0) {
-      setSelectedTags((prev) => (prev.length > 0 ? prev : card.customKeywords!.slice(0, 2)));
+      setSelectedTags((prev) => {
+        const valid = prev.filter((t) => card.customKeywords!.includes(t));
+        return valid.length > 0 ? valid : card.customKeywords!.slice(0, 2);
+      });
     }
   }, [card?.customKeywords]);
 
@@ -226,6 +255,15 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
   const effectiveBusinessName =
     card?.businessName?.trim() || (isAssigned ? 'Our Business' : `Card #${cardId} Review Stand`);
   const effectiveCategory = card?.category?.trim() || 'Customer Experience';
+  const effectiveBusinessDescription =
+    card?.businessDescription?.trim() ||
+    card?.promptStarter?.trim() ||
+    (card?.notes &&
+    !card.notes.toLowerCase().includes('stand') &&
+    !card.notes.toLowerCase().includes('batch') &&
+    !card.notes.toLowerCase().includes('unassigned')
+      ? card.notes.trim()
+      : '');
 
   const handleGenerate = async (
     explicitTone?: ReviewTone,
@@ -238,32 +276,41 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
 
     setIsGenerating(true);
     setCopied(false);
+    setGenerationError(null);
     const activeTone = explicitTone || tone;
     const activeLang = explicitLang || language;
     const activeRating = explicitRating !== undefined ? explicitRating : rating;
-    const activeTags = explicitTags || selectedTags;
+    const activeTags = explicitTags !== undefined ? explicitTags : selectedTags;
 
     try {
       const res = await generateAiReview({
         businessName: effectiveBusinessName,
         category: effectiveCategory,
+        businessDescription: effectiveBusinessDescription || undefined,
         rating: activeRating,
         tags: activeTags,
         notes: customNotes.trim() || undefined,
         language: activeLang,
         tone: activeTone,
         recentDrafts,
-        cardId: card?.id,
+        cardId: card?.id || cardId,
         aiReviewEnabled: effectiveAiReviewEnabled,
       });
 
       if (res.success && res.review) {
         setGeneratedReview(res.review);
         setRecentDrafts((prev) => [res.review!, ...prev.filter((d) => d !== res.review)].slice(0, 4));
+        setGenerationError(null);
       } else {
-        // Fallback to contextual generator if server returned an error (e.g. 405 or network)
+        if (res.message && (res.message.includes('disabled') || res.message.includes('Forbidden'))) {
+          setGenerationError(res.message);
+          return;
+        }
+        // Fallback to category-aware and keyword-aware generator
         const fallback = generateSmartFallbackReview(
           effectiveBusinessName,
+          effectiveCategory,
+          effectiveBusinessDescription,
           activeRating,
           activeTags,
           customNotes.trim(),
@@ -274,15 +321,18 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
         setGeneratedReview(fallback);
         setRecentDrafts((prev) => [fallback, ...prev.filter((d) => d !== fallback)].slice(0, 4));
       }
-    } catch (err) {
-      console.warn('Network generate failed, using local generator:', err);
+    } catch (err: any) {
+      console.warn('Network generate notice, using local generator:', err);
       const fallback = generateSmartFallbackReview(
         effectiveBusinessName,
+        effectiveCategory,
+        effectiveBusinessDescription,
         activeRating,
         activeTags,
         customNotes.trim(),
         activeLang,
-        activeTone
+        activeTone,
+        recentDrafts
       );
       setGeneratedReview(fallback);
       setRecentDrafts((prev) => [fallback, ...prev.filter((d) => d !== fallback)].slice(0, 4));
@@ -375,6 +425,35 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
               Opening your review experience...
             </p>
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  // State 0.5: Business Configuration cannot be retrieved
+  if (!isLoading && !card && !isSimulator && cardId) {
+    return (
+      <div className="min-h-screen bg-[#FDFCFB] flex flex-col justify-center items-center p-6 text-slate-900 antialiased">
+        <div className="max-w-sm w-full bg-white rounded-3xl p-8 border border-slate-200/90 shadow-sm text-center space-y-4">
+          <div className="w-14 h-14 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto border border-amber-200">
+            <AlertCircle className="w-7 h-7 text-amber-600" />
+          </div>
+          <div>
+            <h1 className="text-base sm:text-lg font-extrabold text-slate-900">
+              Business Configuration Not Found
+            </h1>
+            <p className="text-xs text-slate-500 mt-1">
+              Could not retrieve business details for Stand #{cardId}. Please verify the QR code or link.
+            </p>
+          </div>
+          {onBackToAdmin && (
+            <button
+              onClick={onBackToAdmin}
+              className="px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              Back to Dashboard
+            </button>
+          )}
         </div>
       </div>
     );
@@ -693,6 +772,23 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
                   </span>
                 </div>
               </div>
+
+              {generationError && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-2xl text-xs text-red-700 flex items-start gap-2 animate-fadeIn">
+                  <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <div className="font-bold">Review Assistant Notice</div>
+                    <div className="text-[11px] mt-0.5">{generationError}</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setGenerationError(null)}
+                    className="text-red-400 hover:text-red-700 font-bold cursor-pointer"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
 
               <div className="relative">
                 {isGenerating ? (
