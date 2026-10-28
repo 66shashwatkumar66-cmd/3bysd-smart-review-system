@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { CardRecord, AdminUser, UserProfile } from './types';
 import {
   fetchCards,
@@ -13,6 +13,13 @@ import {
   deleteAdmin,
   fetchUsers,
 } from './utils/api';
+import {
+  extractCardId,
+  isValidCardId,
+  lookupCard,
+  CustomerLoadState,
+  getCachedCard,
+} from './utils/cardLookup';
 import { auth, onAuthStateChanged, signOut } from './firebase';
 import { AdminHeader } from './components/AdminHeader';
 import { CardsTable } from './components/CardsTable';
@@ -85,9 +92,79 @@ export default function App() {
   const [activeAdmin, setActiveAdmin] = useState<AdminUser | null>(null);
 
   // Customer route state (e.g. /r/0001)
-  const [customerCardId, setCustomerCardId] = useState<string | null>(null);
-  const [customerCard, setCustomerCard] = useState<CardRecord | null>(null);
-  const [isCustomerLoading, setIsCustomerLoading] = useState<boolean>(true);
+  const initialTargetId = typeof window !== 'undefined' ? extractCardId() : null;
+  const [customerCardId, setCustomerCardId] = useState<string | null>(initialTargetId);
+  const [customerCard, setCustomerCard] = useState<CardRecord | null>(() => {
+    if (!initialTargetId) return null;
+    return getCachedCard(initialTargetId);
+  });
+  const [customerLoadState, setCustomerLoadState] = useState<CustomerLoadState>(() => {
+    if (!initialTargetId) return 'loading';
+    if (!isValidCardId(initialTargetId)) return 'invalid_id';
+    const cached = getCachedCard(initialTargetId);
+    if (cached) return 'success';
+    return 'loading';
+  });
+  const [customerErrorMessage, setCustomerErrorMessage] = useState<string | null>(null);
+
+  const activeLookupReqIdRef = useRef(0);
+
+  const fetchCustomerCard = useCallback(async (targetId: string, recordScan: boolean = false) => {
+    const reqId = ++activeLookupReqIdRef.current;
+
+    // Validate ID format immediately without unnecessary requests
+    if (!isValidCardId(targetId)) {
+      setCustomerLoadState('invalid_id');
+      setCustomerCard(null);
+      setCustomerErrorMessage(`"${targetId}" is not a valid stand identifier.`);
+      return;
+    }
+
+    // Warm cache check for instant rendering
+    const cached = getCachedCard(targetId);
+    if (cached) {
+      setCustomerCard(cached);
+      setCustomerLoadState('success');
+    } else {
+      setCustomerLoadState('loading');
+      setCustomerErrorMessage(null);
+    }
+
+    try {
+      const result = await lookupCard(targetId, { recordScan });
+
+      // Stale response guard: ignore if a newer request began
+      if (activeLookupReqIdRef.current !== reqId) return;
+
+      if (result.status === 'success' && result.card) {
+        setCustomerCard(result.card);
+        setCustomerLoadState('success');
+        setCustomerErrorMessage(null);
+      } else if (result.status === 'not_found') {
+        setCustomerCard(null);
+        setCustomerLoadState('not_found');
+        setCustomerErrorMessage(result.errorMessage || null);
+      } else if (result.status === 'invalid_id') {
+        setCustomerCard(null);
+        setCustomerLoadState('invalid_id');
+        setCustomerErrorMessage(result.errorMessage || null);
+      } else {
+        // Recoverable error: keep cached version if available
+        if (!cached) {
+          setCustomerCard(null);
+          setCustomerLoadState('error');
+          setCustomerErrorMessage(result.errorMessage || 'Unable to connect to the stand service.');
+        }
+      }
+    } catch (err: any) {
+      if (activeLookupReqIdRef.current !== reqId) return;
+      if (!cached) {
+        setCustomerCard(null);
+        setCustomerLoadState('error');
+        setCustomerErrorMessage(err.message || 'Connection failed.');
+      }
+    }
+  }, []);
 
   // Modals state
   const [isBatchModalOpen, setIsBatchModalOpen] = useState<boolean>(false);
@@ -122,79 +199,28 @@ export default function App() {
 
   // Parse route from window.location and listen to popstate
   useEffect(() => {
-    const checkPath = async () => {
-      const pathname = window.location.pathname;
-      const urlParams = new URLSearchParams(window.location.search);
-      const hash = window.location.hash || '';
-      const queryCard =
-        urlParams.get('card') ||
-        urlParams.get('r') ||
-        urlParams.get('c') ||
-        urlParams.get('nfc') ||
-        urlParams.get('id');
-
-      let targetCardId: string | null = null;
-      if (pathname.startsWith('/r/')) {
-        targetCardId = pathname.replace('/r/', '').split('/')[0].split('?')[0].trim();
-      } else if (pathname.startsWith('/c/')) {
-        targetCardId = pathname.replace('/c/', '').split('/')[0].split('?')[0].trim();
-      } else if (pathname.startsWith('/review/')) {
-        targetCardId = pathname.replace('/review/', '').split('/')[0].split('?')[0].trim();
-      } else if (pathname.startsWith('/nfc/')) {
-        targetCardId = pathname.replace('/nfc/', '').split('/')[0].split('?')[0].trim();
-      } else if (hash.includes('/r/')) {
-        targetCardId = hash.split('/r/')[1].split('/')[0].split('?')[0].trim();
-      } else if (hash.startsWith('#') && hash.length > 1 && !hash.includes('/')) {
-        targetCardId = hash.replace(/^#/, '').trim();
-      } else if (queryCard) {
-        targetCardId = queryCard.trim();
-      }
+    const checkPath = () => {
+      const targetCardId = extractCardId();
 
       if (targetCardId) {
         setCustomerCardId(targetCardId);
-
-        // Instant local cache check
-        const cachedRaw = localStorage.getItem('3dbysd_smart_reviews_cards');
-        let initialFound: CardRecord | null = null;
-        if (cachedRaw) {
-          try {
-            const parsed = JSON.parse(cachedRaw) as CardRecord[];
-            const hit = parsed.find((c) => c.id.toLowerCase() === targetCardId.toLowerCase());
-            if (hit) {
-              initialFound = hit;
-              setCustomerCard(hit);
-            }
-          } catch {
-            // ignore
-          }
-        }
-
-        // Never lock the customer on a spinner: render review page immediately!
-        setIsCustomerLoading(false);
-
-        // Fetch fresh card in background and record scan count
-        fetchCardById(targetCardId, true).then((found) => {
-          if (found) {
-            setCustomerCard(found);
-          }
-        }).catch((err) => {
-          console.warn('Background card fetch error:', err);
-        });
+        fetchCustomerCard(targetCardId, false);
       } else {
         setCustomerCardId(null);
+        setCustomerCard(null);
+        loadCards();
+        loadAdminsData();
+        loadUsersData();
       }
     };
 
     checkPath();
     window.addEventListener('popstate', checkPath);
-    loadCards();
-    loadAdminsData();
-    loadUsersData();
 
     return () => {
       window.removeEventListener('popstate', checkPath);
     };
-  }, []);
+  }, [fetchCustomerCard]);
 
   const loadCards = async () => {
     setLoading(true);
@@ -320,17 +346,30 @@ export default function App() {
     setAdmins((prev) => prev.filter((a) => a.id !== adminId));
   };
 
+  const handleRetryCustomerLookup = () => {
+    if (customerCardId) {
+      setCustomerLoadState('loading');
+      setCustomerErrorMessage(null);
+      fetchCustomerCard(customerCardId, false);
+    }
+  };
+
   // If viewing customer URL directly (e.g. /r/0001)
   if (customerCardId) {
     return (
       <CustomerReviewView
         card={customerCard}
         cardId={customerCardId}
-        isLoading={isCustomerLoading}
+        loadState={customerLoadState}
+        isLoading={customerLoadState === 'loading'}
+        errorMessage={customerErrorMessage}
+        onRetry={handleRetryCustomerLookup}
         onBackToAdmin={() => {
           // Reset pathname and view admin
           window.history.pushState({}, '', '/');
           setCustomerCardId(null);
+          setCustomerCard(null);
+          loadCards();
         }}
       />
     );

@@ -25,12 +25,17 @@ import {
   AlertCircle,
 } from 'lucide-react';
 
+import { CustomerLoadState } from '../utils/cardLookup';
+
 interface CustomerReviewViewProps {
   card: CardRecord | null;
   cardId: string;
   onBackToAdmin?: () => void;
   isSimulator?: boolean;
   isLoading?: boolean;
+  loadState?: CustomerLoadState;
+  errorMessage?: string | null;
+  onRetry?: () => void;
 }
 
 const DEFAULT_EXPERIENCE_TAGS = [
@@ -119,6 +124,9 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
   onBackToAdmin,
   isSimulator = false,
   isLoading = false,
+  loadState,
+  errorMessage,
+  onRetry,
 }) => {
   const notesInputId = useId();
   const reviewDraftId = useId();
@@ -405,8 +413,18 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
     }
   };
 
-  // State 0: Loading in-progress
-  if (isLoading) {
+  // Determine effective asynchronous state:
+  // If explicit loadState is provided, respect it.
+  // Otherwise fall back to isLoading flag:
+  // - If isLoading: 'loading'
+  // - If card is present: 'success'
+  // - In simulator mode: 'success'
+  // - Otherwise: 'loading' (CRITICAL: never assume null card is 'not_found' unless confirmed!)
+  const effectiveLoadState: CustomerLoadState =
+    loadState || (isLoading ? 'loading' : card ? 'success' : isSimulator ? 'success' : 'loading');
+
+  // State 1: Loading in-progress (Google 4-color pulse spinner)
+  if (effectiveLoadState === 'loading') {
     return (
       <div className="min-h-screen bg-[#FDFCFB] flex flex-col justify-center items-center p-6 text-slate-900 antialiased">
         <div className="max-w-sm w-full bg-white rounded-3xl p-8 border border-slate-200/90 shadow-sm text-center space-y-4 animate-fadeIn">
@@ -430,8 +448,93 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
     );
   }
 
-  // State 0.5: Business Configuration cannot be retrieved
-  if (!isLoading && !card && !isSimulator && cardId) {
+  // State 2: Invalid Card ID (malformed, empty, or illegal characters)
+  if (effectiveLoadState === 'invalid_id') {
+    return (
+      <div className="min-h-screen bg-[#FDFCFB] flex flex-col justify-center items-center p-6 text-slate-900 antialiased">
+        <div className="max-w-sm w-full bg-white rounded-3xl p-8 border border-slate-200/90 shadow-sm text-center space-y-4">
+          <div className="w-14 h-14 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto border border-amber-200">
+            <AlertCircle className="w-7 h-7 text-amber-600" />
+          </div>
+          <div>
+            <h1 className="text-base sm:text-lg font-extrabold text-slate-900">
+              Invalid Stand Link
+            </h1>
+            <p className="text-xs text-slate-500 mt-1">
+              The link or QR code does not contain a valid stand identifier. Please verify the QR code or link.
+            </p>
+          </div>
+          {onBackToAdmin ? (
+            <button
+              onClick={onBackToAdmin}
+              className="px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              Back to Dashboard
+            </button>
+          ) : (
+            <a
+              href="/"
+              className="inline-block px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              Return to Home
+            </a>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // State 3: Recoverable network or service connection failure
+  if (effectiveLoadState === 'error') {
+    return (
+      <div className="min-h-screen bg-[#FDFCFB] flex flex-col justify-center items-center p-6 text-slate-900 antialiased">
+        <div className="max-w-sm w-full bg-white rounded-3xl p-8 border border-slate-200/90 shadow-sm text-center space-y-4">
+          <div className="w-14 h-14 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mx-auto border border-rose-200">
+            <AlertCircle className="w-7 h-7 text-rose-600" />
+          </div>
+          <div>
+            <h1 className="text-base sm:text-lg font-extrabold text-slate-900">
+              Unable to Connect
+            </h1>
+            <p className="text-xs text-slate-500 mt-1">
+              {errorMessage || `A temporary network issue prevented us from reaching Stand #${cardId}. Please check your connection and try again.`}
+            </p>
+          </div>
+          <div className="flex items-center justify-center gap-2 pt-1 flex-wrap">
+            {onRetry && (
+              <button
+                type="button"
+                onClick={onRetry}
+                className="flex items-center gap-1.5 px-4 py-2 bg-[#1A73E8] hover:bg-[#1557B0] text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer active:scale-95"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Try Again</span>
+              </button>
+            )}
+            {onBackToAdmin ? (
+              <button
+                type="button"
+                onClick={onBackToAdmin}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+              >
+                Back to Dashboard
+              </button>
+            ) : (
+              <a
+                href="/"
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-colors cursor-pointer inline-block"
+              >
+                Home
+              </a>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // State 4: Genuine Not Found (Confirmed absent in both Firestore and server database)
+  if (effectiveLoadState === 'not_found' && !isSimulator) {
     return (
       <div className="min-h-screen bg-[#FDFCFB] flex flex-col justify-center items-center p-6 text-slate-900 antialiased">
         <div className="max-w-sm w-full bg-white rounded-3xl p-8 border border-slate-200/90 shadow-sm text-center space-y-4">
@@ -446,13 +549,20 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
               Could not retrieve business details for Stand #{cardId}. Please verify the QR code or link.
             </p>
           </div>
-          {onBackToAdmin && (
+          {onBackToAdmin ? (
             <button
               onClick={onBackToAdmin}
               className="px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-colors cursor-pointer"
             >
               Back to Dashboard
             </button>
+          ) : (
+            <a
+              href="/"
+              className="inline-block px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              Return to Home
+            </a>
           )}
         </div>
       </div>

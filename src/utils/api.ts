@@ -176,70 +176,11 @@ export async function fetchCards(): Promise<CardRecord[]> {
   return INITIAL_CARDS;
 }
 
+import { lookupCard } from './cardLookup';
+
 export async function fetchCardById(id: string, recordScan: boolean = false): Promise<CardRecord | null> {
-  const cleanId = id.trim();
-
-  // 1. Instant check from localStorage cache if available
-  const cached = localStorage.getItem(STORAGE_KEY);
-  let localMatch: CardRecord | null = null;
-  if (cached) {
-    try {
-      const parsed = JSON.parse(cached) as CardRecord[];
-      const hit = parsed.find((c) => c.id.toLowerCase() === cleanId.toLowerCase());
-      if (hit) localMatch = hit;
-    } catch {
-      // ignore
-    }
-  }
-
-  // 2. Fast server API query (typically <20ms)
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 2000);
-    const res = await fetch(`/api/cards/${encodeURIComponent(cleanId)}${recordScan ? '?scan=true' : ''}`, {
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-    if (res.ok) {
-      const data = await res.json();
-      if (data.card) {
-        return data.card;
-      }
-    }
-  } catch (err) {
-    console.warn(`Server fetch card ${cleanId} notice:`, err);
-  }
-
-  // 3. Fallback to Firestore with timeout guard
-  try {
-    const docRef = doc(db, CARDS_COLLECTION, cleanId);
-    const docSnap = await Promise.race([
-      getDoc(docRef),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500)),
-    ]);
-
-    if (docSnap && docSnap.exists()) {
-      const card = docSnap.data() as CardRecord;
-      if (recordScan) {
-        const newCount = (card.scansCount || 0) + 1;
-        const updated = {
-          ...card,
-          scansCount: newCount,
-          updatedAt: new Date().toISOString(),
-        };
-        setDoc(docRef, updated, { merge: true }).catch(() => {});
-        return updated;
-      }
-      return card;
-    }
-  } catch (error) {
-    console.warn(`Firestore get card ${cleanId} notice:`, error);
-  }
-
-  if (localMatch) return localMatch;
-
-  const allCards = await fetchCards();
-  return allCards.find((c) => c.id.toLowerCase() === cleanId.toLowerCase()) || null;
+  const result = await lookupCard(id, { recordScan });
+  return result.card;
 }
 
 export async function createBatchCards(payload: {
