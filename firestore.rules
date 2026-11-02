@@ -17,8 +17,24 @@ service cloud.firestore {
     function isSubAdminForCard(cardId) {
       return request.auth != null && (
         isMasterAdmin() ||
+        // 1. Direct assignment on card by email
+        (resource != null &&
+         'assignedToEmail' in resource.data &&
+         resource.data.assignedToEmail != null &&
+         request.auth.token.email != null &&
+         resource.data.assignedToEmail.lower() == request.auth.token.email.lower()) ||
+        // 2. Direct assignment on card by uid
+        (resource != null &&
+         'assignedToUid' in resource.data &&
+         resource.data.assignedToUid != null &&
+         resource.data.assignedToUid == request.auth.uid) ||
+        // 3. Admin record lookup by UID
         (exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
-         cardId in get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.assignedCardIds)
+         cardId in get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.assignedCardIds) ||
+        // 4. Admin record lookup by lowercase email
+        (request.auth.token.email != null &&
+         exists(/databases/$(database)/documents/admins/$(request.auth.token.email.lower())) &&
+         cardId in get(/databases/$(database)/documents/admins/$(request.auth.token.email.lower())).data.assignedCardIds)
       );
     }
 
@@ -55,6 +71,8 @@ service cloud.firestore {
         (!('customHeadline' in data) || data.customHeadline == null || (data.customHeadline is string && data.customHeadline.size() <= 200)) &&
         (!('logoUrl' in data) || data.logoUrl == null || (data.logoUrl is string && data.logoUrl.size() <= 2000000)) &&
         (!('businessDescription' in data) || data.businessDescription == null || (data.businessDescription is string && data.businessDescription.size() <= 2000)) &&
+        (!('whatsapp' in data) || data.whatsapp == null || (data.whatsapp is string && data.whatsapp.size() <= 500)) &&
+        (!('instagram' in data) || data.instagram == null || (data.instagram is string && data.instagram.size() <= 500)) &&
         (!('reviewPageSettings' in data) || data.reviewPageSettings == null || data.reviewPageSettings is map);
     }
 
@@ -132,8 +150,13 @@ service cloud.firestore {
 
       // Card Updating restricted to Master Admin, authorized Sub-Admin, or test records
       allow update: if isValidId(cardId) && isValidCard(incoming()) && (
-        isSubAdminForCard(cardId) ||
         cardId.matches('^TEST-.*') ||
+        isMasterAdmin() ||
+        (
+          isSubAdminForCard(cardId) &&
+          incoming().get('assignedToEmail', '') == existing().get('assignedToEmail', '') &&
+          incoming().get('assignedToUid', '') == existing().get('assignedToUid', '')
+        ) ||
         // Public scan increment: only scansCount and updatedAt modified
         (incoming().diff(existing()).affectedKeys().hasOnly(['scansCount', 'updatedAt']))
       );

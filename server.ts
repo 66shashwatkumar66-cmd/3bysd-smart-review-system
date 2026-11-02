@@ -64,6 +64,8 @@ export interface CardRecord {
   customHeadline?: string;
   logoUrl?: string;
   businessDescription?: string;
+  whatsapp?: string;
+  instagram?: string;
   scansCount: number;
   assignedToEmail?: string;
   assignedToUid?: string;
@@ -462,7 +464,12 @@ app.put('/api/cards/:id/assign', (req: Request, res: Response) => {
       index = cards.length - 1;
     }
 
-    // Sub-admin permission validation: restricted admins can only edit registered cards
+    const existingCard = cards[index];
+    if (!existingCard) {
+      return res.status(404).json({ success: false, message: 'Card not found' });
+    }
+
+    // Sub-admin permission validation: restricted admins can only edit their assigned cards
     const requesterAdminId = (req.headers['x-admin-id'] as string) || req.body.adminId;
     if (requesterAdminId) {
       const admins = readAdmins();
@@ -470,11 +477,22 @@ app.put('/api/cards/:id/assign', (req: Request, res: Response) => {
         (a) => a.id === requesterAdminId || a.email.toLowerCase() === requesterAdminId.toLowerCase()
       );
       if (admin && admin.role === 'restricted') {
-        const canEdit = admin.assignedCardIds.some((cid) => cid.toLowerCase() === id.toLowerCase());
-        if (!canEdit) {
+        const isAssignedByList = admin.assignedCardIds && admin.assignedCardIds.some((cid) => cid.toLowerCase() === id.toLowerCase());
+        const isAssignedByEmail = existingCard.assignedToEmail && existingCard.assignedToEmail.toLowerCase() === admin.email.toLowerCase();
+        const isAssignedByUid = existingCard.assignedToUid && existingCard.assignedToUid === admin.id;
+
+        if (!isAssignedByList && !isAssignedByEmail && !isAssignedByUid) {
           return res.status(403).json({
             success: false,
             message: `Restricted Access: Sub-admin ${admin.name} is only authorized to edit assigned cards [${admin.assignedCardIds.join(', ')}].`,
+          });
+        }
+
+        // Sub-admins cannot reassign card ownership to someone else
+        if (assignedToEmail !== undefined && assignedToEmail && existingCard.assignedToEmail && assignedToEmail.toLowerCase() !== existingCard.assignedToEmail.toLowerCase()) {
+          return res.status(403).json({
+            success: false,
+            message: 'Permission Denied: Sub-admins cannot reassign card ownership.',
           });
         }
       }
@@ -488,7 +506,7 @@ app.put('/api/cards/:id/assign', (req: Request, res: Response) => {
       notes: notes !== undefined ? notes.trim() : cards[index].notes,
       aiReviewEnabled:
         aiReviewEnabled !== undefined
-          ? Boolean(aiReviewEnabled)
+            ? Boolean(aiReviewEnabled)
           : (cards[index].aiReviewEnabled ?? false),
       status:
         status !== undefined
@@ -506,6 +524,8 @@ app.put('/api/cards/:id/assign', (req: Request, res: Response) => {
       customHeadline: req.body.customHeadline !== undefined ? String(req.body.customHeadline).trim() : cards[index].customHeadline,
       logoUrl: req.body.logoUrl !== undefined ? (req.body.logoUrl ? String(req.body.logoUrl).trim() : undefined) : cards[index].logoUrl,
       businessDescription: req.body.businessDescription !== undefined ? (req.body.businessDescription ? String(req.body.businessDescription).trim() : undefined) : cards[index].businessDescription,
+      whatsapp: req.body.whatsapp !== undefined ? (req.body.whatsapp ? String(req.body.whatsapp).trim() : undefined) : cards[index].whatsapp,
+      instagram: req.body.instagram !== undefined ? (req.body.instagram ? String(req.body.instagram).trim() : undefined) : cards[index].instagram,
       updatedAt: new Date().toISOString(),
     };
 

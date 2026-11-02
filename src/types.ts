@@ -16,6 +16,8 @@ export interface CardRecord {
   customHeadline?: string; // Optional custom headline on customer review page
   logoUrl?: string; // Optional business logo URL (Firebase/Supabase/server uploaded)
   businessDescription?: string; // Business description and product offerings
+  whatsapp?: string; // Optional business WhatsApp phone number or wa.me URL
+  instagram?: string; // Optional business Instagram profile handle or URL
   createdAt: string;
   updatedAt: string;
 }

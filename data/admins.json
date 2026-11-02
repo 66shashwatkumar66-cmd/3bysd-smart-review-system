@@ -13,5 +13,22 @@
     },
     "createdAt": "2026-10-10T21:36:13.801Z",
     "updatedAt": "2026-10-13T19:01:58.673Z"
+  },
+  {
+    "id": "admin-1793443869010",
+    "email": "merchant.sports@gmail.com",
+    "name": "Mercury Sports Store Manager",
+    "role": "restricted",
+    "assignedCardIds": [
+      "0001"
+    ],
+    "permissions": {
+      "canEditCards": true,
+      "canToggleAi": true,
+      "canExportCsv": false,
+      "canCreateCards": false
+    },
+    "createdAt": "2026-10-31T10:51:09.010Z",
+    "updatedAt": "2026-10-31T10:51:09.010Z"
   }
 ]

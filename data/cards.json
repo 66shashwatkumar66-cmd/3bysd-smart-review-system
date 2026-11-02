@@ -1,18 +1,20 @@
 [
   {
-    "scansCount": 96,
-    "googleReviewUrl": "https://g.page/r/artisan-cafe/review",
+    "scansCount": 99,
+    "googleReviewUrl": "https://search.google.com/local/writereview?placeid=ChIJMercurySports",
     "notes": "Table 4 Stand - NFC & QR display",
     "status": "assigned",
     "aiReviewEnabled": false,
     "createdAt": "2026-10-03T19:08:29.393Z",
-    "businessName": "Artisan Cafe & Bakery",
+    "businessName": "Mercury Sports Pro Store",
     "assignedToName": "Shashwat Kumar",
     "id": "0001",
-    "category": "Cafe & Dining",
+    "category": "Sports Shop",
     "assignedToEmail": "66shashwatkumar66@gmail.com",
-    "updatedAt": "2026-10-28T10:00:19.718Z",
-    "logoUrl": "/uploads/logos/logo-0001-1792071425634.png"
+    "updatedAt": "2026-10-31T10:52:02.488Z",
+    "logoUrl": "/uploads/logos/logo-0001-1792071425634.png",
+    "whatsapp": "+91 98765 43210",
+    "instagram": "@mercurysports"
   },
   {
     "notes": "Host stand entrance",
@@ -42,9 +44,9 @@
     "createdAt": "2026-10-07T19:08:29.393Z",
     "status": "available",
     "category": "3d printing",
-    "scansCount": 11,
+    "scansCount": 13,
     "id": "0003",
-    "updatedAt": "2026-10-28T09:58:52.330Z",
+    "updatedAt": "2026-10-31T10:51:49.803Z",
     "assignedToEmail": "66shashwatkumar66@gmail.com",
     "customKeywords": [],
     "assignedToUid": "",

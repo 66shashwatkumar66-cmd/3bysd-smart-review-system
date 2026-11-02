@@ -2,6 +2,7 @@ import React, { useState, useEffect, useId } from 'react';
 import { X, ExternalLink, HelpCircle, Check, MapPin, Store, Sparkles, Radio, Copy, Tag } from 'lucide-react';
 import { CardRecord, AdminUser, UserProfile } from '../types';
 import { getCardScanUrl } from '../utils/url';
+import { validateWhatsAppInput, validateInstagramInput } from '../utils/socialLinks';
 
 interface AssignCardModalProps {
   card: CardRecord | null;
@@ -29,6 +30,8 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
   const statusId = useId();
   const assignedUserId = useId();
   const keywordsId = useId();
+  const whatsappId = useId();
+  const instagramId = useId();
 
   const [businessName, setBusinessName] = useState('');
   const [category, setCategory] = useState('');
@@ -36,6 +39,8 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
   const [notes, setNotes] = useState('');
   const [status, setStatus] = useState<'available' | 'assigned' | 'disabled'>('assigned');
   const [aiReviewEnabled, setAiReviewEnabled] = useState<boolean>(true);
+  const [whatsapp, setWhatsapp] = useState<string>('');
+  const [instagram, setInstagram] = useState<string>('');
   const [assignedToEmail, setAssignedToEmail] = useState<string>('');
   const [assignedToName, setAssignedToName] = useState<string>('');
   const [assignedToUid, setAssignedToUid] = useState<string>('');
@@ -53,6 +58,8 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
       setNotes(card.notes || '');
       setStatus(card.status || 'available');
       setAiReviewEnabled(card.aiReviewEnabled !== false);
+      setWhatsapp(card.whatsapp || '');
+      setInstagram(card.instagram || '');
       setAssignedToEmail(card.assignedToEmail || '');
       setAssignedToName(card.assignedToName || '');
       setAssignedToUid(card.assignedToUid || '');
@@ -76,6 +83,22 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
       }
     }
 
+    if (whatsapp.trim()) {
+      const check = validateWhatsAppInput(whatsapp);
+      if (!check.valid) {
+        setError(check.error || 'Invalid WhatsApp number or URL');
+        return;
+      }
+    }
+
+    if (instagram.trim()) {
+      const check = validateInstagramInput(instagram);
+      if (!check.valid) {
+        setError(check.error || 'Invalid Instagram profile or handle');
+        return;
+      }
+    }
+
     setError('');
     setIsSubmitting(true);
     try {
@@ -93,11 +116,17 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
         notes: notes.trim(),
         status: status,
         aiReviewEnabled: aiReviewEnabled,
-        assignedToEmail: assignedToEmail.trim() || '',
-        assignedToName: assignedToName.trim() || '',
-        assignedToUid: assignedToUid.trim() || '',
         customKeywords: keywordsArray,
+        whatsapp: whatsapp.trim() || undefined,
+        instagram: instagram.trim() || undefined,
       };
+
+      // Only master admin can reassign card ownership
+      if (isMaster) {
+        payload.assignedToEmail = assignedToEmail.trim() || '';
+        payload.assignedToName = assignedToName.trim() || '';
+        payload.assignedToUid = assignedToUid.trim() || '';
+      }
 
       await onSave(card.id, payload);
       onClose();
@@ -351,6 +380,51 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
                 className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900 focus:bg-white"
               />
             </div>
+          </div>
+
+          {/* Social Links (Stay Connected) */}
+          <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-slate-800">
+                Social Links (Stay Connected)
+              </span>
+              <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
+                {whatsapp.trim() || instagram.trim() ? 'Button Visible' : 'Auto-Hidden'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label htmlFor={whatsappId} className="block text-[11px] font-semibold text-slate-700 mb-1">
+                  WhatsApp Contact
+                </label>
+                <input
+                  id={whatsappId}
+                  type="text"
+                  value={whatsapp}
+                  onChange={(e) => setWhatsapp(e.target.value)}
+                  placeholder="e.g. +91 98765 43210 or wa.me/..."
+                  className="w-full px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900"
+                />
+              </div>
+
+              <div>
+                <label htmlFor={instagramId} className="block text-[11px] font-semibold text-slate-700 mb-1">
+                  Instagram Handle / Profile
+                </label>
+                <input
+                  id={instagramId}
+                  type="text"
+                  value={instagram}
+                  onChange={(e) => setInstagram(e.target.value)}
+                  placeholder="e.g. @mercurysports or URL"
+                  className="w-full px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900"
+                />
+              </div>
+            </div>
+            <p className="text-[10px] text-slate-500">
+              When configured, customers scanning this stand see a "Stay Connected" button to chat on WhatsApp or follow on Instagram.
+            </p>
           </div>
 
           {/* AI Review Assistant ON / OFF Toggle */}

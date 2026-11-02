@@ -23,9 +23,13 @@ import {
   RefreshCw,
   Languages,
   AlertCircle,
+  Share2,
+  ChevronDown,
+  X,
 } from 'lucide-react';
 
 import { CustomerLoadState } from '../utils/cardLookup';
+import { formatWhatsAppUrl, formatInstagramUrl } from '../utils/socialLinks';
 
 interface CustomerReviewViewProps {
   card: CardRecord | null;
@@ -177,6 +181,12 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
   // Advertisements state
   const [ads, setAds] = useState<Advertisement[]>([]);
   const impressionsTrackedRef = useRef<Set<string>>(new Set());
+
+  // Stay Connected social popup state
+  const [isStayConnectedOpen, setIsStayConnectedOpen] = useState<boolean>(false);
+  const whatsappUrl = useMemo(() => formatWhatsAppUrl(card?.whatsapp), [card?.whatsapp]);
+  const instagramUrl = useMemo(() => formatInstagramUrl(card?.instagram), [card?.instagram]);
+  const hasSocialLinks = Boolean(whatsappUrl || instagramUrl);
 
   // Load public eligible ads
   useEffect(() => {
@@ -1033,6 +1043,116 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
             {adsByPlacement.below_draft.map((ad) => (
               <SponsoredAdCard key={ad.id} ad={ad} onAdClick={handleAdClick} />
             ))}
+          </div>
+        )}
+
+        {/* STAY CONNECTED: Business WhatsApp & Instagram Links */}
+        {hasSocialLinks && (
+          <div className="relative pt-2 pb-1 flex flex-col items-center">
+            <button
+              type="button"
+              onClick={() => setIsStayConnectedOpen((prev) => !prev)}
+              aria-expanded={isStayConnectedOpen}
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-white border border-slate-200 hover:border-slate-300 text-xs font-bold text-slate-700 hover:text-slate-900 shadow-2xs hover:shadow-xs transition-all active:scale-[0.98] cursor-pointer"
+            >
+              <Share2 className="w-3.5 h-3.5 text-[#1A73E8]" />
+              <span>Stay Connected</span>
+              <ChevronDown
+                className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-200 ${
+                  isStayConnectedOpen ? 'rotate-180' : ''
+                }`}
+              />
+            </button>
+
+            {/* Stay Connected Popup / Dropdown */}
+            {isStayConnectedOpen && (
+              <>
+                {/* Backdrop to close on click outside */}
+                <div
+                  className="fixed inset-0 z-30 bg-slate-900/30 backdrop-blur-[1px]"
+                  onClick={() => setIsStayConnectedOpen(false)}
+                />
+
+                <div className="fixed sm:absolute bottom-4 sm:bottom-12 inset-x-4 sm:inset-x-auto sm:w-80 z-40 bg-white rounded-2xl border border-slate-200 shadow-xl p-4 space-y-3 animate-fadeIn">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+                    <div className="flex items-center gap-2">
+                      <div className="w-6 h-6 rounded-lg bg-blue-50 text-[#1A73E8] flex items-center justify-center">
+                        <Share2 className="w-3.5 h-3.5" />
+                      </div>
+                      <span className="text-xs font-bold text-slate-900">
+                        Stay Connected
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsStayConnectedOpen(false)}
+                      className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
+                      aria-label="Close"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <p className="text-[11px] text-slate-500 leading-snug">
+                    Connect with <strong>{effectiveBusinessName}</strong> on social platforms:
+                  </p>
+
+                  <div className="space-y-2 pt-1">
+                    {/* WhatsApp Option */}
+                    {whatsappUrl && (
+                      <a
+                        href={whatsappUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={() => setIsStayConnectedOpen(false)}
+                        className="flex items-center gap-3 p-2.5 rounded-xl border border-emerald-200/80 bg-emerald-50/50 hover:bg-emerald-50 hover:border-emerald-300 text-slate-800 transition-all hover:scale-[1.01] active:scale-[0.99] group text-left"
+                      >
+                        <div className="w-9 h-9 rounded-xl bg-[#25D366] text-white flex items-center justify-center shrink-0 shadow-2xs group-hover:scale-105 transition-transform">
+                          <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
+                            <path d="M12.04 2c-5.46 0-9.91 4.45-9.91 9.91 0 1.75.46 3.45 1.32 4.95L2.05 22l5.25-1.38c1.45.79 3.08 1.21 4.74 1.21 5.46 0 9.91-4.45 9.91-9.91 0-2.65-1.03-5.14-2.9-7.01A9.816 9.816 0 0012.04 2zm5.79 14.07c-.24.67-1.4 1.24-1.93 1.32-.48.08-1.1.11-1.78-.11-.42-.14-.96-.32-1.66-.62-2.97-1.29-4.88-4.32-5.03-4.52-.15-.2-1.2-1.6-1.2-3.05 0-1.45.76-2.16 1.03-2.45.27-.3.59-.37.79-.37.2 0 .4 0 .57.01.19.01.44-.07.69.53.25.6.86 2.1.94 2.26.08.16.13.35.03.55-.1.2-.15.33-.3.5-.15.18-.32.4-.46.54-.15.15-.31.32-.13.63.18.31.8 1.32 1.72 2.14 1.18 1.05 2.18 1.38 2.49 1.53.31.15.49.13.67-.08.19-.21.79-.92 1-1.24.21-.31.42-.26.7-.16.29.11 1.82.86 2.13 1.02.31.15.52.23.6.35.08.13.08.74-.16 1.41z" />
+                          </svg>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-xs font-bold text-slate-900 group-hover:text-emerald-800 transition-colors">
+                            WhatsApp
+                          </div>
+                          <div className="text-[11px] text-slate-500 truncate">
+                            Chat directly on WhatsApp
+                          </div>
+                        </div>
+                        <ExternalLink className="w-3.5 h-3.5 text-slate-400 group-hover:text-emerald-700 transition-colors shrink-0" />
+                      </a>
+                    )}
+
+                    {/* Instagram Option */}
+                    {instagramUrl && (
+                      <a
+                        href={instagramUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={() => setIsStayConnectedOpen(false)}
+                        className="flex items-center gap-3 p-2.5 rounded-xl border border-pink-200/80 bg-pink-50/40 hover:bg-pink-50 hover:border-pink-300 text-slate-800 transition-all hover:scale-[1.01] active:scale-[0.99] group text-left"
+                      >
+                        <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-[#f09433] via-[#dc2743] to-[#bc1888] text-white flex items-center justify-center shrink-0 shadow-2xs group-hover:scale-105 transition-transform">
+                          <svg className="w-5 h-5 fill-current" viewBox="0 0 24 24">
+                            <path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zm0-2.163c-3.259 0-3.667.014-4.947.072-4.358.2-6.78 2.618-6.98 6.98-.059 1.281-.073 1.689-.073 4.948 0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98 1.281.058 1.689.072 4.948.072 3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98-1.281-.059-1.69-.073-4.949-.073zm0 5.838c-3.403 0-6.162 2.759-6.162 6.162s2.759 6.163 6.162 6.163 6.162-2.759 6.162-6.163c0-3.403-2.759-6.162-6.162-6.162zm0 10.162c-2.209 0-4-1.79-4-4 0-2.209 1.791-4 4-4s4 1.791 4 4c0 2.21-1.791 4-4 4zm6.406-11.845c-.796 0-1.441.645-1.441 1.44s.645 1.44 1.441 1.44c.795 0 1.439-.645 1.439-1.44s-.644-1.44-1.439-1.44z" />
+                          </svg>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-xs font-bold text-slate-900 group-hover:text-pink-800 transition-colors">
+                            Instagram
+                          </div>
+                          <div className="text-[11px] text-slate-500 truncate">
+                            Follow on Instagram
+                          </div>
+                        </div>
+                        <ExternalLink className="w-3.5 h-3.5 text-slate-400 group-hover:text-pink-700 transition-colors shrink-0" />
+                      </a>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         )}
 

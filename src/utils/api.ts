@@ -282,8 +282,11 @@ export async function assignCard(
   try {
     await setDoc(docRef, sanitizedCard);
     console.log(`✅ Firestore updated successfully for Card #${id}`);
-  } catch (error) {
+  } catch (error: any) {
     console.error(`Firestore assign card ${id} error:`, error);
+    if (error?.code === 'permission-denied') {
+      throw new Error(`Permission denied: You do not have permission to edit Card #${id}`);
+    }
   }
 
   // 2. ALWAYS sync with Server API (data/cards.json backup & Supabase cloud sync)
@@ -296,13 +299,21 @@ export async function assignCard(
       },
       body: JSON.stringify({ ...sanitizedCard, adminId }),
     });
-    if (res.ok) {
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      if (res.status === 403) {
+        throw new Error(errData.error || `Access denied: You are not authorized to edit Card #${id}`);
+      }
+    } else {
       const data = await res.json();
       if (data.card) {
         Object.assign(sanitizedCard, data.card);
       }
     }
-  } catch (serverErr) {
+  } catch (serverErr: any) {
+    if (serverErr.message?.includes('Access denied')) {
+      throw serverErr;
+    }
     console.warn(`Server API assign card ${id} sync notice:`, serverErr);
   }
 
