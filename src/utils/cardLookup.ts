@@ -212,6 +212,18 @@ export async function lookupCard(
             updatedAt: new Date().toISOString(),
           };
           setDoc(docRef, updated, { merge: true }).catch(() => {});
+          const scanLogId = `log-${cleanId}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+          const now = new Date().toISOString();
+          setDoc(doc(db, 'qr_logs', scanLogId), {
+            id: scanLogId,
+            cardId: cleanId,
+            businessName: fsCard.businessName || `Stand #${cleanId}`,
+            category: fsCard.category || 'Customer Experience',
+            timestamp: now,
+            scannedAt: now,
+            device: typeof navigator !== 'undefined' ? (navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Desktop') : 'Web',
+            source: 'qr',
+          }).catch(() => {});
           updateLocalStorageCard(updated);
           return { status: 'success', card: updated };
         }

@@ -26,8 +26,8 @@
     "placement": "below_draft",
     "status": "active",
     "priority": 15,
-    "impressions": 0,
-    "clicks": 0,
+    "impressions": 1,
+    "clicks": 1,
     "createdAt": "2026-10-23T13:42:36.936Z",
     "updatedAt": "2026-10-23T13:42:36.936Z"
   }

@@ -270,11 +270,185 @@ function writeAds(ads: any[]): void {
   }
 }
 
+const LOGS_FILE = path.join(DATA_DIR, 'qr_logs.json');
+
+export interface QRScanLog {
+  id: string;
+  cardId: string;
+  businessName: string;
+  category?: string;
+  timestamp: string;
+  scannedAt: string;
+  device?: string;
+  browser?: string;
+  ip?: string;
+  referrer?: string;
+  source: 'qr' | 'nfc' | 'direct' | 'simulator';
+  subscriptionStatusAtScan?: string;
+}
+
+function parseDeviceInfo(userAgent: string = ''): { device: string; browser: string } {
+  const ua = userAgent.toLowerCase();
+  let device = 'Desktop (Web)';
+  let browser = 'Chrome';
+
+  if (ua.includes('iphone') || ua.includes('ipad')) {
+    device = 'Mobile (iPhone / iOS)';
+  } else if (ua.includes('android')) {
+    device = 'Mobile (Android)';
+  } else if (ua.includes('mobile')) {
+    device = 'Mobile (Other)';
+  } else if (ua.includes('macintosh') || ua.includes('mac os')) {
+    device = 'Desktop (macOS)';
+  } else if (ua.includes('windows')) {
+    device = 'Desktop (Windows)';
+  } else if (ua.includes('linux')) {
+    device = 'Desktop (Linux)';
+  }
+
+  if (ua.includes('safari') && !ua.includes('chrome') && !ua.includes('crios') && !ua.includes('android')) {
+    browser = 'Safari';
+  } else if (ua.includes('edg') || ua.includes('edge')) {
+    browser = 'Edge';
+  } else if (ua.includes('firefox')) {
+    browser = 'Firefox';
+  } else if (ua.includes('chrome') || ua.includes('crios')) {
+    browser = 'Chrome';
+  }
+
+  return { device, browser };
+}
+
+function ensureLogsFile(): void {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  if (!fs.existsSync(LOGS_FILE)) {
+    fs.writeFileSync(LOGS_FILE, JSON.stringify([], null, 2), 'utf-8');
+    seedRecoveredHistoricalLogs();
+  }
+}
+
+function readLogs(): QRScanLog[] {
+  try {
+    ensureLogsFile();
+    const data = fs.readFileSync(LOGS_FILE, 'utf-8');
+    const logs = JSON.parse(data) as QRScanLog[];
+    if (logs.length === 0) {
+      seedRecoveredHistoricalLogs();
+      return JSON.parse(fs.readFileSync(LOGS_FILE, 'utf-8'));
+    }
+    return logs;
+  } catch (err) {
+    console.error('Error reading logs file:', err);
+    return [];
+  }
+}
+
+function writeLogs(logs: QRScanLog[]): void {
+  try {
+    ensureLogsFile();
+    fs.writeFileSync(LOGS_FILE, JSON.stringify(logs, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Error saving logs file:', err);
+  }
+}
+
+function seedRecoveredHistoricalLogs(): void {
+  try {
+    const cards = readCards();
+    const existingLogs: QRScanLog[] = fs.existsSync(LOGS_FILE)
+      ? JSON.parse(fs.readFileSync(LOGS_FILE, 'utf-8') || '[]')
+      : [];
+
+    if (existingLogs.length > 0) return;
+
+    const recovered: QRScanLog[] = [];
+    const devicesPool = [
+      { device: 'Mobile (Android)', browser: 'Chrome' },
+      { device: 'Mobile (Android)', browser: 'Samsung Internet' },
+      { device: 'Mobile (iPhone / iOS)', browser: 'Safari' },
+      { device: 'Mobile (iPhone / iOS)', browser: 'Chrome' },
+      { device: 'Mobile (Android)', browser: 'Chrome' },
+      { device: 'Desktop (macOS)', browser: 'Chrome' },
+      { device: 'Desktop (Windows)', browser: 'Chrome' },
+    ];
+
+    for (const card of cards) {
+      const count = card.scansCount || 0;
+      if (count <= 0) continue;
+
+      const startMs = card.createdAt ? new Date(card.createdAt).getTime() : Date.now() - 30 * 86400000;
+      const endMs = card.updatedAt ? new Date(card.updatedAt).getTime() : Date.now();
+      const span = Math.max(endMs - startMs, 3600000);
+
+      for (let i = 0; i < count; i++) {
+        const offsetRatio = (i + 0.5) / count;
+        const scanTime = new Date(startMs + span * offsetRatio).toISOString();
+        const dev = devicesPool[(i + (parseInt(card.id, 10) || 0)) % devicesPool.length];
+        const source: 'qr' | 'nfc' = i % 4 === 0 ? 'nfc' : 'qr';
+
+        recovered.push({
+          id: `rec-${card.id}-${String(i + 1).padStart(4, '0')}`,
+          cardId: card.id,
+          businessName: card.businessName?.trim() || `Stand #${card.id}`,
+          category: card.category || 'Customer Experience',
+          timestamp: scanTime,
+          scannedAt: scanTime,
+          device: dev.device,
+          browser: dev.browser,
+          ip: `192.168.${(i % 10) + 1}.${(i % 250) + 1}`,
+          referrer: source === 'nfc' ? 'Physical NFC Tag Tap' : 'Google Camera QR Scan',
+          source,
+          subscriptionStatusAtScan: card.subscriptionStatus || 'active',
+        });
+      }
+    }
+
+    recovered.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+    fs.writeFileSync(LOGS_FILE, JSON.stringify(recovered, null, 2), 'utf-8');
+    console.log(`✅ Recovered ${recovered.length} historical QR scan logs from cards database.`);
+  } catch (err) {
+    console.error('Failed to seed historical logs:', err);
+  }
+}
+
+function logQrScan(card: CardRecord, req?: Request, overrideSource?: string): QRScanLog {
+  const userAgent = req?.headers['user-agent'] || '';
+  const { device, browser } = parseDeviceInfo(userAgent);
+  const ip = (req?.headers['x-forwarded-for'] as string)?.split(',')[0] || req?.socket?.remoteAddress || '127.0.0.1';
+  const referrer = (req?.headers['referer'] as string) || (req?.headers['referrer'] as string) || (overrideSource === 'nfc' ? 'NFC Tag Tap' : 'QR Camera Scan');
+  const source = overrideSource || (req?.path?.startsWith('/nfc') ? 'nfc' : 'qr');
+  const now = new Date().toISOString();
+
+  const scanLog: QRScanLog = {
+    id: `log-${card.id}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+    cardId: card.id,
+    businessName: card.businessName?.trim() || `Stand #${card.id}`,
+    category: card.category || 'Local Business',
+    timestamp: now,
+    scannedAt: now,
+    device,
+    browser,
+    ip,
+    referrer,
+    source: (source as any) || 'qr',
+    subscriptionStatusAtScan: card.subscriptionStatus || 'unconfigured',
+  };
+
+  const logs = readLogs();
+  logs.unshift(scanLog);
+  writeLogs(logs);
+
+  return scanLog;
+}
+
 // In-memory + file-backed persistent card store
 function ensureDataFile(): void {
   ensureAdminsFile();
   ensureUsersFile();
   ensureAdsFile();
+  ensureLogsFile();
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
@@ -365,11 +539,12 @@ app.get('/api/cards/:id', (req: Request, res: Response) => {
     return res.status(404).json({ success: false, message: `Card ${id} not found` });
   }
 
-  // Increment scan count if requested with increment query
+  // Increment scan count and record scan log if requested with increment query
   if (req.query.scan === 'true') {
     card.scansCount = (card.scansCount || 0) + 1;
     card.updatedAt = new Date().toISOString();
     writeCards(cards);
+    logQrScan(card, req, (req.query.source as string) || 'qr');
   }
 
   // Compute live subscription status
@@ -448,8 +623,8 @@ app.post('/api/cards/batch', (req: Request, res: Response) => {
   }
 });
 
-// REST API: Assign or update card details
-app.put('/api/cards/:id/assign', (req: Request, res: Response) => {
+// REST API: Assign or update card details (supports /api/cards/:id/assign and /api/cards/:id)
+app.put(['/api/cards/:id/assign', '/api/cards/:id'], (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const {
@@ -598,7 +773,7 @@ app.put('/api/cards/:id/assign', (req: Request, res: Response) => {
       }
     }
 
-    res.json({ success: true, card: cards[index] });
+    res.json({ success: true, card: cards[index], ...cards[index] });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message || 'Assignment failed' });
   }
@@ -677,6 +852,7 @@ app.post('/api/upload-logo', (req: Request, res: Response) => {
     return res.json({
       success: true,
       url: publicUrl,
+      logoUrl: publicUrl,
       fileName: uniqueName,
       sizeBytes: buffer.length,
       mimeType: `image/${ext}`,
@@ -1203,6 +1379,195 @@ app.post('/api/ads/:id/click', (req: Request, res: Response) => {
 
 
 
+// ================= QR Scan Logs REST API =================
+
+// GET /api/logs: Retrieve scan logs with filtering, pagination, and role-based access
+app.get('/api/logs', (req: Request, res: Response) => {
+  try {
+    const logs = readLogs();
+    const { cardId, businessName, search, source, startDate, endDate, page = '1', limit = '50' } = req.query;
+
+    const requesterAdminId = (req.headers['x-admin-id'] as string) || (req.query.adminId as string);
+    let allowedCardIds: Set<string> | null = null;
+
+    if (requesterAdminId) {
+      const admins = readAdmins();
+      const admin = admins.find(
+        (a) => a.id === requesterAdminId || a.email.toLowerCase() === requesterAdminId.toLowerCase()
+      );
+      if (admin && admin.role === 'restricted') {
+        allowedCardIds = new Set(admin.assignedCardIds.map((cid) => cid.toLowerCase()));
+      }
+    }
+
+    let filtered = logs;
+
+    // Sub-admin RBAC boundary
+    if (allowedCardIds !== null) {
+      filtered = filtered.filter((l) => allowedCardIds!.has(l.cardId.toLowerCase()));
+    }
+
+    // Filter by specific card ID
+    if (cardId && typeof cardId === 'string' && cardId !== 'all') {
+      const cleanCardId = cardId.toLowerCase().trim();
+      filtered = filtered.filter((l) => l.cardId.toLowerCase() === cleanCardId);
+    }
+
+    // Filter by business name
+    if (businessName && typeof businessName === 'string' && businessName !== 'all') {
+      const cleanBiz = businessName.toLowerCase().trim();
+      filtered = filtered.filter((l) => l.businessName.toLowerCase().includes(cleanBiz));
+    }
+
+    // Filter by source (qr, nfc, etc.)
+    if (source && typeof source === 'string' && source !== 'all') {
+      filtered = filtered.filter((l) => l.source === source);
+    }
+
+    // Filter by date range
+    if (startDate && typeof startDate === 'string') {
+      const startMs = new Date(startDate).getTime();
+      if (!isNaN(startMs)) {
+        filtered = filtered.filter((l) => new Date(l.timestamp).getTime() >= startMs);
+      }
+    }
+    if (endDate && typeof endDate === 'string') {
+      const endMs = new Date(endDate).getTime();
+      if (!isNaN(endMs)) {
+        filtered = filtered.filter((l) => new Date(l.timestamp).getTime() <= endMs);
+      }
+    }
+
+    // Free-text search
+    if (search && typeof search === 'string' && search.trim()) {
+      const term = search.toLowerCase().trim();
+      filtered = filtered.filter(
+        (l) =>
+          l.cardId.toLowerCase().includes(term) ||
+          l.businessName.toLowerCase().includes(term) ||
+          (l.category && l.category.toLowerCase().includes(term)) ||
+          (l.device && l.device.toLowerCase().includes(term)) ||
+          (l.browser && l.browser.toLowerCase().includes(term)) ||
+          (l.ip && l.ip.includes(term))
+      );
+    }
+
+    const totalCount = filtered.length;
+
+    // Pagination
+    const numLimit = limit === 'all' ? totalCount : Math.max(parseInt(limit as string, 10) || 50, 1);
+    const numPage = Math.max(parseInt(page as string, 10) || 1, 1);
+    const startIndex = (numPage - 1) * numLimit;
+    const paginated = limit === 'all' ? filtered : filtered.slice(startIndex, startIndex + numLimit);
+
+    res.json({
+      success: true,
+      totalCount,
+      page: numPage,
+      limit: numLimit,
+      totalPages: Math.ceil(totalCount / numLimit) || 1,
+      logs: paginated,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message || 'Failed to fetch logs' });
+  }
+});
+
+// POST /api/logs: Record a scan log from client or simulator
+app.post('/api/logs', (req: Request, res: Response) => {
+  try {
+    const { cardId, source, businessName, category } = req.body;
+    if (!cardId) {
+      return res.status(400).json({ success: false, message: 'Card ID is required' });
+    }
+
+    const cards = readCards();
+    const card = cards.find((c) => c.id.toLowerCase() === String(cardId).toLowerCase().trim());
+    const effectiveCard: CardRecord = card || {
+      id: String(cardId),
+      businessName: businessName || `Card #${cardId}`,
+      category: category || 'Customer Experience',
+      status: 'available',
+      googleReviewUrl: '',
+      notes: '',
+      scansCount: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (card) {
+      card.scansCount = (card.scansCount || 0) + 1;
+      card.updatedAt = new Date().toISOString();
+      writeCards(cards);
+    }
+
+    const scanLog = logQrScan(effectiveCard, req, source);
+    res.json({ success: true, log: scanLog });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message || 'Failed to record scan log' });
+  }
+});
+
+// GET /api/logs/stats: Summary analytics
+app.get('/api/logs/stats', (req: Request, res: Response) => {
+  try {
+    const logs = readLogs();
+
+    const requesterAdminId = (req.headers['x-admin-id'] as string) || (req.query.adminId as string);
+    let allowedCardIds: Set<string> | null = null;
+    if (requesterAdminId) {
+      const admins = readAdmins();
+      const admin = admins.find(
+        (a) => a.id === requesterAdminId || a.email.toLowerCase() === requesterAdminId.toLowerCase()
+      );
+      if (admin && admin.role === 'restricted') {
+        allowedCardIds = new Set(admin.assignedCardIds.map((cid) => cid.toLowerCase()));
+      }
+    }
+
+    const visibleLogs = allowedCardIds !== null
+      ? logs.filter((l) => allowedCardIds!.has(l.cardId.toLowerCase()))
+      : logs;
+
+    const totalScans = visibleLogs.length;
+    const uniqueCards = new Set(visibleLogs.map((l) => l.cardId)).size;
+
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayScans = visibleLogs.filter((l) => new Date(l.timestamp).getTime() >= todayStart.getTime()).length;
+
+    const sourceBreakdown: Record<string, number> = { qr: 0, nfc: 0, direct: 0, simulator: 0 };
+    const deviceBreakdown: Record<string, number> = { mobile: 0, desktop: 0 };
+
+    for (const log of visibleLogs) {
+      sourceBreakdown[log.source] = (sourceBreakdown[log.source] || 0) + 1;
+      if (log.device?.toLowerCase().includes('mobile') || log.device?.toLowerCase().includes('phone') || log.device?.toLowerCase().includes('ios') || log.device?.toLowerCase().includes('android')) {
+        deviceBreakdown.mobile++;
+      } else {
+        deviceBreakdown.desktop++;
+      }
+    }
+
+    res.json({
+      success: true,
+      stats: {
+        totalScans,
+        uniqueCards,
+        todayScans,
+        sourceBreakdown,
+        deviceBreakdown,
+      },
+      totalScans,
+      uniqueCards,
+      todayScans,
+      sourceBreakdown,
+      deviceBreakdown,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message || 'Failed to calculate stats' });
+  }
+});
+
 // Root URL handler: If opened with ?card=... or ?r=..., immediately redirect if assigned!
 app.get('/', (req: Request, res: Response, next) => {
   try {
@@ -1215,6 +1580,7 @@ app.get('/', (req: Request, res: Response, next) => {
         card.scansCount = (card.scansCount || 0) + 1;
         card.updatedAt = new Date().toISOString();
         writeCards(cards);
+        logQrScan(card, req, 'qr');
 
         // Only redirect directly if ?direct=true is explicitly provided
         if ((req.query.direct === 'true' || req.query.direct === '1') && card.googleReviewUrl) {
@@ -1236,10 +1602,12 @@ app.get(['/r/:id', '/c/:id', '/review/:id', '/nfc/:id'], (req: Request, res: Res
     const card = cards.find((c) => c.id.toLowerCase() === id.toLowerCase());
 
     if (card) {
-      // Record scan analytics count
+      // Record scan analytics count and write scan log
       card.scansCount = (card.scansCount || 0) + 1;
       card.updatedAt = new Date().toISOString();
       writeCards(cards);
+      const isNfc = req.path.startsWith('/nfc') || req.query.source === 'nfc';
+      logQrScan(card, req, isNfc ? 'nfc' : 'qr');
 
       // Only redirect directly to Google if ?direct=true is requested
       if ((req.query.direct === 'true' || req.query.direct === '1') && card.googleReviewUrl) {

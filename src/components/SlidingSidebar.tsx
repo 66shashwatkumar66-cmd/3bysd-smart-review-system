@@ -22,6 +22,7 @@ import {
   Cpu,
   Sliders,
   Megaphone,
+  History,
 } from 'lucide-react';
 import { AdminUser, UserProfile } from '../types';
 import { auth, signOut, onAuthStateChanged, User } from '../firebase';
@@ -31,8 +32,8 @@ import { saveUser } from '../utils/api';
 interface SlidingSidebarProps {
   isOpen: boolean;
   onClose: () => void;
-  currentTab: 'cards' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users' | 'ads';
-  onSelectTab: (tab: 'cards' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users' | 'ads') => void;
+  currentTab: 'cards' | 'logs' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users' | 'ads';
+  onSelectTab: (tab: 'cards' | 'logs' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users' | 'ads') => void;
   totalCards: number;
   assignedCount: number;
   availableCount: number;
@@ -173,6 +174,15 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
       color: '#1A73E8',
       badge: totalCards.toString(),
       badgeColor: 'bg-blue-100 text-blue-700',
+    },
+    {
+      id: 'logs' as const,
+      label: 'QR Scan Logs',
+      description: 'Historical scan records & telemetry',
+      icon: History,
+      color: '#0D9488',
+      badge: 'Live',
+      badgeColor: 'bg-emerald-100 text-emerald-800',
     },
     {
       id: 'customizer' as const,

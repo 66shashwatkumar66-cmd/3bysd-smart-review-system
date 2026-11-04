@@ -34,6 +34,7 @@ import { ReviewCustomizerView } from './components/ReviewCustomizerView';
 import { MasterAdminView } from './components/MasterAdminView';
 import { UsersManagementView } from './components/UsersManagementView';
 import { AdvertisementManagementView } from './components/AdvertisementManagementView';
+import { QrScanLogsView } from './components/QrScanLogsView';
 import { SlidingSidebar } from './components/SlidingSidebar';
 import { AuthGateway } from './components/AuthGateway';
 import { exportCardsToCsv } from './utils/csv';
@@ -52,6 +53,7 @@ import {
   Building2,
   Sliders,
   LogOut,
+  History,
 } from 'lucide-react';
 
 const DEFAULT_MASTER_ADMIN: AdminUser = {
@@ -73,7 +75,8 @@ const DEFAULT_MASTER_ADMIN: AdminUser = {
 export default function App() {
   const [cards, setCards] = useState<CardRecord[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
-  const [currentTab, setCurrentTab] = useState<'cards' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users' | 'ads'>('cards');
+  const [currentTab, setCurrentTab] = useState<'cards' | 'logs' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users' | 'ads'>('cards');
+  const [logStandFilter, setLogStandFilter] = useState<string | undefined>(undefined);
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
 
   // Authenticated User State (Real Google Auth)
@@ -633,7 +636,21 @@ export default function App() {
         <AdminStatsWidget
           cards={displayedCards}
           onPreviewCard={handleOpenCustomerPreview}
+          onViewLogs={() => {
+            setLogStandFilter('all');
+            setCurrentTab('logs');
+          }}
         />
+
+        {/* Tab: QR Scan Logs & Telemetry */}
+        {currentTab === 'logs' && (
+          <QrScanLogsView
+            activeAdmin={effectiveActiveAdmin}
+            cards={displayedCards}
+            onPreviewCard={handleOpenCustomerPreview}
+            initialCardFilter={logStandFilter}
+          />
+        )}
 
         {/* Tab 1: Cards Inventory */}
         {currentTab === 'cards' && (
@@ -733,6 +750,10 @@ export default function App() {
                 onOpenNfcGenerator={() => setCurrentTab('nfc')}
                 onOpenCustomizer={() => setCurrentTab('customizer')}
                 activeAdmin={effectiveActiveAdmin}
+                onViewLogs={(cardId) => {
+                  setLogStandFilter(cardId);
+                  setCurrentTab('logs');
+                }}
               />
             )}
           </div>

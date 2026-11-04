@@ -45,6 +45,7 @@ interface CardsTableProps {
   onOpenNfcGenerator?: (card?: CardRecord) => void;
   onOpenCustomizer?: (card?: CardRecord) => void;
   activeAdmin?: AdminUser;
+  onViewLogs?: (cardId: string) => void;
 }
 
 export const CardsTable: React.FC<CardsTableProps> = ({
@@ -58,6 +59,7 @@ export const CardsTable: React.FC<CardsTableProps> = ({
   onOpenNfcGenerator,
   onOpenCustomizer,
   activeAdmin,
+  onViewLogs,
 }) => {
   const searchInputId = useId();
   const [search, setSearch] = useState('');
@@ -764,7 +766,19 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                     {/* Bottom Row: Scans Count + Action Buttons */}
                     <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-100/80">
                       <div className="text-slate-500 text-[11px]">
-                        Scans: <span className="font-mono font-bold text-slate-900">{card.scansCount || 0}</span>
+                        Scans:{' '}
+                        {onViewLogs ? (
+                          <button
+                            type="button"
+                            onClick={() => onViewLogs(card.id)}
+                            className="font-mono font-bold text-[#1A73E8] hover:underline cursor-pointer"
+                            title="View scan logs for this stand"
+                          >
+                            {card.scansCount || 0}
+                          </button>
+                        ) : (
+                          <span className="font-mono font-bold text-slate-900">{card.scansCount || 0}</span>
+                        )}
                       </div>
 
                       <div className="flex items-center gap-1">
@@ -1106,7 +1120,18 @@ export const CardsTable: React.FC<CardsTableProps> = ({
 
                         {/* Scans Count */}
                         <td className="py-3 px-2 sm:px-3 text-right font-mono tabular-nums text-slate-800 font-bold whitespace-nowrap">
-                          {card.scansCount || 0}
+                          {onViewLogs ? (
+                            <button
+                              type="button"
+                              onClick={() => onViewLogs(card.id)}
+                              className="px-2 py-0.5 rounded-md hover:bg-blue-50 text-[#1A73E8] hover:underline transition-colors cursor-pointer"
+                              title={`View ${card.scansCount || 0} scan logs for Stand #${card.id}`}
+                            >
+                              {card.scansCount || 0}
+                            </button>
+                          ) : (
+                            card.scansCount || 0
+                          )}
                         </td>
 
                         {/* Quick Actions */}

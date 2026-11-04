@@ -17,6 +17,7 @@ import {
   Sliders,
   RotateCcw,
   Megaphone,
+  History,
 } from 'lucide-react';
 import { auth, signOut, onAuthStateChanged, User } from '../firebase';
 import { AdminUser, UserProfile } from '../types';
@@ -24,8 +25,8 @@ import { GoogleAuthModal } from './GoogleAuthModal';
 import { saveUser } from '../utils/api';
 
 interface AdminHeaderProps {
-  currentTab: 'cards' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users' | 'ads';
-  onSelectTab: (tab: 'cards' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users' | 'ads') => void;
+  currentTab: 'cards' | 'logs' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users' | 'ads';
+  onSelectTab: (tab: 'cards' | 'logs' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users' | 'ads') => void;
   onOpenBatchModal: () => void;
   onOpenSidebar: () => void;
   totalCards: number;
@@ -128,6 +129,8 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
     switch (currentTab) {
       case 'cards':
         return { label: `Cards Inventory (${totalCards})`, icon: Layers, color: 'text-blue-700 bg-blue-50 border-blue-200' };
+      case 'logs':
+        return { label: 'QR Scan Logs', icon: History, color: 'text-teal-700 bg-teal-50 border-teal-200' };
       case 'customizer':
         return { label: 'Review Page Customizer', icon: Sliders, color: 'text-purple-700 bg-purple-50 border-purple-200' };
       case 'print':
@@ -208,6 +211,19 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
               <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-200 text-slate-700 font-mono">
                 {totalCards}
               </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onSelectTab('logs')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                currentTab === 'logs'
+                  ? 'bg-white text-teal-700 shadow-2xs font-extrabold'
+                  : 'text-slate-600 hover:text-teal-700 hover:bg-slate-200/60'
+              }`}
+            >
+              <History className="w-3.5 h-3.5 text-teal-600" />
+              <span>QR Logs</span>
             </button>
 
             <button

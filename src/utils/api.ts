@@ -1,4 +1,4 @@
-import { CardRecord, AdminUser, UserProfile, GenerateReviewRequest, GenerateReviewResponse } from '../types';
+import { CardRecord, AdminUser, UserProfile, QRScanLog, GenerateReviewRequest, GenerateReviewResponse } from '../types';
 import {
   db,
   handleFirestoreError,
@@ -840,5 +840,152 @@ export async function deleteUser(uid: string): Promise<boolean> {
 
   return true;
 }
+
+const QR_LOGS_COLLECTION = 'qr_logs';
+
+export interface FetchLogsOptions {
+  cardId?: string;
+  businessName?: string;
+  search?: string;
+  source?: string;
+  startDate?: string;
+  endDate?: string;
+  page?: number;
+  limit?: number | 'all';
+  adminId?: string;
+}
+
+export async function fetchQrLogs(
+  options: FetchLogsOptions = {}
+): Promise<{ logs: QRScanLog[]; totalCount: number; totalPages?: number }> {
+  const queryParams = new URLSearchParams();
+  if (options.cardId && options.cardId !== 'all') queryParams.set('cardId', options.cardId);
+  if (options.businessName && options.businessName !== 'all') queryParams.set('businessName', options.businessName);
+  if (options.search) queryParams.set('search', options.search);
+  if (options.source && options.source !== 'all') queryParams.set('source', options.source);
+  if (options.startDate) queryParams.set('startDate', options.startDate);
+  if (options.endDate) queryParams.set('endDate', options.endDate);
+  if (options.page) queryParams.set('page', String(options.page));
+  if (options.limit) queryParams.set('limit', String(options.limit));
+
+  const url = `/api/logs${queryParams.toString() ? `?${queryParams.toString()}` : ''}`;
+
+  try {
+    const res = await fetch(url, {
+      headers: {
+        ...(options.adminId ? { 'x-admin-id': options.adminId } : {}),
+      },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && Array.isArray(data.logs)) {
+        return {
+          logs: data.logs,
+          totalCount: data.totalCount || data.logs.length,
+          totalPages: data.totalPages || 1,
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('Backend /api/logs fetch notice, falling back to Firestore:', err);
+  }
+
+  // Firestore direct fallback
+  try {
+    const snap = await getDocs(collection(db, QR_LOGS_COLLECTION));
+    const firestoreLogs: QRScanLog[] = [];
+    snap.forEach((docSnap) => {
+      firestoreLogs.push(docSnap.data() as QRScanLog);
+    });
+    firestoreLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+    let filtered = firestoreLogs;
+    if (options.cardId && options.cardId !== 'all') {
+      filtered = filtered.filter((l) => l.cardId.toLowerCase() === options.cardId!.toLowerCase());
+    }
+    if (options.search) {
+      const t = options.search.toLowerCase();
+      filtered = filtered.filter((l) => l.cardId.includes(t) || l.businessName.toLowerCase().includes(t));
+    }
+
+    return {
+      logs: filtered,
+      totalCount: filtered.length,
+      totalPages: 1,
+    };
+  } catch (fsErr) {
+    console.error('Firestore logs fetch error:', fsErr);
+    return { logs: [], totalCount: 0, totalPages: 1 };
+  }
+}
+
+export async function recordQrScanLog(payload: {
+  cardId: string;
+  source?: 'qr' | 'nfc' | 'direct' | 'simulator';
+  businessName?: string;
+  category?: string;
+}): Promise<QRScanLog | null> {
+  const scanLogId = `log-${payload.cardId}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+  const now = new Date().toISOString();
+  const scanLog: QRScanLog = {
+    id: scanLogId,
+    cardId: payload.cardId,
+    businessName: payload.businessName || `Stand #${payload.cardId}`,
+    category: payload.category || 'Customer Experience',
+    timestamp: now,
+    scannedAt: now,
+    source: payload.source || 'qr',
+    device: typeof navigator !== 'undefined' ? (navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Desktop') : 'Web',
+    referrer: typeof document !== 'undefined' ? document.referrer || 'Direct Scan' : 'Direct Scan',
+  };
+
+  // 1. Write to Firestore
+  try {
+    await setDoc(doc(db, QR_LOGS_COLLECTION, scanLogId), cleanForFirestore(scanLog));
+  } catch (err) {
+    console.warn('Firestore scan log write notice:', err);
+  }
+
+  // 2. Notify backend server
+  try {
+    const res = await fetch('/api/logs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(scanLog),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return data.log || scanLog;
+    }
+  } catch {
+    // ignore
+  }
+
+  return scanLog;
+}
+
+export async function fetchQrLogStats(adminId?: string): Promise<{
+  totalScans: number;
+  uniqueCards: number;
+  todayScans: number;
+  sourceBreakdown: Record<string, number>;
+  deviceBreakdown: Record<string, number>;
+} | null> {
+  try {
+    const res = await fetch('/api/logs/stats', {
+      headers: {
+        ...(adminId ? { 'x-admin-id': adminId } : {}),
+      },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success) return data;
+    }
+  } catch (err) {
+    console.warn('Log stats fetch notice:', err);
+  }
+  return null;
+}
+
 
 

@@ -6,12 +6,14 @@ interface AdminStatsWidgetProps {
   cards: CardRecord[];
   onSelectBusiness?: (businessName: string) => void;
   onPreviewCard?: (card: CardRecord) => void;
+  onViewLogs?: () => void;
 }
 
 export const AdminStatsWidget: React.FC<AdminStatsWidgetProps> = ({
   cards,
   onSelectBusiness,
   onPreviewCard,
+  onViewLogs,
 }) => {
   // Compute analytics
   const totalScans = cards.reduce((sum, c) => sum + (c.scansCount || 0), 0);
@@ -67,15 +69,21 @@ export const AdminStatsWidget: React.FC<AdminStatsWidgetProps> = ({
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
       {/* 1. Total QR Scans - Google Blue Accent */}
-      <div className="relative bg-white rounded-2xl border border-slate-200 p-5 shadow-xs overflow-hidden flex flex-col justify-between">
+      <div
+        onClick={onViewLogs}
+        className={`relative bg-white rounded-2xl border border-slate-200 p-5 shadow-xs overflow-hidden flex flex-col justify-between ${
+          onViewLogs ? 'cursor-pointer hover:border-blue-300 hover:shadow-md transition-all group' : ''
+        }`}
+        title={onViewLogs ? 'Click to view detailed QR scan logs & telemetry' : undefined}
+      >
         <div className="absolute top-0 left-0 right-0 h-1 bg-[#4285F4]" />
         <div>
           <div className="flex items-center justify-between text-slate-500 mb-2">
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-600 flex items-center gap-1.5">
+            <span className="text-xs font-bold uppercase tracking-wider text-slate-600 flex items-center gap-1.5 group-hover:text-[#1A73E8] transition-colors">
               <span className="w-2 h-2 rounded-full bg-[#4285F4]" />
               <span>Total QR Scans</span>
             </span>
-            <div className="w-7 h-7 rounded-lg bg-blue-50 text-[#1A73E8] flex items-center justify-center border border-blue-100">
+            <div className="w-7 h-7 rounded-lg bg-blue-50 text-[#1A73E8] flex items-center justify-center border border-blue-100 group-hover:bg-[#1A73E8] group-hover:text-white transition-colors">
               <QrCode className="w-4 h-4" />
             </div>
           </div>

@@ -107,3 +107,21 @@ export interface UserProfile {
   device?: string;
   assignedCardIds?: string[];
 }
+
+export type ScanSource = 'qr' | 'nfc' | 'direct' | 'simulator';
+
+export interface QRScanLog {
+  id: string;
+  cardId: string;
+  businessName: string;
+  category?: string;
+  timestamp: string;
+  scannedAt: string;
+  device?: string;
+  browser?: string;
+  ip?: string;
+  referrer?: string;
+  source: ScanSource;
+  subscriptionStatusAtScan?: string;
+}
+

@@ -196,6 +196,69 @@
         }
       },
       "required": ["uid", "email"]
+    },
+    "QRScanLog": {
+      "title": "QRScanLog",
+      "description": "Audit trail log of physical stand QR code scans and NFC tag taps",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Unique scan event ID"
+        },
+        "cardId": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Scanned QR card identifier, e.g. 0001"
+        },
+        "businessName": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Business name at the time of the scan"
+        },
+        "category": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Business category"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Scan event timestamp"
+        },
+        "scannedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Exact scan event timestamp"
+        },
+        "device": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Device category (e.g. Mobile Android, Mobile iOS, Desktop)"
+        },
+        "browser": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Browser name (e.g. Chrome, Safari)"
+        },
+        "ip": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Client IP address or masked identifier"
+        },
+        "source": {
+          "type": "string",
+          "enum": ["qr", "nfc", "direct", "simulator"],
+          "description": "Origin access channel"
+        },
+        "subscriptionStatusAtScan": {
+          "type": "string",
+          "maxLength": 32,
+          "description": "Status of the stand subscription when scanned"
+        }
+      },
+      "required": ["id", "cardId", "timestamp"]
     }
   },
   "firestore": {
@@ -210,6 +273,10 @@
     "/users/{userId}": {
       "schema": "UserProfile",
       "description": "Collection of all users and their Google verified login data"
+    },
+    "/qr_logs/{logId}": {
+      "schema": "QRScanLog",
+      "description": "Audit collection of historical and real-time QR scans"
     }
   }
 }

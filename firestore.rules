@@ -127,6 +127,25 @@ service cloud.firestore {
         (!('clicks' in data) || data.clicks == null || ((data.clicks is int || data.clicks is float) && data.clicks >= 0));
     }
 
+    function isValidScanLog(data) {
+      return data.id is string &&
+        data.id.size() > 0 &&
+        data.id.size() <= 128 &&
+        data.cardId is string &&
+        data.cardId.size() > 0 &&
+        data.cardId.size() <= 64 &&
+        (!('businessName' in data) || data.businessName == null || (data.businessName is string && data.businessName.size() <= 200)) &&
+        (!('category' in data) || data.category == null || (data.category is string && data.category.size() <= 100)) &&
+        (!('timestamp' in data) || data.timestamp == null || (data.timestamp is string && data.timestamp.size() <= 64)) &&
+        (!('scannedAt' in data) || data.scannedAt == null || (data.scannedAt is string && data.scannedAt.size() <= 64)) &&
+        (!('device' in data) || data.device == null || (data.device is string && data.device.size() <= 100)) &&
+        (!('browser' in data) || data.browser == null || (data.browser is string && data.browser.size() <= 100)) &&
+        (!('ip' in data) || data.ip == null || (data.ip is string && data.ip.size() <= 64)) &&
+        (!('referrer' in data) || data.referrer == null || (data.referrer is string && data.referrer.size() <= 500)) &&
+        (!('source' in data) || data.source == null || (data.source is string && (data.source == 'qr' || data.source == 'nfc' || data.source == 'direct' || data.source == 'simulator'))) &&
+        (!('subscriptionStatusAtScan' in data) || data.subscriptionStatusAtScan == null || (data.subscriptionStatusAtScan is string && data.subscriptionStatusAtScan.size() <= 32));
+    }
+
     // Default deny catch-all
     match /{document=**} {
       allow read, write: if false;
@@ -189,6 +208,18 @@ service cloud.firestore {
       // Administrative ad management strictly restricted to Master Admin
       allow create, update: if isValidId(adId) && isMasterAdmin() && isValidAd(incoming());
       allow delete: if isValidId(adId) && isMasterAdmin();
+    }
+
+    // QR Scan Logs Collection (Audit trail of customer QR and NFC stand interactions)
+    match /qr_logs/{logId} {
+      // Read access: allow listing logs for admin telemetry and card analytics
+      allow get, list: if true;
+
+      // Create access: customer scan recording with validation
+      allow create: if isValidId(logId) && isValidScanLog(incoming());
+
+      // Mutation & deletion restricted to Master Admin
+      allow update, delete: if isMasterAdmin();
     }
   }
 }

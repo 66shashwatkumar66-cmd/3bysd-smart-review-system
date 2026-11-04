@@ -75,3 +75,57 @@ export function exportCardsToCsv(cards: CardRecord[]): string {
 
   return csvContent;
 }
+
+/**
+ * Generates and downloads an RFC-4180 CSV export of QR Scan Logs
+ */
+export function exportQrLogsToCsv(logs: any[]): string {
+  const headers = [
+    'Log ID',
+    'Timestamp',
+    'Card / Stand ID',
+    'Business Name',
+    'Category',
+    'Scan Source',
+    'Device',
+    'Browser',
+    'IP Address',
+    'Referrer',
+  ];
+
+  const rows = logs.map((log) => [
+    log.id,
+    log.timestamp ? new Date(log.timestamp).toISOString() : '',
+    log.cardId,
+    log.businessName || '',
+    log.category || '',
+    log.source || 'qr',
+    log.device || '',
+    log.browser || '',
+    log.ip || '',
+    log.referer || '',
+  ]);
+
+  const csvContent = [
+    headers.map(escapeCsvCell).join(','),
+    ...rows.map((row) => row.map(escapeCsvCell).join(',')),
+  ].join('\r\n');
+
+  if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+    const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+
+    const today = new Date().toISOString().split('T')[0];
+    link.download = `3dbysd-qr-scan-logs-${today}.csv`;
+    link.href = url;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  return csvContent;
+}
+
