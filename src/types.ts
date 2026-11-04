@@ -1,3 +1,5 @@
+export type SubscriptionStatus = 'unconfigured' | 'upcoming' | 'active' | 'expired';
+
 export interface CardRecord {
   id: string; // e.g. "0001", "0002"
   status: 'available' | 'assigned' | 'disabled';
@@ -18,6 +20,9 @@ export interface CardRecord {
   businessDescription?: string; // Business description and product offerings
   whatsapp?: string; // Optional business WhatsApp phone number or wa.me URL
   instagram?: string; // Optional business Instagram profile handle or URL
+  subscriptionStartDate?: string; // Format: YYYY-MM-DD
+  subscriptionEndDate?: string;   // Format: YYYY-MM-DD
+  subscriptionStatus?: SubscriptionStatus; // Computed / stored status
   createdAt: string;
   updatedAt: string;
 }

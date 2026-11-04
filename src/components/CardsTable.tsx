@@ -25,11 +25,14 @@ import {
   CheckSquare,
   Layers,
   Sliders,
+  Calendar,
 } from 'lucide-react';
 import { downloadCardPng, downloadCardSvg } from '../utils/qr';
 import { exportCardsToCsv } from '../utils/csv';
 import { bulkUpdateCardsStatus } from '../utils/api';
 import { getCardScanUrl } from '../utils/url';
+import { getSubscriptionStatus, formatDisplayDate } from '../utils/subscription';
+import { SubscriptionStatus } from '../types';
 
 interface CardsTableProps {
   cards: CardRecord[];
@@ -59,6 +62,7 @@ export const CardsTable: React.FC<CardsTableProps> = ({
   const searchInputId = useId();
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'assigned' | 'available' | 'disabled'>('all');
+  const [subscriptionFilter, setSubscriptionFilter] = useState<'all' | SubscriptionStatus>('all');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [cardToDelete, setCardToDelete] = useState<CardRecord | null>(null);
 
@@ -77,11 +81,15 @@ export const CardsTable: React.FC<CardsTableProps> = ({
   const canToggleAi = isMaster || (activeAdmin?.permissions?.canToggleAi ?? true);
   const canExportCsv = isMaster || (activeAdmin?.permissions?.canExportCsv ?? false);
 
-  // Filter cards based on search input and status dropdown
+  // Filter cards based on search input, status, and subscription status
   const filteredCards = cards.filter((card) => {
     const matchesStatus = statusFilter === 'all' || card.status === statusFilter;
+    const computedSubStatus = getSubscriptionStatus(card);
+    const matchesSubscription = subscriptionFilter === 'all' || computedSubStatus === subscriptionFilter;
+    if (!matchesStatus || !matchesSubscription) return false;
+
     const term = search.toLowerCase().trim();
-    if (!term) return matchesStatus;
+    if (!term) return true;
 
     // Support flexible ID searching: #0001, 0001, 1, /r/0001
     const normalizedTerm = term.replace(/^#/, '').replace(/^\/?r\//, '').trim();
@@ -100,7 +108,7 @@ export const CardsTable: React.FC<CardsTableProps> = ({
       (card.notes && card.notes.toLowerCase().includes(term)) ||
       (card.googleReviewUrl && card.googleReviewUrl.toLowerCase().includes(term));
 
-    return matchesStatus && matchesSearch;
+    return matchesSearch;
   });
 
   const handleCopyLink = (cardId: string) => {
@@ -113,6 +121,11 @@ export const CardsTable: React.FC<CardsTableProps> = ({
   const assignedCount = cards.filter((c) => c.status === 'assigned').length;
   const availableCount = cards.filter((c) => c.status === 'available').length;
   const disabledCount = cards.filter((c) => c.status === 'disabled').length;
+
+  const subActiveCount = cards.filter((c) => getSubscriptionStatus(c) === 'active').length;
+  const subUpcomingCount = cards.filter((c) => getSubscriptionStatus(c) === 'upcoming').length;
+  const subExpiredCount = cards.filter((c) => getSubscriptionStatus(c) === 'expired').length;
+  const subUnconfiguredCount = cards.filter((c) => getSubscriptionStatus(c) === 'unconfigured').length;
 
   // Selection calculations & helpers
   const filteredCardIds = filteredCards.map((c) => c.id);
@@ -346,7 +359,7 @@ export const CardsTable: React.FC<CardsTableProps> = ({
             )}
           </div>
 
-          {(search || statusFilter !== 'all') && (
+          {(search || statusFilter !== 'all' || subscriptionFilter !== 'all') && (
             <div className="flex items-center gap-2 text-[11px] text-slate-500 ml-auto">
               <span>
                 Found <strong className="text-slate-900 font-mono tabular-nums">{filteredCards.length}</strong> of {cards.length}
@@ -355,13 +368,74 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                 onClick={() => {
                   setSearch('');
                   setStatusFilter('all');
+                  setSubscriptionFilter('all');
                 }}
-                className="text-[#4285F4] hover:underline font-bold"
+                className="text-[#4285F4] hover:underline font-bold cursor-pointer"
               >
                 Reset
               </button>
             </div>
           )}
+        </div>
+
+        {/* Subscription Status Filter Row */}
+        <div className="flex items-center justify-between gap-2 pt-2 pb-0.5 border-t border-slate-100 flex-wrap text-xs">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-[11px] text-slate-400 font-medium mr-1 flex items-center gap-1">
+              <Calendar className="w-3 h-3 text-slate-400" />
+              <span>Subscription:</span>
+            </span>
+            <button
+              onClick={() => setSubscriptionFilter('all')}
+              className={`px-2 py-0.5 rounded-lg text-[10px] font-semibold transition-all cursor-pointer ${
+                subscriptionFilter === 'all'
+                  ? 'bg-slate-800 text-white shadow-2xs'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              All ({cards.length})
+            </button>
+            <button
+              onClick={() => setSubscriptionFilter('active')}
+              className={`px-2 py-0.5 rounded-lg text-[10px] font-semibold transition-all cursor-pointer ${
+                subscriptionFilter === 'active'
+                  ? 'bg-emerald-600 text-white shadow-2xs font-bold'
+                  : 'bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
+              }`}
+            >
+              Active ({subActiveCount})
+            </button>
+            <button
+              onClick={() => setSubscriptionFilter('upcoming')}
+              className={`px-2 py-0.5 rounded-lg text-[10px] font-semibold transition-all cursor-pointer ${
+                subscriptionFilter === 'upcoming'
+                  ? 'bg-amber-500 text-slate-950 shadow-2xs font-bold'
+                  : 'bg-amber-50 text-amber-800 hover:bg-amber-100'
+              }`}
+            >
+              Upcoming ({subUpcomingCount})
+            </button>
+            <button
+              onClick={() => setSubscriptionFilter('expired')}
+              className={`px-2 py-0.5 rounded-lg text-[10px] font-semibold transition-all cursor-pointer ${
+                subscriptionFilter === 'expired'
+                  ? 'bg-rose-600 text-white shadow-2xs font-bold'
+                  : 'bg-rose-50 text-rose-800 hover:bg-rose-100'
+              }`}
+            >
+              Expired ({subExpiredCount})
+            </button>
+            <button
+              onClick={() => setSubscriptionFilter('unconfigured')}
+              className={`px-2 py-0.5 rounded-lg text-[10px] font-semibold transition-all cursor-pointer ${
+                subscriptionFilter === 'unconfigured'
+                  ? 'bg-slate-600 text-white shadow-2xs font-bold'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              Unconfigured ({subUnconfiguredCount})
+            </button>
+          </div>
         </div>
       </div>
 
@@ -582,6 +656,36 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                           </span>
                         )}
 
+                        {/* Subscription Status Badge on Mobile */}
+                        {(() => {
+                          const subStatus = getSubscriptionStatus(card);
+                          if (subStatus === 'active') {
+                            return (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                                <span>Active</span>
+                              </span>
+                            );
+                          }
+                          if (subStatus === 'upcoming') {
+                            return (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-amber-50 text-amber-800 border border-amber-200">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                                <span>Upcoming</span>
+                              </span>
+                            );
+                          }
+                          if (subStatus === 'expired') {
+                            return (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
+                                <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                                <span>Expired</span>
+                              </span>
+                            );
+                          }
+                          return null;
+                        })()}
+
                         {/* AI Toggle on Mobile */}
                         {isAssigned && (
                           <button
@@ -623,6 +727,17 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                         <div className="text-amber-700/90 text-xs font-medium flex items-center gap-1.5">
                           <span className="w-1.5 h-1.5 rounded-full bg-[#FBBC05]" />
                           <span>Unassigned stock (ready to connect)</span>
+                        </div>
+                      )}
+
+                      {(card.subscriptionStartDate || card.subscriptionEndDate) && (
+                        <div className="text-[10px] text-slate-500 flex items-center gap-1.5 pt-0.5 font-mono">
+                          <Calendar className="w-3 h-3 text-slate-400 shrink-0" />
+                          <span>
+                            Sub: {card.subscriptionStartDate ? formatDisplayDate(card.subscriptionStartDate) : 'Open'}
+                            {' → '}
+                            {card.subscriptionEndDate ? formatDisplayDate(card.subscriptionEndDate) : 'Open'}
+                          </span>
                         </div>
                       )}
 
@@ -765,6 +880,7 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                     <th className="py-3 px-3 sm:px-4">Destination Link</th>
                     <th className="py-3 px-2 sm:px-3 text-center">AI Review</th>
                     <th className="py-3 px-2 sm:px-3 text-center">Status</th>
+                    <th className="py-3 px-2 sm:px-3 text-center">Subscription</th>
                     <th className="py-3 px-2 sm:px-3 text-right">Scans</th>
                     <th className="py-3 px-3 sm:px-4 text-right">Quick Actions</th>
                   </tr>
@@ -925,6 +1041,67 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                               <span>Disabled</span>
                             </span>
                           )}
+                        </td>
+
+                        {/* Subscription */}
+                        <td className="py-3 px-2 sm:px-3 text-center whitespace-nowrap">
+                          {(() => {
+                            const subStatus = getSubscriptionStatus(card);
+                            if (subStatus === 'active') {
+                              return (
+                                <div className="inline-flex flex-col items-center">
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                                    <span>Active</span>
+                                  </span>
+                                  {card.subscriptionEndDate ? (
+                                    <span className="text-[9px] text-slate-400 mt-0.5 font-mono">
+                                      til {formatDisplayDate(card.subscriptionEndDate)}
+                                    </span>
+                                  ) : (
+                                    <span className="text-[9px] text-slate-400 mt-0.5">
+                                      Ongoing
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            }
+                            if (subStatus === 'upcoming') {
+                              return (
+                                <div className="inline-flex flex-col items-center">
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                                    <span>Upcoming</span>
+                                  </span>
+                                  {card.subscriptionStartDate && (
+                                    <span className="text-[9px] text-amber-700 mt-0.5 font-mono">
+                                      from {formatDisplayDate(card.subscriptionStartDate)}
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            }
+                            if (subStatus === 'expired') {
+                              return (
+                                <div className="inline-flex flex-col items-center">
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                                    <span>Expired</span>
+                                  </span>
+                                  {card.subscriptionEndDate && (
+                                    <span className="text-[9px] text-rose-500 mt-0.5 font-mono">
+                                      {formatDisplayDate(card.subscriptionEndDate)}
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            }
+                            return (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium text-slate-400 bg-slate-50 border border-slate-200">
+                                Unconfigured
+                              </span>
+                            );
+                          })()}
                         </td>
 
                         {/* Scans Count */}

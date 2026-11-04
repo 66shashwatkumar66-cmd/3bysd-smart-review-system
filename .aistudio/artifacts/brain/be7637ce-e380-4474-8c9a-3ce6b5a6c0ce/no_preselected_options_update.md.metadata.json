@@ -1,0 +1,5 @@
+{
+  "summary": "Implementation summary for removing pre-selected options on the customer AI review page, ensuring neutral initial appearance, requiring explicit customer choice for language and tone, and automatic generation and regeneration upon selection changes.",
+  "updatedAt": "2026-11-04T20:34:19.230212715Z",
+  "userFacing": true
+}

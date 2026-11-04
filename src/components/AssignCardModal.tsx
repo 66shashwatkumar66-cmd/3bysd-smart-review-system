@@ -1,8 +1,13 @@
 import React, { useState, useEffect, useId } from 'react';
-import { X, ExternalLink, HelpCircle, Check, MapPin, Store, Sparkles, Radio, Copy, Tag } from 'lucide-react';
+import { X, ExternalLink, HelpCircle, Check, MapPin, Store, Sparkles, Radio, Copy, Tag, Calendar, Clock3 } from 'lucide-react';
 import { CardRecord, AdminUser, UserProfile } from '../types';
 import { getCardScanUrl } from '../utils/url';
 import { validateWhatsAppInput, validateInstagramInput } from '../utils/socialLinks';
+import {
+  getSubscriptionStatus,
+  validateSubscriptionDates,
+  getPresetDates,
+} from '../utils/subscription';
 
 interface AssignCardModalProps {
   card: CardRecord | null;
@@ -32,6 +37,8 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
   const keywordsId = useId();
   const whatsappId = useId();
   const instagramId = useId();
+  const startDateId = useId();
+  const endDateId = useId();
 
   const [businessName, setBusinessName] = useState('');
   const [category, setCategory] = useState('');
@@ -41,6 +48,8 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
   const [aiReviewEnabled, setAiReviewEnabled] = useState<boolean>(true);
   const [whatsapp, setWhatsapp] = useState<string>('');
   const [instagram, setInstagram] = useState<string>('');
+  const [subscriptionStartDate, setSubscriptionStartDate] = useState<string>('');
+  const [subscriptionEndDate, setSubscriptionEndDate] = useState<string>('');
   const [assignedToEmail, setAssignedToEmail] = useState<string>('');
   const [assignedToName, setAssignedToName] = useState<string>('');
   const [assignedToUid, setAssignedToUid] = useState<string>('');
@@ -60,6 +69,8 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
       setAiReviewEnabled(card.aiReviewEnabled !== false);
       setWhatsapp(card.whatsapp || '');
       setInstagram(card.instagram || '');
+      setSubscriptionStartDate(card.subscriptionStartDate || '');
+      setSubscriptionEndDate(card.subscriptionEndDate || '');
       setAssignedToEmail(card.assignedToEmail || '');
       setAssignedToName(card.assignedToName || '');
       setAssignedToUid(card.assignedToUid || '');
@@ -99,6 +110,13 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
       }
     }
 
+    // Validate Subscription Dates
+    const dateValidation = validateSubscriptionDates(subscriptionStartDate, subscriptionEndDate);
+    if (!dateValidation.valid) {
+      setError(dateValidation.error || 'Invalid subscription dates.');
+      return;
+    }
+
     setError('');
     setIsSubmitting(true);
     try {
@@ -119,6 +137,12 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
         customKeywords: keywordsArray,
         whatsapp: whatsapp.trim() || undefined,
         instagram: instagram.trim() || undefined,
+        subscriptionStartDate: subscriptionStartDate.trim() || undefined,
+        subscriptionEndDate: subscriptionEndDate.trim() || undefined,
+        subscriptionStatus: getSubscriptionStatus({
+          subscriptionStartDate: subscriptionStartDate.trim() || undefined,
+          subscriptionEndDate: subscriptionEndDate.trim() || undefined,
+        }),
       };
 
       // Only master admin can reassign card ownership
@@ -423,7 +447,142 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
               </div>
             </div>
             <p className="text-[10px] text-slate-500">
-              When configured, customers scanning this stand see a "Stay Connected" button to chat on WhatsApp or follow on Instagram.
+              When configured, customers scanning this stand see a "Let's Connect" button to chat on WhatsApp or follow on Instagram.
+            </p>
+          </div>
+
+          {/* QR Subscription Period (Start Date & End Date) */}
+          <div className="p-3.5 bg-indigo-50/60 border border-indigo-200/90 rounded-xl space-y-3">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-6 rounded-lg bg-indigo-100 text-indigo-700 flex items-center justify-center shrink-0">
+                  <Calendar className="w-3.5 h-3.5" />
+                </div>
+                <span className="text-xs font-bold text-slate-900">
+                  QR Subscription Period
+                </span>
+              </div>
+
+              {/* Status Badge */}
+              {(() => {
+                const subStatus = getSubscriptionStatus({
+                  subscriptionStartDate,
+                  subscriptionEndDate,
+                });
+                return (
+                  <span
+                    className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border ${
+                      subStatus === 'active'
+                        ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                        : subStatus === 'upcoming'
+                        ? 'bg-blue-50 text-blue-800 border-blue-300'
+                        : subStatus === 'expired'
+                        ? 'bg-rose-50 text-rose-800 border-rose-300'
+                        : 'bg-slate-100 text-slate-700 border-slate-200'
+                    }`}
+                  >
+                    {subStatus === 'active' && '● Active Subscription'}
+                    {subStatus === 'upcoming' && '○ Upcoming Subscription'}
+                    {subStatus === 'expired' && '✕ Expired Subscription'}
+                    {subStatus === 'unconfigured' && '— Unconfigured (No Limits)'}
+                  </span>
+                );
+              })()}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label htmlFor={startDateId} className="block text-[11px] font-semibold text-slate-700 mb-1">
+                  Subscription Start Date
+                </label>
+                <input
+                  id={startDateId}
+                  type="date"
+                  value={subscriptionStartDate}
+                  onChange={(e) => setSubscriptionStartDate(e.target.value)}
+                  className="w-full px-3 py-1.5 text-xs bg-white border border-indigo-200 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600"
+                />
+              </div>
+
+              <div>
+                <label htmlFor={endDateId} className="block text-[11px] font-semibold text-slate-700 mb-1">
+                  Subscription End Date
+                </label>
+                <input
+                  id={endDateId}
+                  type="date"
+                  value={subscriptionEndDate}
+                  onChange={(e) => setSubscriptionEndDate(e.target.value)}
+                  min={subscriptionStartDate || undefined}
+                  className="w-full px-3 py-1.5 text-xs bg-white border border-indigo-200 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600"
+                />
+              </div>
+            </div>
+
+            {/* Quick Duration Presets */}
+            <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
+              <span className="text-[10px] text-slate-400 font-medium mr-1">Quick Presets:</span>
+              <button
+                type="button"
+                onClick={() => {
+                  const p = getPresetDates(1, subscriptionStartDate);
+                  setSubscriptionStartDate(p.startDate);
+                  setSubscriptionEndDate(p.endDate);
+                }}
+                className="px-2 py-0.5 text-[10px] font-semibold rounded bg-white hover:bg-indigo-50 border border-indigo-200 text-indigo-700 transition-colors cursor-pointer"
+              >
+                +1 Month
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const p = getPresetDates(3, subscriptionStartDate);
+                  setSubscriptionStartDate(p.startDate);
+                  setSubscriptionEndDate(p.endDate);
+                }}
+                className="px-2 py-0.5 text-[10px] font-semibold rounded bg-white hover:bg-indigo-50 border border-indigo-200 text-indigo-700 transition-colors cursor-pointer"
+              >
+                +3 Months
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const p = getPresetDates(6, subscriptionStartDate);
+                  setSubscriptionStartDate(p.startDate);
+                  setSubscriptionEndDate(p.endDate);
+                }}
+                className="px-2 py-0.5 text-[10px] font-semibold rounded bg-white hover:bg-indigo-50 border border-indigo-200 text-indigo-700 transition-colors cursor-pointer"
+              >
+                +6 Months
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const p = getPresetDates(12, subscriptionStartDate);
+                  setSubscriptionStartDate(p.startDate);
+                  setSubscriptionEndDate(p.endDate);
+                }}
+                className="px-2 py-0.5 text-[10px] font-semibold rounded bg-white hover:bg-indigo-50 border border-indigo-200 text-indigo-700 transition-colors cursor-pointer"
+              >
+                +1 Year
+              </button>
+              {(subscriptionStartDate || subscriptionEndDate) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSubscriptionStartDate('');
+                    setSubscriptionEndDate('');
+                  }}
+                  className="px-2 py-0.5 text-[10px] font-semibold rounded bg-white hover:bg-red-50 border border-red-200 text-red-600 transition-colors cursor-pointer ml-auto"
+                >
+                  Clear Dates
+                </button>
+              )}
+            </div>
+
+            <p className="text-[10px] text-slate-500 leading-relaxed">
+              Before start date: customers see <em>"This QR subscription is not active yet."</em><br />
+              After end date: customers see <em>"This QR subscription has expired. Please contact the business for assistance."</em>
             </p>
           </div>
 

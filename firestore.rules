@@ -73,6 +73,9 @@ service cloud.firestore {
         (!('businessDescription' in data) || data.businessDescription == null || (data.businessDescription is string && data.businessDescription.size() <= 2000)) &&
         (!('whatsapp' in data) || data.whatsapp == null || (data.whatsapp is string && data.whatsapp.size() <= 500)) &&
         (!('instagram' in data) || data.instagram == null || (data.instagram is string && data.instagram.size() <= 500)) &&
+        (!('subscriptionStartDate' in data) || data.subscriptionStartDate == null || (data.subscriptionStartDate is string && data.subscriptionStartDate.size() <= 64)) &&
+        (!('subscriptionEndDate' in data) || data.subscriptionEndDate == null || (data.subscriptionEndDate is string && data.subscriptionEndDate.size() <= 64)) &&
+        (!('subscriptionStatus' in data) || data.subscriptionStatus == null || (data.subscriptionStatus is string && data.subscriptionStatus.size() <= 32)) &&
         (!('reviewPageSettings' in data) || data.reviewPageSettings == null || data.reviewPageSettings is map);
     }
 

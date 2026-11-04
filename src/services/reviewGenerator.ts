@@ -436,9 +436,17 @@ export async function generateReviewWithGemini(
   const safeNotes = input.notes ? String(input.notes).trim() : '';
   const safeCategory = input.category ? String(input.category).trim() : 'Local Business';
   const safeDescription = input.businessDescription ? String(input.businessDescription).trim() : '';
+  if (!input.language || !input.tone) {
+    return {
+      success: false,
+      error: 'Select your preferred language and tone to generate your review.',
+      message: 'Select your preferred language and tone to generate your review.',
+    };
+  }
+
   const targetLanguage: ReviewLanguage = input.language === 'hinglish' ? 'hinglish' : 'en';
   const targetTone: ReviewTone =
-    input.tone && ['casual', 'warm', 'professional', 'enthusiastic', 'direct'].includes(input.tone)
+    ['casual', 'warm', 'professional', 'enthusiastic', 'direct'].includes(input.tone)
       ? input.tone
       : 'casual';
   const recentDrafts = Array.isArray(input.recentDrafts) ? input.recentDrafts.filter(Boolean).slice(0, 4) : [];

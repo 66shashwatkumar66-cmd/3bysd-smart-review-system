@@ -4,6 +4,12 @@ import fs from 'fs';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
 import { generateReviewWithGemini } from './src/services/reviewGenerator';
+import {
+  getSubscriptionStatus,
+  isSubscriptionAccessible,
+  validateSubscriptionDates,
+  normalizeDateString,
+} from './src/utils/subscription';
 
 dotenv.config();
 
@@ -66,6 +72,9 @@ export interface CardRecord {
   businessDescription?: string;
   whatsapp?: string;
   instagram?: string;
+  subscriptionStartDate?: string;
+  subscriptionEndDate?: string;
+  subscriptionStatus?: 'unconfigured' | 'upcoming' | 'active' | 'expired';
   scansCount: number;
   assignedToEmail?: string;
   assignedToUid?: string;
@@ -363,7 +372,17 @@ app.get('/api/cards/:id', (req: Request, res: Response) => {
     writeCards(cards);
   }
 
-  res.json({ success: true, card });
+  // Compute live subscription status
+  const subCheck = isSubscriptionAccessible(card);
+  card.subscriptionStatus = subCheck.status;
+
+  res.json({
+    success: true,
+    card,
+    subscriptionAccessible: subCheck.accessible,
+    subscriptionStatus: subCheck.status,
+    subscriptionMessage: subCheck.customerMessage,
+  });
 });
 
 // REST API: Create single or batch cards (Master Admin Only)
@@ -443,6 +462,8 @@ app.put('/api/cards/:id/assign', (req: Request, res: Response) => {
       assignedToEmail,
       assignedToUid,
       assignedToName,
+      subscriptionStartDate,
+      subscriptionEndDate,
     } = req.body;
 
     const cards = readCards();
@@ -467,6 +488,21 @@ app.put('/api/cards/:id/assign', (req: Request, res: Response) => {
     const existingCard = cards[index];
     if (!existingCard) {
       return res.status(404).json({ success: false, message: 'Card not found' });
+    }
+
+    // Validate subscription dates if provided
+    if (subscriptionStartDate !== undefined || subscriptionEndDate !== undefined) {
+      const startCandidate = subscriptionStartDate !== undefined
+        ? (subscriptionStartDate ? String(subscriptionStartDate).trim() : null)
+        : (existingCard.subscriptionStartDate || null);
+      const endCandidate = subscriptionEndDate !== undefined
+        ? (subscriptionEndDate ? String(subscriptionEndDate).trim() : null)
+        : (existingCard.subscriptionEndDate || null);
+
+      const valRes = validateSubscriptionDates(startCandidate, endCandidate);
+      if (!valRes.valid) {
+        return res.status(400).json({ success: false, message: valRes.error });
+      }
     }
 
     // Sub-admin permission validation: restricted admins can only edit their assigned cards
@@ -498,6 +534,17 @@ app.put('/api/cards/:id/assign', (req: Request, res: Response) => {
       }
     }
 
+    const effectiveStart = subscriptionStartDate !== undefined
+      ? (subscriptionStartDate ? String(subscriptionStartDate).trim() : undefined)
+      : existingCard.subscriptionStartDate;
+    const effectiveEnd = subscriptionEndDate !== undefined
+      ? (subscriptionEndDate ? String(subscriptionEndDate).trim() : undefined)
+      : existingCard.subscriptionEndDate;
+    const computedSubStatus = getSubscriptionStatus({
+      subscriptionStartDate: effectiveStart,
+      subscriptionEndDate: effectiveEnd,
+    });
+
     cards[index] = {
       ...cards[index],
       businessName: businessName !== undefined ? businessName.trim() : cards[index].businessName,
@@ -526,6 +573,9 @@ app.put('/api/cards/:id/assign', (req: Request, res: Response) => {
       businessDescription: req.body.businessDescription !== undefined ? (req.body.businessDescription ? String(req.body.businessDescription).trim() : undefined) : cards[index].businessDescription,
       whatsapp: req.body.whatsapp !== undefined ? (req.body.whatsapp ? String(req.body.whatsapp).trim() : undefined) : cards[index].whatsapp,
       instagram: req.body.instagram !== undefined ? (req.body.instagram ? String(req.body.instagram).trim() : undefined) : cards[index].instagram,
+      subscriptionStartDate: effectiveStart,
+      subscriptionEndDate: effectiveEnd,
+      subscriptionStatus: computedSubStatus,
       updatedAt: new Date().toISOString(),
     };
 
@@ -937,7 +987,7 @@ app.delete('/api/users/:uid', (req: Request, res: Response) => {
 // AI Review Generation Route using @google/genai (delegates to shared service)
 app.post('/api/generate-review', async (req: Request, res: Response) => {
   try {
-    const { cardId, aiReviewEnabled } = req.body;
+    const { cardId, aiReviewEnabled, language, tone } = req.body;
     if (aiReviewEnabled === false) {
       return res.status(403).json({
         success: false,
@@ -946,11 +996,29 @@ app.post('/api/generate-review', async (req: Request, res: Response) => {
       });
     }
 
+    if (!language || !tone) {
+      return res.status(400).json({
+        success: false,
+        error: 'Select your preferred language and tone to generate your review.',
+        message: 'Select your preferred language and tone to generate your review.',
+      });
+    }
+
     const enrichedPayload = { ...req.body };
     if (cardId) {
       const cards = readCards();
       const targetCard = cards.find((c) => c.id.toLowerCase() === String(cardId).trim().toLowerCase());
       if (targetCard) {
+        // Enforce subscription validation on server first
+        const subCheck = isSubscriptionAccessible(targetCard);
+        if (!subCheck.accessible) {
+          return res.status(403).json({
+            success: false,
+            error: subCheck.customerMessage || 'This QR subscription is not active.',
+            message: subCheck.customerMessage || 'This QR subscription is not active.',
+            subscriptionStatus: subCheck.status,
+          });
+        }
         if (targetCard.aiReviewEnabled === false) {
           return res.status(403).json({
             success: false,

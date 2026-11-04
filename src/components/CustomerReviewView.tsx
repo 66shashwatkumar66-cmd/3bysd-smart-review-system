@@ -30,6 +30,7 @@ import {
 
 import { CustomerLoadState } from '../utils/cardLookup';
 import { formatWhatsAppUrl, formatInstagramUrl } from '../utils/socialLinks';
+import { isSubscriptionAccessible, formatDisplayDate } from '../utils/subscription';
 
 interface CustomerReviewViewProps {
   card: CardRecord | null;
@@ -151,28 +152,20 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
   const effectiveAiReviewEnabled = card?.aiReviewEnabled !== false;
 
   const [rating, setRating] = useState<number>(5);
-  const [selectedTags, setSelectedTags] = useState<string[]>(() => {
-    if (card?.customKeywords && card.customKeywords.length > 0) {
-      return card.customKeywords.slice(0, 2);
-    }
-    return ['Food & Drinks', 'Friendly Staff'];
-  });
+  // No review keywords should be pre-selected on initial load
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [customNotes, setCustomNotes] = useState<string>('');
 
-  // Language selection: 'en' (default) or 'hinglish'
-  const [language, setLanguage] = useState<ReviewLanguage>('en');
+  // No language selected by default: 'en' | 'hinglish' | null
+  const [language, setLanguage] = useState<ReviewLanguage | null>(null);
 
-  // Tone selection: 5 distinct tones (default: 'casual')
-  const [tone, setTone] = useState<ReviewTone>(() => {
-    if (card?.reviewTone === 'concise') return 'direct';
-    if (card?.reviewTone === 'enthusiastic') return 'enthusiastic';
-    if (card?.reviewTone === 'professional') return 'professional';
-    return 'casual';
-  });
+  // No tone selected by default: ReviewTone | null
+  const [tone, setTone] = useState<ReviewTone | null>(null);
 
   // Recent drafts session history (kept in component state to avoid duplicates)
   const [recentDrafts, setRecentDrafts] = useState<string[]>([]);
   const [generatedReview, setGeneratedReview] = useState<string>('');
+  const [hasGenerated, setHasGenerated] = useState<boolean>(false);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
   const [copied, setCopied] = useState<boolean>(false);
@@ -241,20 +234,15 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
 
   useEffect(() => {
     if (prevCardKeyRef.current !== null && prevCardKeyRef.current !== currentCardKey) {
-      if (card?.customKeywords && card.customKeywords.length > 0) {
-        setSelectedTags(card.customKeywords.slice(0, 2));
-      } else {
-        setSelectedTags(['Food & Drinks', 'Friendly Staff']);
-      }
+      setSelectedTags([]);
       setRating(5);
       setCustomNotes('');
       setRecentDrafts([]);
       setGeneratedReview('');
+      setHasGenerated(false);
       setGenerationError(null);
-      if (card?.reviewTone === 'concise') setTone('direct');
-      else if (card?.reviewTone === 'enthusiastic') setTone('enthusiastic');
-      else if (card?.reviewTone === 'professional') setTone('professional');
-      else setTone('casual');
+      setTone(null);
+      setLanguage(null);
     }
     prevCardKeyRef.current = currentCardKey;
   }, [currentCardKey]);
@@ -262,10 +250,7 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
   // Sync selected tags if card's custom keywords list changes in customizer
   useEffect(() => {
     if (card?.customKeywords && card.customKeywords.length > 0) {
-      setSelectedTags((prev) => {
-        const valid = prev.filter((t) => card.customKeywords!.includes(t));
-        return valid.length > 0 ? valid : card.customKeywords!.slice(0, 2);
-      });
+      setSelectedTags((prev) => prev.filter((t) => card.customKeywords!.includes(t)));
     }
   }, [card?.customKeywords]);
 
@@ -283,22 +268,31 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
       ? card.notes.trim()
       : '');
 
+  // Subscription access validation
+  const subCheck = useMemo(() => isSubscriptionAccessible(card), [card]);
+
   const handleGenerate = async (
-    explicitTone?: ReviewTone,
-    explicitLang?: ReviewLanguage,
+    explicitTone?: ReviewTone | null,
+    explicitLang?: ReviewLanguage | null,
     explicitRating?: number,
     explicitTags?: string[]
   ) => {
-    // If AI Assistant Mode is OFF, do not generate reviews or call backend
-    if (!effectiveAiReviewEnabled) return;
+    const activeTone = explicitTone !== undefined ? explicitTone : tone;
+    const activeLang = explicitLang !== undefined ? explicitLang : language;
+    const activeRating = explicitRating !== undefined ? explicitRating : rating;
+    const activeTags = explicitTags !== undefined ? explicitTags : selectedTags;
+
+    // Do not generate if required options (language and tone) are not selected
+    if (!activeTone || !activeLang) return;
+
+    // If AI Assistant Mode is OFF or card subscription is not accessible in production, do not generate reviews
+    if (!effectiveAiReviewEnabled || (!isSimulator && !subCheck.accessible)) return;
+    // Prevent duplicate concurrent requests
+    if (isGenerating) return;
 
     setIsGenerating(true);
     setCopied(false);
     setGenerationError(null);
-    const activeTone = explicitTone || tone;
-    const activeLang = explicitLang || language;
-    const activeRating = explicitRating !== undefined ? explicitRating : rating;
-    const activeTags = explicitTags !== undefined ? explicitTags : selectedTags;
 
     try {
       const res = await generateAiReview({
@@ -317,6 +311,7 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
 
       if (res.success && res.review) {
         setGeneratedReview(res.review);
+        setHasGenerated(true);
         setRecentDrafts((prev) => [res.review!, ...prev.filter((d) => d !== res.review)].slice(0, 4));
         setGenerationError(null);
       } else {
@@ -337,6 +332,7 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
           recentDrafts
         );
         setGeneratedReview(fallback);
+        setHasGenerated(true);
         setRecentDrafts((prev) => [fallback, ...prev.filter((d) => d !== fallback)].slice(0, 4));
       }
     } catch (err: any) {
@@ -353,39 +349,35 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
         recentDrafts
       );
       setGeneratedReview(fallback);
+      setHasGenerated(true);
       setRecentDrafts((prev) => [fallback, ...prev.filter((d) => d !== fallback)].slice(0, 4));
     } finally {
       setIsGenerating(false);
     }
   };
 
-  // Auto-generate starter review draft when AI review assistant is active
-  useEffect(() => {
-    if (effectiveAiReviewEnabled && !generatedReview && !isGenerating) {
-      handleGenerate();
-    }
-  }, [card?.id, effectiveAiReviewEnabled]);
-
   const handleLanguageChange = (newLang: ReviewLanguage) => {
     if (newLang === language) return;
     setLanguage(newLang);
-    if (effectiveAiReviewEnabled) {
-      handleGenerate(tone, newLang);
+    // If tone is also selected, automatically generate or regenerate review
+    if (tone) {
+      handleGenerate(tone, newLang, rating, selectedTags);
     }
   };
 
   const handleToneChange = (newTone: ReviewTone) => {
     if (newTone === tone) return;
     setTone(newTone);
-    if (effectiveAiReviewEnabled) {
-      handleGenerate(newTone, language);
+    // If language is also selected, automatically generate or regenerate review
+    if (language) {
+      handleGenerate(newTone, language, rating, selectedTags);
     }
   };
 
   const handleRatingChange = (newRating: number) => {
     setRating(newRating);
-    if (effectiveAiReviewEnabled) {
-      handleGenerate(tone, language, newRating);
+    if (language && tone) {
+      handleGenerate(tone, language, newRating, selectedTags);
     }
   };
 
@@ -394,7 +386,7 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
       ? selectedTags.filter((t) => t !== tagId)
       : [...selectedTags, tagId];
     setSelectedTags(updated);
-    if (effectiveAiReviewEnabled) {
+    if (language && tone) {
       handleGenerate(tone, language, rating, updated);
     }
   };
@@ -557,6 +549,67 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
             </h1>
             <p className="text-xs text-slate-500 mt-1">
               Could not retrieve business details for Stand #{cardId}. Please verify the QR code or link.
+            </p>
+          </div>
+          {onBackToAdmin ? (
+            <button
+              onClick={onBackToAdmin}
+              className="px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              Back to Dashboard
+            </button>
+          ) : (
+            <a
+              href="/"
+              className="inline-block px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              Return to Home
+            </a>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // State 5: QR Subscription Inactive or Expired (Clean customer-facing message)
+  if (!isSimulator && card && !subCheck.accessible) {
+    const isUpcoming = subCheck.status === 'upcoming';
+    return (
+      <div className="min-h-screen bg-[#FDFCFB] flex flex-col justify-center items-center p-6 text-slate-900 antialiased selection:bg-amber-100">
+        <div className="max-w-sm w-full bg-white rounded-3xl p-8 border border-slate-200/90 shadow-sm text-center space-y-4">
+          <div
+            className={`w-14 h-14 rounded-2xl flex items-center justify-center mx-auto border ${
+              isUpcoming
+                ? 'bg-amber-50 text-amber-600 border-amber-200'
+                : 'bg-rose-50 text-rose-600 border-rose-200'
+            }`}
+          >
+            {isUpcoming ? (
+              <Clock className="w-7 h-7 text-amber-600" />
+            ) : (
+              <AlertCircle className="w-7 h-7 text-rose-600" />
+            )}
+          </div>
+          <div>
+            <h1 className="text-base sm:text-lg font-extrabold text-slate-900 leading-snug">
+              {isUpcoming
+                ? 'This QR subscription is not active yet.'
+                : 'This QR subscription has expired. Please contact the business for assistance.'}
+            </h1>
+            <p className="text-xs text-slate-500 mt-2">
+              {isUpcoming && card.subscriptionStartDate && (
+                <span>
+                  Valid starting from <strong>{formatDisplayDate(card.subscriptionStartDate)}</strong>.
+                </span>
+              )}
+              {!isUpcoming && card.subscriptionEndDate && (
+                <span>
+                  Subscription ended on <strong>{formatDisplayDate(card.subscriptionEndDate)}</strong>.
+                </span>
+              )}
+              {!card.subscriptionStartDate && !card.subscriptionEndDate && (
+                <span>Please reach out to the business management to renew this Stand.</span>
+              )}
             </p>
           </div>
           {onBackToAdmin ? (
@@ -804,30 +857,30 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
                 <span className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">
                   Language
                 </span>
-                <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 rounded-2xl">
+                <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
                     onClick={() => handleLanguageChange('en')}
-                    className={`py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                    className={`py-2.5 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 border active:scale-95 cursor-pointer ${
                       language === 'en'
-                        ? 'bg-white text-slate-900 shadow-xs ring-1 ring-slate-200/60'
-                        : 'text-slate-600 hover:text-slate-900'
+                        ? 'bg-blue-50/70 border-blue-300 text-blue-950 shadow-2xs ring-1 ring-blue-400/40'
+                        : 'bg-slate-50/80 border-slate-200 text-slate-700 hover:bg-slate-100'
                     }`}
                   >
                     <span>English</span>
-                    <span className="text-[10px] text-slate-400 font-normal">(Fluent)</span>
+                    <span className={`text-[10px] font-normal ${language === 'en' ? 'text-blue-700' : 'text-slate-400'}`}>(Fluent)</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => handleLanguageChange('hinglish')}
-                    className={`py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                    className={`py-2.5 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 border active:scale-95 cursor-pointer ${
                       language === 'hinglish'
-                        ? 'bg-white text-slate-900 shadow-xs ring-1 ring-slate-200/60'
-                        : 'text-slate-600 hover:text-slate-900'
+                        ? 'bg-blue-50/70 border-blue-300 text-blue-950 shadow-2xs ring-1 ring-blue-400/40'
+                        : 'bg-slate-50/80 border-slate-200 text-slate-700 hover:bg-slate-100'
                     }`}
                   >
                     <span>Hinglish</span>
-                    <span className="text-[10px] text-slate-400 font-normal">(हिन्दी-Eng)</span>
+                    <span className={`text-[10px] font-normal ${language === 'hinglish' ? 'text-blue-700' : 'text-slate-400'}`}>(हिन्दी-Eng)</span>
                   </button>
                 </div>
               </div>
@@ -846,7 +899,7 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
                         key={t.id}
                         type="button"
                         onClick={() => handleToneChange(t.id)}
-                        className={`flex items-start gap-2.5 p-2.5 rounded-xl border text-left transition-all active:scale-95 ${
+                        className={`flex items-start gap-2.5 p-2.5 rounded-xl border text-left transition-all active:scale-95 cursor-pointer ${
                           isSelected
                             ? 'bg-blue-50/70 border-blue-300 text-blue-950 shadow-2xs ring-1 ring-blue-400/40'
                             : 'bg-slate-50/80 border-slate-200 text-slate-700 hover:bg-slate-100'
@@ -867,119 +920,246 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
                 </div>
               </div>
 
-              {/* Re-generate trigger button */}
-              <button
-                type="button"
-                onClick={() => handleGenerate()}
-                disabled={isGenerating}
-                className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-900 text-xs font-bold transition-all disabled:opacity-50"
-              >
-                <Sparkles className={`w-3.5 h-3.5 text-amber-500 ${isGenerating ? 'animate-spin' : ''}`} />
-                <span>{isGenerating ? 'Drafting fresh review...' : 'Update Review Draft'}</span>
-              </button>
             </div>
 
             {/* Step 4: Generated Review Draft */}
-            <div className="bg-white rounded-3xl p-5 border border-slate-200/80 shadow-xs space-y-3">
+            <div className="bg-white rounded-3xl p-5 border border-slate-200/80 shadow-xs space-y-3.5">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
                   4. Review Draft (Editable)
                 </span>
                 <div className="flex items-center gap-2">
-                  <span className="text-[11px] text-emerald-600 font-semibold flex items-center gap-1">
-                    <Sparkles className="w-3 h-3" />
-                    <span className="capitalize">{tone} · {language === 'hinglish' ? 'Hinglish' : 'English'}</span>
-                  </span>
+                  {!isGenerating && !generationError && (hasGenerated || Boolean(generatedReview)) ? (
+                    <span className="text-[11px] text-emerald-600 font-semibold flex items-center gap-1">
+                      <Sparkles className="w-3 h-3" />
+                      <span className="capitalize">{tone} · {language === 'hinglish' ? 'Hinglish' : 'English'}</span>
+                    </span>
+                  ) : isGenerating ? (
+                    <span className="text-[11px] text-[#1A73E8] font-semibold flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-[#1A73E8] animate-ping" />
+                      <span>Generating...</span>
+                    </span>
+                  ) : (!language || !tone) ? (
+                    <span className="text-[11px] text-amber-600 font-medium">
+                      Selection needed
+                    </span>
+                  ) : (
+                    <span className="text-[11px] text-slate-400 font-medium">
+                      Ready to generate
+                    </span>
+                  )}
                 </div>
               </div>
 
-              {generationError && (
-                <div className="p-3 bg-red-50 border border-red-200 rounded-2xl text-xs text-red-700 flex items-start gap-2 animate-fadeIn">
-                  <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
-                  <div className="flex-1">
-                    <div className="font-bold">Review Assistant Notice</div>
-                    <div className="text-[11px] mt-0.5">{generationError}</div>
+              {/* State D – Error */}
+              {!isGenerating && generationError && (
+                <div className="space-y-3.5">
+                  <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl text-xs text-rose-800 space-y-2 animate-fadeIn">
+                    <div className="flex items-start gap-2.5">
+                      <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                      <div className="flex-1 min-w-0">
+                        <div className="font-bold text-rose-900">Review Generation Notice</div>
+                        <div className="text-[11px] text-rose-700 mt-0.5 leading-relaxed">
+                          {generationError}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setGenerationError(null)}
+                        className="text-rose-400 hover:text-rose-700 font-bold cursor-pointer p-0.5"
+                        aria-label="Dismiss error"
+                      >
+                        ×
+                      </button>
+                    </div>
                   </div>
+
                   <button
                     type="button"
-                    onClick={() => setGenerationError(null)}
-                    className="text-red-400 hover:text-red-700 font-bold cursor-pointer"
+                    onClick={() => handleGenerate()}
+                    className="w-full h-12 rounded-2xl bg-[#1A73E8] hover:bg-[#1557B0] active:bg-[#154696] text-white font-bold text-sm flex items-center justify-center gap-2 shadow-md shadow-blue-500/20 active:scale-[0.98] transition-all cursor-pointer"
                   >
-                    ×
+                    <RefreshCw className="w-4 h-4 text-amber-300" />
+                    <span>Try Again</span>
                   </button>
                 </div>
               )}
 
-              <div className="relative">
-                {isGenerating ? (
-                  <div className="h-28 rounded-2xl bg-slate-50 border border-slate-200 p-4 flex flex-col items-center justify-center space-y-2">
-                    <div className="w-5 h-5 border-2 border-[#1A73E8] border-t-transparent rounded-full animate-spin" />
-                    <span className="text-xs text-slate-500">Crafting personalized review...</span>
+              {/* State B – Generating */}
+              {isGenerating && (
+                <div className="space-y-3.5">
+                  <div className="h-32 rounded-2xl bg-slate-50 border border-slate-200 p-6 flex flex-col items-center justify-center space-y-2.5">
+                    <div className="w-6 h-6 border-2 border-[#1A73E8] border-t-transparent rounded-full animate-spin" />
+                    <div className="text-center">
+                      <div className="text-xs sm:text-sm font-bold text-slate-800">
+                        Creating your personalized review...
+                      </div>
+                      <div className="text-[11px] text-slate-500 mt-0.5">
+                        Tailoring to {effectiveBusinessName} in {language === 'hinglish' ? 'Hinglish' : 'English'}
+                      </div>
+                    </div>
                   </div>
-                ) : (
-                  <textarea
-                    id={reviewDraftId}
-                    rows={4}
-                    value={generatedReview}
-                    onChange={(e) => setGeneratedReview(e.target.value)}
-                    placeholder="Click 'Update Review Draft' above to generate..."
-                    className="w-full p-3.5 text-xs sm:text-sm bg-slate-50/70 border border-slate-200 rounded-2xl text-slate-900 leading-relaxed focus:outline-none focus:ring-2 focus:ring-[#1A73E8] focus:bg-white resize-none"
-                  />
-                )}
-              </div>
 
-              {/* Word count & fresh variation quick trigger */}
-              {!isGenerating && generatedReview && (
-                <div className="flex items-center justify-between text-[11px] text-slate-500 px-1">
-                  <span>{generatedReview.split(/\s+/).filter(Boolean).length} words</span>
+                  {/* Disabled button preventing duplicate generation requests while one is in progress */}
+                  <button
+                    type="button"
+                    disabled
+                    className="w-full h-12 sm:h-13 rounded-2xl bg-slate-100 border border-slate-200 text-slate-400 font-bold text-sm flex items-center justify-center gap-2 cursor-not-allowed opacity-80"
+                  >
+                    <Sparkles className="w-4 h-4 animate-spin text-amber-500" />
+                    <span>Creating your personalized review...</span>
+                  </button>
+                </div>
+              )}
+
+              {/* State A1 – Required options not yet selected (Customer must choose language and tone) */}
+              {!isGenerating && !generationError && (!language || !tone) && !generatedReview && (
+                <div className="space-y-3.5">
+                  <div className="p-6 rounded-2xl bg-slate-50/80 border border-dashed border-slate-200 text-center space-y-2.5">
+                    <div className="w-11 h-11 rounded-2xl bg-blue-50 text-[#1A73E8] mx-auto flex items-center justify-center border border-blue-100/80 shadow-2xs">
+                      <Sparkles className="w-5 h-5 text-[#1A73E8]" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm sm:text-base font-bold text-slate-900">
+                        Select your preferred language and tone to generate your review.
+                      </h4>
+                      <p className="text-xs text-slate-500 max-w-xs mx-auto mt-1 leading-relaxed">
+                        Tap your preferred options in Step 3 above. As soon as both are selected, your review will generate automatically.
+                      </p>
+                    </div>
+
+                    {/* Visual status checklist pills */}
+                    <div className="flex items-center justify-center gap-2 pt-1 flex-wrap">
+                      <span
+                        className={`text-[11px] font-semibold px-2.5 py-1 rounded-full border transition-all ${
+                          language
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            : 'bg-slate-100 text-slate-500 border-slate-200'
+                        }`}
+                      >
+                        {language ? `✓ ${language === 'hinglish' ? 'Hinglish' : 'English'} selected` : '○ Select Language'}
+                      </span>
+                      <span
+                        className={`text-[11px] font-semibold px-2.5 py-1 rounded-full border transition-all ${
+                          tone
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            : 'bg-slate-100 text-slate-500 border-slate-200'
+                        }`}
+                      >
+                        {tone ? `✓ ${tone.charAt(0).toUpperCase() + tone.slice(1)} tone` : '○ Select Tone'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled
+                    className="w-full h-12 sm:h-13 rounded-2xl bg-slate-100 border border-slate-200 text-slate-400 font-bold text-sm sm:text-base flex items-center justify-center gap-2 cursor-not-allowed opacity-80"
+                  >
+                    <Sparkles className="w-4 h-4 text-slate-300" />
+                    <span>Select Language & Tone to Generate</span>
+                  </button>
+                </div>
+              )}
+
+              {/* State A2 – Initial (Both language and tone chosen, awaiting first review or retry) */}
+              {!isGenerating && !generationError && language && tone && !hasGenerated && !generatedReview && (
+                <div className="space-y-3.5">
+                  <div className="p-6 rounded-2xl bg-slate-50/80 border border-dashed border-slate-200 text-center space-y-2">
+                    <div className="w-11 h-11 rounded-2xl bg-blue-50 text-[#1A73E8] mx-auto flex items-center justify-center border border-blue-100/80 shadow-2xs">
+                      <Sparkles className="w-5 h-5 text-[#1A73E8]" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm sm:text-base font-bold text-slate-900">
+                        Your review will appear here.
+                      </h4>
+                      <p className="text-xs text-slate-500 max-w-xs mx-auto mt-1 leading-relaxed">
+                        Choose your preferred language and tone, then generate your review.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Clear Generate My Review button */}
                   <button
                     type="button"
                     onClick={() => handleGenerate()}
                     disabled={isGenerating}
-                    className="text-[#1A73E8] hover:underline font-semibold flex items-center gap-1 disabled:opacity-50"
+                    className="w-full h-12 sm:h-13 rounded-2xl bg-[#1A73E8] hover:bg-[#1557B0] active:bg-[#154696] text-white font-bold text-sm sm:text-base flex items-center justify-center gap-2 shadow-md shadow-blue-500/25 active:scale-[0.98] transition-all cursor-pointer"
                   >
-                    <RefreshCw className="w-3 h-3" />
-                    <span>Try another version</span>
+                    <Sparkles className="w-4 h-4 text-amber-300" />
+                    <span>Generate My Review</span>
                   </button>
                 </div>
               )}
 
-              {/* Primary Action Button: Copy & Open Google */}
-              <button
-                type="button"
-                onClick={handleCopyAndRedirect}
-                disabled={!generatedReview || isGenerating}
-                className="w-full h-13 rounded-2xl bg-[#1A73E8] hover:bg-[#1557B0] text-white font-bold text-sm flex items-center justify-center gap-2 shadow-md shadow-blue-500/20 active:scale-[0.98] transition-all disabled:opacity-50"
-              >
-                {copied ? (
-                  <>
-                    <Check className="w-5 h-5 text-emerald-300" />
-                    <span>Review Copied! Opening Google...</span>
-                  </>
-                ) : (
-                  <>
-                    <Copy className="w-4 h-4" />
-                    <span>Copy & Open Google Review</span>
-                    <ExternalLink className="w-4 h-4 ml-1 opacity-80" />
-                  </>
-                )}
-              </button>
+              {/* State C – Generated (Display in editable text area, word count, Try Another Version, Copy & Open) */}
+              {!isGenerating && !generationError && (hasGenerated || Boolean(generatedReview)) && (
+                <div className="space-y-3">
+                  <div className="relative">
+                    <textarea
+                      id={reviewDraftId}
+                      rows={4}
+                      value={generatedReview}
+                      onChange={(e) => setGeneratedReview(e.target.value)}
+                      placeholder="Your review will appear here..."
+                      className="w-full p-3.5 text-xs sm:text-sm bg-slate-50/70 border border-slate-200 rounded-2xl text-slate-900 leading-relaxed focus:outline-none focus:ring-2 focus:ring-[#1A73E8] focus:bg-white resize-none"
+                    />
+                  </div>
 
-              {/* Fallback button if browser popup blocker or mobile tab didn't navigate */}
-              {redirected && card?.googleReviewUrl && (
-                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-center space-y-1.5 animate-fadeIn">
-                  <p className="text-xs text-emerald-900 font-semibold">
-                    Draft copied to your clipboard! Paste into Google:
-                  </p>
-                  <a
-                    href={card.googleReviewUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#34A853] text-white text-xs font-bold hover:bg-emerald-700 transition-colors shadow-2xs"
+                  {/* Word count & Try Another Version */}
+                  <div className="flex items-center justify-between text-[11px] text-slate-500 px-1">
+                    <span>
+                      {generatedReview.trim() ? generatedReview.trim().split(/\s+/).filter(Boolean).length : 0} words
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleGenerate()}
+                      disabled={isGenerating}
+                      className="text-[#1A73E8] hover:underline font-semibold flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      <span>Try Another Version</span>
+                    </button>
+                  </div>
+
+                  {/* Primary Action Button: Copy & Open Google Review */}
+                  <button
+                    type="button"
+                    onClick={handleCopyAndRedirect}
+                    disabled={!generatedReview.trim() || isGenerating}
+                    className="w-full h-13 rounded-2xl bg-[#1A73E8] hover:bg-[#1557B0] text-white font-bold text-sm flex items-center justify-center gap-2 shadow-md shadow-blue-500/20 active:scale-[0.98] transition-all disabled:opacity-50 cursor-pointer"
                   >
-                    <span>Tap here to submit on Google</span>
-                    <ExternalLink className="w-3.5 h-3.5" />
-                  </a>
+                    {copied ? (
+                      <>
+                        <Check className="w-5 h-5 text-emerald-300" />
+                        <span>Review Copied! Opening Google...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-4 h-4" />
+                        <span>Copy & Open Google Review</span>
+                        <ExternalLink className="w-4 h-4 ml-1 opacity-80" />
+                      </>
+                    )}
+                  </button>
+
+                  {/* Fallback button if browser popup blocker or mobile tab didn't navigate */}
+                  {redirected && card?.googleReviewUrl && (
+                    <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-center space-y-1.5 animate-fadeIn">
+                      <p className="text-xs text-emerald-900 font-semibold">
+                        Draft copied to your clipboard! Paste into Google:
+                      </p>
+                      <a
+                        href={card.googleReviewUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#34A853] text-white text-xs font-bold hover:bg-emerald-700 transition-colors shadow-2xs"
+                      >
+                        <span>Tap here to submit on Google</span>
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </a>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1046,25 +1226,25 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
           </div>
         )}
 
-        {/* STAY CONNECTED: Business WhatsApp & Instagram Links */}
+        {/* LET'S CONNECT: Business WhatsApp & Instagram Links */}
         {hasSocialLinks && (
-          <div className="relative pt-2 pb-1 flex flex-col items-center">
+          <div className="relative pt-3 pb-2 flex flex-col items-center">
             <button
               type="button"
               onClick={() => setIsStayConnectedOpen((prev) => !prev)}
               aria-expanded={isStayConnectedOpen}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full bg-white border border-slate-200 hover:border-slate-300 text-xs font-bold text-slate-700 hover:text-slate-900 shadow-2xs hover:shadow-xs transition-all active:scale-[0.98] cursor-pointer"
+              className="inline-flex items-center justify-center gap-2.5 px-6 py-3 sm:py-3.5 rounded-full bg-[#16A34A] hover:bg-[#15803D] active:bg-[#166534] text-white text-sm sm:text-base font-bold shadow-md shadow-emerald-700/20 hover:shadow-lg hover:shadow-emerald-700/30 transition-all active:scale-[0.98] cursor-pointer"
             >
-              <Share2 className="w-3.5 h-3.5 text-[#1A73E8]" />
-              <span>Stay Connected</span>
+              <Share2 className="w-4 h-4 sm:w-5 sm:h-5 text-white shrink-0" />
+              <span>Let's Connect</span>
               <ChevronDown
-                className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-200 ${
+                className={`w-4 h-4 sm:w-4.5 sm:h-4.5 text-white/90 transition-transform duration-200 shrink-0 ${
                   isStayConnectedOpen ? 'rotate-180' : ''
                 }`}
               />
             </button>
 
-            {/* Stay Connected Popup / Dropdown */}
+            {/* Let's Connect Popup / Dropdown */}
             {isStayConnectedOpen && (
               <>
                 {/* Backdrop to close on click outside */}
@@ -1076,11 +1256,11 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
                 <div className="fixed sm:absolute bottom-4 sm:bottom-12 inset-x-4 sm:inset-x-auto sm:w-80 z-40 bg-white rounded-2xl border border-slate-200 shadow-xl p-4 space-y-3 animate-fadeIn">
                   <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
                     <div className="flex items-center gap-2">
-                      <div className="w-6 h-6 rounded-lg bg-blue-50 text-[#1A73E8] flex items-center justify-center">
-                        <Share2 className="w-3.5 h-3.5" />
+                      <div className="w-7 h-7 rounded-lg bg-emerald-50 text-[#16A34A] flex items-center justify-center">
+                        <Share2 className="w-4 h-4" />
                       </div>
-                      <span className="text-xs font-bold text-slate-900">
-                        Stay Connected
+                      <span className="text-xs sm:text-sm font-bold text-slate-900">
+                        Let's Connect
                       </span>
                     </div>
                     <button

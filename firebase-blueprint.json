@@ -59,6 +59,21 @@
           "type": "integer",
           "description": "Total customer scans"
         },
+        "subscriptionStartDate": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Start date for QR subscription (YYYY-MM-DD)"
+        },
+        "subscriptionEndDate": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Expiration date for QR subscription (YYYY-MM-DD)"
+        },
+        "subscriptionStatus": {
+          "type": "string",
+          "enum": ["unconfigured", "upcoming", "active", "expired"],
+          "description": "Current status of the subscription"
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
