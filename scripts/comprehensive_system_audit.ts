@@ -43,7 +43,7 @@ async function runAudit() {
   await runTest('QR Logs Audit', 'Verify /api/logs returns recovered historical logs', async () => {
     const res = await fetch(`${BASE_URL}/api/logs?limit=50`);
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-    const data = await res.json();
+    const data: any = await res.json();
     if (!data.success) throw new Error('API returned success: false');
     if (!Array.isArray(data.logs)) throw new Error('logs is not an array');
     if (data.totalCount < 160) throw new Error(`Expected at least 160 historical logs, found ${data.totalCount}`);
@@ -53,7 +53,7 @@ async function runAudit() {
   await runTest('QR Logs Audit', 'Verify /api/logs/stats returns aggregate telemetry', async () => {
     const res = await fetch(`${BASE_URL}/api/logs/stats`);
     if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-    const data = await res.json();
+    const data: any = await res.json();
     if (!data.success) throw new Error('API returned success: false');
     const { totalScans, uniqueCards, sourceBreakdown } = data.stats;
     if (totalScans < 160) throw new Error(`totalScans ${totalScans} is below expected`);
@@ -63,7 +63,7 @@ async function runAudit() {
 
   await runTest('QR Logs Audit', 'Verify stand-specific log filter and search', async () => {
     const res = await fetch(`${BASE_URL}/api/logs?cardId=0001&limit=10`);
-    const data = await res.json();
+    const data: any = await res.json();
     if (!data.success) throw new Error('Failed to query logs for card 0001');
     const allMatch = data.logs.every((l: any) => l.cardId === '0001');
     if (!allMatch) throw new Error('Logs contain items not belonging to card 0001');
@@ -72,8 +72,8 @@ async function runAudit() {
 
   // --- SUITE 2: Customer Scan Journey (Journey A) ---
   await runTest('Journey A: Customer Scan', 'Customer opens /r/0001 stand link and scan is logged', async () => {
-    const preStats = await (await fetch(`${BASE_URL}/api/logs/stats`)).json();
-    const initialScans = preStats.stats.totalScans;
+    const preStats: any = await (await fetch(`${BASE_URL}/api/logs/stats`)).json();
+    const initialScans = preStats.stats?.totalScans ?? preStats.totalScans;
 
     const res = await fetch(`${BASE_URL}/api/cards/0001?scan=true&source=qr`, {
       headers: {
@@ -81,15 +81,17 @@ async function runAudit() {
       },
     });
     if (!res.ok) throw new Error(`Failed to load card 0001: HTTP ${res.status}`);
-    const card = await res.json();
+    const data: any = await res.json();
+    const card = data.card || data;
     if (!card || card.id !== '0001') throw new Error('Card 0001 data mismatch');
 
     // Verify scan log was appended
-    const postStats = await (await fetch(`${BASE_URL}/api/logs/stats`)).json();
-    if (postStats.stats.totalScans < initialScans + 1) {
-      throw new Error(`Scan was not recorded in stats: initial=${initialScans}, post=${postStats.stats.totalScans}`);
+    const postStats: any = await (await fetch(`${BASE_URL}/api/logs/stats`)).json();
+    const postScans = postStats.stats?.totalScans ?? postStats.totalScans;
+    if (postScans < initialScans + 1) {
+      throw new Error(`Scan was not recorded in stats: initial=${initialScans}, post=${postScans}`);
     }
-    return `Stand #${card.id} "${card.businessName}" scanned. scansCount=${card.scansCount}, new totalScans=${postStats.stats.totalScans}`;
+    return `Stand #${card.id} "${card.businessName}" scanned. scansCount=${card.scansCount}, new totalScans=${postScans}`;
   });
 
   await runTest('Journey A: AI Review', 'Verify AI review generation with business category & keywords', async () => {
@@ -108,7 +110,7 @@ async function runAudit() {
       body: JSON.stringify(payload),
     });
     if (!res.ok) throw new Error(`Review generation failed: HTTP ${res.status}`);
-    const data = await res.json();
+    const data: any = await res.json();
     if (!data.review || data.review.length < 20) throw new Error('Generated review is empty or too short');
     const hasClinicOrDoctor =
       data.review.toLowerCase().includes('clinic') ||
@@ -149,7 +151,7 @@ async function runAudit() {
       body: JSON.stringify(assignPayload),
     });
     if (!res.ok) throw new Error(`Card assignment failed: HTTP ${res.status}`);
-    const updated = await res.json();
+    const updated: any = await res.json();
     if (updated.subscriptionStartDate !== today || updated.subscriptionEndDate !== nextYear) {
       throw new Error('Subscription dates were not persisted properly');
     }
@@ -171,7 +173,7 @@ async function runAudit() {
       body: JSON.stringify(updatePayload),
     });
     if (!res.ok) throw new Error(`Sub-admin update on assigned card failed: HTTP ${res.status}`);
-    const data = await res.json();
+    const data: any = await res.json();
     return `Sub-admin successfully modified assigned Stand #0001: "${data.notes}"`;
   });
 
@@ -201,7 +203,7 @@ async function runAudit() {
       },
     });
     if (!res.ok) throw new Error(`Failed to query logs: HTTP ${res.status}`);
-    const data = await res.json();
+    const data: any = await res.json();
     const authorizedIds = ['0001'];
     const invalidLog = data.logs.find((l: any) => !authorizedIds.includes(l.cardId));
     if (invalidLog) {
@@ -214,7 +216,7 @@ async function runAudit() {
   await runTest('Advertisements Audit', 'Fetch active advertisements and test click/impression tracking', async () => {
     const res = await fetch(`${BASE_URL}/api/ads`);
     if (!res.ok) throw new Error(`Failed to fetch ads: HTTP ${res.status}`);
-    const data = await res.json();
+    const data: any = await res.json();
     const ads = data.ads || [];
     if (!Array.isArray(ads) || ads.length === 0) throw new Error('No advertisements returned in ads array');
 
@@ -242,7 +244,7 @@ async function runAudit() {
       }),
     });
     if (!res.ok) throw new Error(`Logo upload failed: HTTP ${res.status}`);
-    const data = await res.json();
+    const data: any = await res.json();
     if (!data.success || !data.logoUrl) throw new Error('Logo upload did not return success and logoUrl');
     return `Logo uploaded successfully: ${data.logoUrl}`;
   });

@@ -1,8 +1,8 @@
 [
   {
-    "scansCount": 106,
+    "scansCount": 108,
     "googleReviewUrl": "https://search.google.com/local/writereview?placeid=ChIJMercurySports",
-    "notes": "Table 4 Stand - NFC & QR display",
+    "notes": "Updated by sub-admin at 12:43:05 AM",
     "status": "assigned",
     "aiReviewEnabled": true,
     "createdAt": "2026-10-03T19:08:29.393Z",
@@ -11,7 +11,7 @@
     "id": "0001",
     "category": "Sports Shop",
     "assignedToEmail": "66shashwatkumar66@gmail.com",
-    "updatedAt": "2026-11-04T20:33:34.311Z",
+    "updatedAt": "2026-11-07T00:43:05.377Z",
     "logoUrl": "/uploads/logos/logo-0001-1792071425634.png",
     "whatsapp": "+91 98765 43210",
     "instagram": "@mercurysports",
@@ -60,19 +60,19 @@
     "subscriptionStatus": "expired"
   },
   {
-    "businessName": "Future Grand Opening",
+    "businessName": "Audit Test Cafe",
     "createdAt": "2026-10-08T19:08:29.393Z",
-    "updatedAt": "2026-11-04T20:17:03.383Z",
+    "updatedAt": "2026-11-07T00:43:05.342Z",
     "id": "0004",
     "scansCount": 6,
-    "notes": "Batch #1 - Unassigned keychain badge",
-    "category": "Restaurant",
-    "status": "available",
-    "googleReviewUrl": "https://example.com/review4",
+    "notes": "Automated audit test assignment",
+    "category": "Cafe & Bakery",
+    "status": "assigned",
+    "googleReviewUrl": "https://g.page/r/audit-test-cafe/review",
     "aiReviewEnabled": true,
-    "subscriptionStartDate": "2027-01-01",
-    "subscriptionEndDate": "2028-01-01",
-    "subscriptionStatus": "upcoming"
+    "subscriptionStartDate": "2026-11-07",
+    "subscriptionEndDate": "2027-11-07",
+    "subscriptionStatus": "active"
   },
   {
     "category": "",

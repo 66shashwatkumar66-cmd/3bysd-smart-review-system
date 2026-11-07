@@ -554,6 +554,7 @@ app.get('/api/cards/:id', (req: Request, res: Response) => {
   res.json({
     success: true,
     card,
+    ...card,
     subscriptionAccessible: subCheck.accessible,
     subscriptionStatus: subCheck.status,
     subscriptionMessage: subCheck.customerMessage,
