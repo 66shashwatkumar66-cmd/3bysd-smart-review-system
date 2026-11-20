@@ -1,6 +1,8 @@
 import { auth, db, firebaseConfig } from '../firebase';
 import { doc, getDocFromServer } from 'firebase/firestore';
 
+const PRIMARY_MASTER_EMAIL = '66shashwatkumar66@gmail.com';
+
 export interface FirebaseDiagnosticReport {
   timestamp: string;
   firebaseInitialized: boolean;
@@ -8,6 +10,13 @@ export interface FirebaseDiagnosticReport {
   firestoreInitialized: boolean;
   firestoreConnected: boolean;
   firestoreError?: string;
+  signedInEmail: string | null;
+  signedInUid: string | null;
+  isEmailVerified: boolean;
+  isMasterAuthSession: boolean;
+  backendApiReachable: boolean;
+  backendMode: 'express' | 'firestore-only';
+  adminRegistryReadable: boolean;
   projectId: string;
   firestoreDatabaseId: string;
   authDomain: string;
@@ -52,7 +61,7 @@ export function getAllKnownAppDomains(): string[] {
 }
 
 /**
- * Validates Firebase initialization, database connection, and OAuth domain configuration.
+ * Validates Firebase initialization, active Auth session, backend mode, database connection, and OAuth domain configuration.
  */
 export async function runFirebaseDiagnostics(): Promise<FirebaseDiagnosticReport> {
   const currentHostname = typeof window !== 'undefined' ? window.location.hostname : 'unknown';
@@ -87,11 +96,22 @@ export async function runFirebaseDiagnostics(): Promise<FirebaseDiagnosticReport
     recommendations.push('Verify firebase-applet-config.json has valid credentials.');
   }
 
-  // 2. Auth config check
+  // 2. Auth config & active session check
   const authInitialized = Boolean(auth && firebaseConfig.authDomain);
   if (!authInitialized) {
     issues.push('Firebase Auth is not properly initialized or authDomain is missing.');
     recommendations.push('Ensure authDomain is set in firebase-applet-config.json.');
+  }
+
+  const currentAuthUser = auth?.currentUser || null;
+  const signedInEmail = currentAuthUser?.email?.toLowerCase().trim() || null;
+  const signedInUid = currentAuthUser?.uid || null;
+  const isEmailVerified = Boolean(currentAuthUser?.emailVerified);
+  const isMasterAuthSession = Boolean(signedInEmail === PRIMARY_MASTER_EMAIL && isEmailVerified);
+
+  if (!currentAuthUser) {
+    issues.push('No active Firebase Google Auth session detected in this browser tab.');
+    recommendations.push('Sign in with Google so Firestore security rules can authorize admin operations.');
   }
 
   // 3. OAuth client ID check
@@ -106,26 +126,52 @@ export async function runFirebaseDiagnostics(): Promise<FirebaseDiagnosticReport
       `Current domain "${currentHostname}" is not in Firebase's default authorized domains list (${standardDomains.join(', ')}).`
     );
     recommendations.push(
-      `If Google Sign-In gives 'auth/unauthorized-domain', add "${currentHostname}" to Firebase Console -> Authentication -> Settings -> Authorized Domains, or sign in using your pre-authorized Google email below.`
+      `If Google Sign-In gives 'auth/unauthorized-domain', add "${currentHostname}" to Firebase Console -> Authentication -> Settings -> Authorized Domains.`
     );
   }
 
-  // 5. Firestore test
+  // 5. Backend API reachability check (Express full-stack vs Static/Firestore-only host)
+  let backendApiReachable = false;
+  try {
+    const res = await fetch(
+      `/api/auth/session-status?email=${encodeURIComponent(signedInEmail || PRIMARY_MASTER_EMAIL)}`
+    );
+    const ct = (res.headers.get('content-type') || '').toLowerCase();
+    if (res.ok && ct.includes('application/json')) {
+      backendApiReachable = true;
+    }
+  } catch {
+    backendApiReachable = false;
+  }
+  const backendMode: 'express' | 'firestore-only' = backendApiReachable ? 'express' : 'firestore-only';
+
+  // 6. Firestore connectivity & Admin Registry read check
   let firestoreConnected = false;
+  let adminRegistryReadable = false;
   let firestoreError: string | undefined;
   const firestoreInitialized = Boolean(db && firebaseConfig.firestoreDatabaseId);
 
   try {
-    const testDocRef = doc(db, 'test', 'connection');
-    await getDocFromServer(testDocRef);
+    const probeRef = signedInEmail
+      ? doc(db, 'admins', signedInEmail)
+      : doc(db, 'test', 'connection');
+    await getDocFromServer(probeRef);
     firestoreConnected = true;
+    if (signedInEmail) {
+      adminRegistryReadable = true;
+    }
   } catch (err: any) {
     const msg = err?.message || String(err);
     firestoreError = msg;
     if (msg.includes('Missing or insufficient permissions') || msg.includes('permission-denied')) {
-      // Missing document or rule is healthy, server replied!
       firestoreConnected = true;
-      firestoreError = undefined;
+      if (signedInEmail) {
+        adminRegistryReadable = false;
+        issues.push(`Firestore denied read on admins/${signedInEmail}: ${msg}`);
+        recommendations.push('Verify Firestore security rules are deployed and your Google email is verified.');
+      } else {
+        firestoreError = undefined;
+      }
     } else if (msg.includes('offline') || msg.includes('not found')) {
       firestoreConnected = false;
       issues.push(`Firestore database unreachable: ${msg}`);
@@ -133,7 +179,6 @@ export async function runFirebaseDiagnostics(): Promise<FirebaseDiagnosticReport
         `Ensure database "${firebaseConfig.firestoreDatabaseId}" is provisioned in Firebase Console under project "${firebaseConfig.projectId}".`
       );
     } else {
-      // Other error, connection still reached server
       firestoreConnected = true;
     }
   }
@@ -145,6 +190,13 @@ export async function runFirebaseDiagnostics(): Promise<FirebaseDiagnosticReport
     firestoreInitialized,
     firestoreConnected,
     firestoreError,
+    signedInEmail,
+    signedInUid,
+    isEmailVerified,
+    isMasterAuthSession,
+    backendApiReachable,
+    backendMode,
+    adminRegistryReadable,
     projectId: firebaseConfig.projectId,
     firestoreDatabaseId: firebaseConfig.firestoreDatabaseId,
     authDomain: firebaseConfig.authDomain,

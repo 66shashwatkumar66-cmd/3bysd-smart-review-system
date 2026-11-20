@@ -1,225 +1,298 @@
 rules_version = '2';
+
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    function isAuthenticated() {
+    // =========================================================================
+    // Helper Functions
+    // =========================================================================
+
+    function isSignedIn() {
       return request.auth != null;
     }
 
-    function isMasterAdmin() {
-      return request.auth != null && (
-        request.auth.token.email.lower() == '66shashwatkumar66@gmail.com' ||
-        (exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
-         get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role == 'master')
-      );
+    function hasVerifiedEmail() {
+      return isSignedIn()
+        && request.auth.token.email != null
+        && request.auth.token.email is string
+        && request.auth.token.email_verified == true;
     }
 
-    function isSubAdminForCard(cardId) {
-      return request.auth != null && (
-        isMasterAdmin() ||
-        // 1. Direct assignment on card by email
-        (resource != null &&
-         'assignedToEmail' in resource.data &&
-         resource.data.assignedToEmail != null &&
-         request.auth.token.email != null &&
-         resource.data.assignedToEmail.lower() == request.auth.token.email.lower()) ||
-        // 2. Direct assignment on card by uid
-        (resource != null &&
-         'assignedToUid' in resource.data &&
-         resource.data.assignedToUid != null &&
-         resource.data.assignedToUid == request.auth.uid) ||
-        // 3. Admin record lookup by UID
-        (exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
-         cardId in get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.assignedCardIds) ||
-        // 4. Admin record lookup by lowercase email
-        (request.auth.token.email != null &&
-         exists(/databases/$(database)/documents/admins/$(request.auth.token.email.lower())) &&
-         cardId in get(/databases/$(database)/documents/admins/$(request.auth.token.email.lower())).data.assignedCardIds)
-      );
+    function isMasterAdmin() {
+      return hasVerifiedEmail()
+        && request.auth.token.email.lower() == '66shashwatkumar66@gmail.com';
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
     }
 
     function isValidId(id) {
-      return id is string && id.size() > 0 && id.size() <= 128;
-    }
-
-    function incoming() {
-      return request.resource.data;
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9._-]+$');
     }
 
     function existing() {
       return resource.data;
     }
 
-    function isValidCard(data) {
-      return data.id is string &&
-        data.id.size() > 0 &&
-        data.id.size() <= 64 &&
-        data.status is string &&
-        (data.status == 'available' || data.status == 'assigned' || data.status == 'disabled') &&
-        (!('businessName' in data) || data.businessName == null || (data.businessName is string && data.businessName.size() <= 200)) &&
-        (!('category' in data) || data.category == null || (data.category is string && data.category.size() <= 100)) &&
-        (!('googleReviewUrl' in data) || data.googleReviewUrl == null || (data.googleReviewUrl is string && data.googleReviewUrl.size() <= 1000)) &&
-        (!('notes' in data) || data.notes == null || (data.notes is string && data.notes.size() <= 500)) &&
-        (!('aiReviewEnabled' in data) || data.aiReviewEnabled == null || data.aiReviewEnabled is bool) &&
-        (!('assignedToEmail' in data) || data.assignedToEmail == null || (data.assignedToEmail is string && data.assignedToEmail.size() <= 200)) &&
-        (!('assignedToUid' in data) || data.assignedToUid == null || (data.assignedToUid is string && data.assignedToUid.size() <= 128)) &&
-        (!('assignedToName' in data) || data.assignedToName == null || (data.assignedToName is string && data.assignedToName.size() <= 200)) &&
-        (!('scansCount' in data) || data.scansCount == null || ((data.scansCount is int || data.scansCount is float) && data.scansCount >= 0)) &&
-        (!('customKeywords' in data) || data.customKeywords == null || data.customKeywords is list) &&
-        (!('reviewTone' in data) || data.reviewTone == null || (data.reviewTone is string && data.reviewTone.size() <= 50)) &&
-        (!('promptStarter' in data) || data.promptStarter == null || (data.promptStarter is string && data.promptStarter.size() <= 1000)) &&
-        (!('customHeadline' in data) || data.customHeadline == null || (data.customHeadline is string && data.customHeadline.size() <= 200)) &&
-        (!('logoUrl' in data) || data.logoUrl == null || (data.logoUrl is string && data.logoUrl.size() <= 2000000)) &&
-        (!('businessDescription' in data) || data.businessDescription == null || (data.businessDescription is string && data.businessDescription.size() <= 2000)) &&
-        (!('whatsapp' in data) || data.whatsapp == null || (data.whatsapp is string && data.whatsapp.size() <= 500)) &&
-        (!('instagram' in data) || data.instagram == null || (data.instagram is string && data.instagram.size() <= 500)) &&
-        (!('subscriptionStartDate' in data) || data.subscriptionStartDate == null || (data.subscriptionStartDate is string && data.subscriptionStartDate.size() <= 64)) &&
-        (!('subscriptionEndDate' in data) || data.subscriptionEndDate == null || (data.subscriptionEndDate is string && data.subscriptionEndDate.size() <= 64)) &&
-        (!('subscriptionStatus' in data) || data.subscriptionStatus == null || (data.subscriptionStatus is string && data.subscriptionStatus.size() <= 32)) &&
-        (!('reviewPageSettings' in data) || data.reviewPageSettings == null || data.reviewPageSettings is map);
+    function incoming() {
+      return request.resource.data;
     }
 
-    function isValidAdmin(data) {
-      return data.id is string &&
-        data.id.size() > 0 &&
-        data.email is string &&
-        data.email.size() > 0 &&
-        data.role is string &&
-        (data.role == 'master' || data.role == 'restricted');
+    function isOptionalString(data, field, maxLen) {
+      return !(field in data) || data[field] == null || (data[field] is string && data[field].size() <= maxLen);
     }
 
-    function isValidUser(data) {
-      return data.uid is string &&
-        data.uid.size() > 0 &&
-        data.uid.size() <= 128 &&
-        data.email is string &&
-        data.email.size() > 0 &&
-        data.email.size() <= 256;
+    function isOptionalBool(data, field) {
+      return !(field in data) || data[field] == null || data[field] is bool;
     }
 
-    function isValidAd(data) {
-      return data.id is string &&
-        data.id.size() > 0 &&
-        data.id.size() <= 128 &&
-        data.name is string &&
-        data.name.size() > 0 &&
-        data.name.size() <= 200 &&
-        data.advertiser is string &&
-        data.advertiser.size() > 0 &&
-        data.advertiser.size() <= 200 &&
-        data.headline is string &&
-        data.headline.size() > 0 &&
-        data.headline.size() <= 250 &&
-        (!('description' in data) || data.description == null || (data.description is string && data.description.size() <= 1000)) &&
-        (!('imageUrl' in data) || data.imageUrl == null || (data.imageUrl is string && data.imageUrl.size() <= 2000000)) &&
-        data.targetUrl is string &&
-        data.targetUrl.size() > 0 &&
-        data.targetUrl.size() <= 1500 &&
-        (!('ctaText' in data) || data.ctaText == null || (data.ctaText is string && data.ctaText.size() <= 100)) &&
-        data.placement is string &&
-        (data.placement == 'below_biz_info' || data.placement == 'between_sections' || data.placement == 'below_draft' || data.placement == 'footer' || data.placement == 'disabled') &&
-        data.status is string &&
-        (data.status == 'active' || data.status == 'paused') &&
-        (!('startDate' in data) || data.startDate == null || (data.startDate is string && data.startDate.size() <= 50)) &&
-        (!('endDate' in data) || data.endDate == null || (data.endDate is string && data.endDate.size() <= 50)) &&
-        (!('priority' in data) || data.priority == null || ((data.priority is int || data.priority is float) && data.priority >= 0)) &&
-        (!('impressions' in data) || data.impressions == null || ((data.impressions is int || data.impressions is float) && data.impressions >= 0)) &&
-        (!('clicks' in data) || data.clicks == null || ((data.clicks is int || data.clicks is float) && data.clicks >= 0));
+    function isOptionalNumber(data, field) {
+      return !(field in data) || data[field] == null || data[field] is number;
     }
 
-    function isValidScanLog(data) {
-      return data.id is string &&
-        data.id.size() > 0 &&
-        data.id.size() <= 128 &&
-        data.cardId is string &&
-        data.cardId.size() > 0 &&
-        data.cardId.size() <= 64 &&
-        (!('businessName' in data) || data.businessName == null || (data.businessName is string && data.businessName.size() <= 200)) &&
-        (!('category' in data) || data.category == null || (data.category is string && data.category.size() <= 100)) &&
-        (!('timestamp' in data) || data.timestamp == null || (data.timestamp is string && data.timestamp.size() <= 64)) &&
-        (!('scannedAt' in data) || data.scannedAt == null || (data.scannedAt is string && data.scannedAt.size() <= 64)) &&
-        (!('device' in data) || data.device == null || (data.device is string && data.device.size() <= 100)) &&
-        (!('browser' in data) || data.browser == null || (data.browser is string && data.browser.size() <= 100)) &&
-        (!('ip' in data) || data.ip == null || (data.ip is string && data.ip.size() <= 64)) &&
-        (!('referrer' in data) || data.referrer == null || (data.referrer is string && data.referrer.size() <= 500)) &&
-        (!('source' in data) || data.source == null || (data.source is string && (data.source == 'qr' || data.source == 'nfc' || data.source == 'direct' || data.source == 'simulator'))) &&
-        (!('subscriptionStatusAtScan' in data) || data.subscriptionStatusAtScan == null || (data.subscriptionStatusAtScan is string && data.subscriptionStatusAtScan.size() <= 32));
+    function isOptionalList(data, field, maxSize) {
+      return !(field in data) || data[field] == null || (data[field] is list && data[field].size() <= maxSize);
     }
 
-    // Default deny catch-all
-    match /{document=**} {
-      allow read, write: if false;
-    }
-
-    // Connectivity test document used by boot diagnostics
-    match /test/{docId} {
-      allow get: if true;
-      allow write: if false;
-    }
-
-    // Dynamic QR Cards Collection
-    match /cards/{cardId} {
-      // Public customer access to single card for QR/NFC review experience
-      allow get: if true;
-
-      // Full inventory listing requires authentication (admin dashboard)
-      // Note: server API acts as authenticated proxy where needed
-      allow list: if true;
-
-      // Card Creation & Deletion restricted to Master Admin or isolated test records
-      allow create: if isValidId(cardId) && (isMasterAdmin() || cardId.matches('^TEST-.*')) && isValidCard(incoming());
-      allow delete: if isValidId(cardId) && (isMasterAdmin() || cardId.matches('^TEST-.*'));
-
-      // Card Updating restricted to Master Admin, authorized Sub-Admin, or test records
-      allow update: if isValidId(cardId) && isValidCard(incoming()) && (
-        cardId.matches('^TEST-.*') ||
-        isMasterAdmin() ||
-        (
-          isSubAdminForCard(cardId) &&
-          incoming().get('assignedToEmail', '') == existing().get('assignedToEmail', '') &&
-          incoming().get('assignedToUid', '') == existing().get('assignedToUid', '')
-        ) ||
-        // Public scan increment: only scansCount and updatedAt modified
-        (incoming().diff(existing()).affectedKeys().hasOnly(['scansCount', 'updatedAt']))
+    // Query-planner-safe ownership check (no .lower() transform on stored field)
+    function isCardOwner(data) {
+      return isSignedIn() && (
+        data.assignedToUid == request.auth.uid
+        || (hasVerifiedEmail() && (
+          data.assignedToEmail == request.auth.token.email
+          || data.assignedToEmail == request.auth.token.email.lower()
+        ))
       );
     }
 
-    // Master and Restricted Admins Collection (Restricted strictly to Master Admin)
+    // =========================================================================
+    // Schema Validators
+    // =========================================================================
+
+    function isValidCardFields(data, cardId) {
+      return data.keys().hasOnly([
+          'id', 'status', 'businessName', 'category', 'businessDescription', 'googleReviewUrl', 'notes',
+          'scansCount', 'lastScannedAt', 'aiReviewEnabled', 'customKeywords',
+          'reviewTone', 'promptStarter', 'customHeadline', 'logoUrl',
+          'whatsapp', 'instagram', 'subscriptionStartDate', 'subscriptionEndDate',
+          'subscriptionStatus', 'assignedToUid', 'assignedToEmail', 'assignedToName',
+          'createdAt', 'updatedAt'
+        ])
+        && data.id == cardId
+        && data.status in ['available', 'assigned', 'disabled']
+        && isOptionalString(data, 'businessName', 250)
+        && isOptionalString(data, 'category', 250)
+        && isOptionalString(data, 'businessDescription', 1000)
+        && isOptionalString(data, 'googleReviewUrl', 1000)
+        && isOptionalString(data, 'notes', 1000)
+        && isOptionalNumber(data, 'scansCount')
+        && (!('scansCount' in data) || data.scansCount == null || data.scansCount >= 0)
+        && isOptionalString(data, 'lastScannedAt', 64)
+        && isOptionalBool(data, 'aiReviewEnabled')
+        && isOptionalList(data, 'customKeywords', 50)
+        && (!('reviewTone' in data) || data.reviewTone == null || data.reviewTone == '' || data.reviewTone in ['enthusiastic', 'friendly', 'professional', 'concise'])
+        && isOptionalString(data, 'promptStarter', 1000)
+        && isOptionalString(data, 'customHeadline', 250)
+        && isOptionalString(data, 'logoUrl', 900000)
+        && isOptionalString(data, 'whatsapp', 200)
+        && isOptionalString(data, 'instagram', 200)
+        && isOptionalString(data, 'subscriptionStartDate', 32)
+        && isOptionalString(data, 'subscriptionEndDate', 32)
+        && (!('subscriptionStatus' in data) || data.subscriptionStatus == null || data.subscriptionStatus == '' || data.subscriptionStatus in ['active', 'upcoming', 'expired', 'unconfigured'])
+        && isOptionalString(data, 'assignedToUid', 128)
+        && isOptionalString(data, 'assignedToEmail', 200)
+        && isOptionalString(data, 'assignedToName', 200)
+        && isOptionalString(data, 'createdAt', 64)
+        && isOptionalString(data, 'updatedAt', 64);
+    }
+
+    function isSubAdminCardUpdate(cardId) {
+      let changed = incoming().diff(existing()).affectedKeys();
+      return isCardOwner(existing())
+        && isValidCardFields(incoming(), cardId)
+        && changed.hasOnly([
+          'businessName', 'category', 'businessDescription', 'googleReviewUrl', 'notes',
+          'aiReviewEnabled', 'customKeywords', 'reviewTone', 'promptStarter',
+          'customHeadline', 'logoUrl', 'whatsapp', 'instagram',
+          'status', 'updatedAt'
+        ])
+        && incoming().status in ['available', 'assigned']
+        && incoming().id == existing().id;
+    }
+
+    function isPublicScanIncrement(cardId) {
+      let changed = incoming().diff(existing()).affectedKeys();
+      let prevScans = ('scansCount' in existing() && existing().scansCount is number) ? existing().scansCount : 0;
+      return isValidId(cardId)
+        && changed.hasOnly(['scansCount', 'updatedAt', 'lastScannedAt'])
+        && changed.hasAny(['scansCount'])
+        && incoming().scansCount is number
+        && incoming().scansCount == prevScans + 1
+        && isOptionalString(incoming(), 'updatedAt', 64)
+        && isOptionalString(incoming(), 'lastScannedAt', 64);
+    }
+
+    function isValidScanLogCreate(logId) {
+      let data = incoming();
+      let cardPath = /databases/$(database)/documents/cards/$(data.cardId);
+      let cardData = get(cardPath).data;
+      let expectedEmail = ('assignedToEmail' in cardData && cardData.assignedToEmail is string) ? cardData.assignedToEmail.lower() : '';
+      let expectedUid = ('assignedToUid' in cardData && cardData.assignedToUid is string) ? cardData.assignedToUid : '';
+      return isValidId(logId)
+        && data.keys().hasOnly([
+          'id', 'cardId', 'businessName', 'category',
+          'assignedToEmail', 'assignedToUid',
+          'source', 'outcome', 'subscriptionStatus',
+          'route', 'userAgent', 'scannedAt'
+        ])
+        && data.keys().hasAll(['id', 'cardId', 'source', 'outcome', 'scannedAt', 'assignedToEmail', 'assignedToUid'])
+        && data.id == logId
+        && isValidId(data.cardId)
+        && exists(cardPath)
+        && data.assignedToEmail is string
+        && data.assignedToEmail == expectedEmail
+        && data.assignedToUid is string
+        && data.assignedToUid == expectedUid
+        && data.source in ['qr', 'nfc', 'direct']
+        && data.outcome in ['allowed', 'expired', 'upcoming', 'disabled', 'unassigned']
+        && (!('subscriptionStatus' in data) || data.subscriptionStatus in ['active', 'upcoming', 'expired', 'unconfigured'])
+        && isOptionalString(data, 'businessName', 250)
+        && isOptionalString(data, 'category', 250)
+        && isOptionalString(data, 'route', 300)
+        && isOptionalString(data, 'userAgent', 300)
+        && data.scannedAt is string && data.scannedAt.size() >= 10 && data.scannedAt.size() <= 64;
+    }
+
+    function isValidAdminData(data, adminId) {
+      return isValidId(adminId)
+        && data.keys().hasOnly(['id', 'email', 'name', 'role', 'assignedCardIds', 'permissions', 'createdAt', 'updatedAt'])
+        && data.id == adminId
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 200
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 200
+        && data.role in ['master', 'restricted']
+        && isOptionalList(data, 'assignedCardIds', 500)
+        && (!('permissions' in data) || data.permissions is map)
+        && isOptionalString(data, 'createdAt', 64)
+        && isOptionalString(data, 'updatedAt', 64);
+    }
+
+    function isValidUserData(data, userId) {
+      return isValidId(userId)
+        && data.keys().hasOnly([
+          'uid', 'email', 'displayName', 'photoURL', 'provider', 'role',
+          'emailVerified', 'lastLoginAt', 'createdAt', 'loginCount',
+          'device', 'assignedCardIds'
+        ])
+        && data.uid == userId
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 200
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 200
+        && data.role in ['master', 'restricted', 'member']
+        && isOptionalString(data, 'photoURL', 1000)
+        && isOptionalString(data, 'provider', 64)
+        && isOptionalBool(data, 'emailVerified')
+        && isOptionalString(data, 'lastLoginAt', 64)
+        && isOptionalString(data, 'createdAt', 64)
+        && isOptionalNumber(data, 'loginCount')
+        && isOptionalString(data, 'device', 200)
+        && isOptionalList(data, 'assignedCardIds', 500);
+    }
+
+    function isValidAdData(data, adId) {
+      return isValidId(adId)
+        && data.keys().hasOnly([
+          'id', 'name', 'advertiser', 'headline', 'description', 'imageUrl',
+          'targetUrl', 'ctaText', 'placement', 'status', 'priority',
+          'impressions', 'clicks', 'startDate', 'endDate', 'createdAt', 'updatedAt'
+        ])
+        && data.id == adId
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 200
+        && data.headline is string && data.headline.size() >= 1 && data.headline.size() <= 300
+        && data.targetUrl is string && data.targetUrl.size() >= 1 && data.targetUrl.size() <= 1000
+        && data.placement in ['below_biz_info', 'between_sections', 'below_draft', 'footer', 'disabled', 'top_banner', 'below_tags']
+        && data.status in ['active', 'paused']
+        && isOptionalString(data, 'advertiser', 200)
+        && isOptionalString(data, 'description', 1000)
+        && isOptionalString(data, 'imageUrl', 900000)
+        && isOptionalString(data, 'ctaText', 100)
+        && isOptionalNumber(data, 'priority')
+        && isOptionalNumber(data, 'impressions')
+        && isOptionalNumber(data, 'clicks')
+        && isOptionalString(data, 'startDate', 64)
+        && isOptionalString(data, 'endDate', 64)
+        && isOptionalString(data, 'createdAt', 64)
+        && isOptionalString(data, 'updatedAt', 64);
+    }
+
+    function isPublicAdMetricIncrement() {
+      let changed = incoming().diff(existing()).affectedKeys();
+      let prevImp = ('impressions' in existing() && existing().impressions is number) ? existing().impressions : 0;
+      let prevClicks = ('clicks' in existing() && existing().clicks is number) ? existing().clicks : 0;
+      return (
+        (changed.hasOnly(['impressions']) && incoming().impressions is number && incoming().impressions == prevImp + 1)
+        || (changed.hasOnly(['clicks']) && incoming().clicks is number && incoming().clicks == prevClicks + 1)
+      );
+    }
+
+    // =========================================================================
+    // Collection Rules
+    // =========================================================================
+
+    match /test/{docId} {
+      allow get: if docId == 'connection';
+      allow list, create, update, delete: if false;
+    }
+
+    match /cards/{cardId} {
+      allow get: if isValidId(cardId);
+      allow list: if isMasterAdmin() || isCardOwner(resource.data);
+      allow create: if isMasterAdmin() && isValidId(cardId) && isValidCardFields(incoming(), cardId);
+      allow update: if (isMasterAdmin() && isValidCardFields(incoming(), cardId))
+                    || isSubAdminCardUpdate(cardId)
+                    || isPublicScanIncrement(cardId);
+      allow delete: if isMasterAdmin();
+    }
+
+    match /scan_logs/{logId} {
+      allow get: if isMasterAdmin() || isCardOwner(resource.data);
+      allow list: if isMasterAdmin() || isCardOwner(resource.data);
+      allow create: if isValidScanLogCreate(logId);
+      allow update, delete: if false;
+    }
+
     match /admins/{adminId} {
-      allow get: if isAuthenticated();
-      allow list: if isMasterAdmin();
-      allow create, update, delete: if isValidId(adminId) && isMasterAdmin() && isValidAdmin(incoming());
+      allow get: if isMasterAdmin()
+                 || (hasVerifiedEmail() && (resource.data.email == request.auth.token.email || resource.data.email == request.auth.token.email.lower()));
+      allow list: if isMasterAdmin()
+                  || (hasVerifiedEmail() && (resource.data.email == request.auth.token.email || resource.data.email == request.auth.token.email.lower()));
+      allow create: if isMasterAdmin() && isValidAdminData(incoming(), adminId);
+      allow update: if isMasterAdmin() && isValidAdminData(incoming(), adminId);
+      allow delete: if isMasterAdmin();
     }
 
-    // Google Verified Users Collection (Strictly protected user privacy)
     match /users/{userId} {
-      allow get: if isAuthenticated() && (request.auth.uid == userId || isMasterAdmin());
+      allow get: if isMasterAdmin() || isOwner(userId);
       allow list: if isMasterAdmin();
-      allow create, update: if isValidId(userId) && isAuthenticated() &&
-        (request.auth.uid == userId || isMasterAdmin()) && isValidUser(incoming());
-      allow delete: if isValidId(userId) && isMasterAdmin();
+      allow create: if isValidUserData(incoming(), userId) && (
+        isMasterAdmin()
+        || (isOwner(userId) && incoming().role == 'member' && hasVerifiedEmail() && incoming().email.lower() == request.auth.token.email.lower())
+      );
+      allow update: if isValidUserData(incoming(), userId) && (
+        isMasterAdmin()
+        || (isOwner(userId) && incoming().role == existing().role && incoming().email == existing().email && incoming().uid == existing().uid)
+      );
+      allow delete: if isMasterAdmin();
     }
 
-    // Advertisements Collection (Discreet Sponsored Ads)
     match /ads/{adId} {
-      // Public customers need to read active ads on the review page
       allow get, list: if true;
-
-      // Administrative ad management strictly restricted to Master Admin
-      allow create, update: if isValidId(adId) && isMasterAdmin() && isValidAd(incoming());
-      allow delete: if isValidId(adId) && isMasterAdmin();
+      allow create: if isMasterAdmin() && isValidAdData(incoming(), adId);
+      allow update: if (isMasterAdmin() && isValidAdData(incoming(), adId)) || isPublicAdMetricIncrement();
+      allow delete: if isMasterAdmin();
     }
 
-    // QR Scan Logs Collection (Audit trail of customer QR and NFC stand interactions)
-    match /qr_logs/{logId} {
-      // Read access: allow listing logs for admin telemetry and card analytics
-      allow get, list: if true;
-
-      // Create access: customer scan recording with validation
-      allow create: if isValidId(logId) && isValidScanLog(incoming());
-
-      // Mutation & deletion restricted to Master Admin
-      allow update, delete: if isMasterAdmin();
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

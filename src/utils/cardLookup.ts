@@ -1,8 +1,10 @@
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, updateDoc, setDoc, increment } from 'firebase/firestore';
 import { db } from '../firebase';
-import { CardRecord } from '../types';
+import { CardRecord, ScanLogRecord, ScanSource, ScanOutcome } from '../types';
+import { getSubscriptionStatus, isSubscriptionAccessible } from './subscription';
 
 export const CARDS_COLLECTION = 'cards';
+export const SCAN_LOGS_COLLECTION = 'scan_logs';
 export const STORAGE_KEY = '3dbysd_smart_reviews_cards';
 
 export type CustomerLoadState = 'loading' | 'success' | 'not_found' | 'error' | 'invalid_id';
@@ -71,6 +73,25 @@ export function extractCardId(urlOrPath?: string): string | null {
 }
 
 /**
+ * Infers scan source (qr | nfc | direct) from current URL path/query.
+ */
+export function detectScanSource(urlOrPath?: string): ScanSource {
+  const locationPath =
+    urlOrPath ??
+    (typeof window !== 'undefined'
+      ? `${window.location.pathname}${window.location.search}${window.location.hash}`
+      : '');
+  const lower = locationPath.toLowerCase();
+  if (lower.includes('/nfc/') || lower.includes('nfc=') || lower.includes('source=nfc')) {
+    return 'nfc';
+  }
+  if (lower.includes('direct=true')) {
+    return 'direct';
+  }
+  return 'qr';
+}
+
+/**
  * Validates whether a card ID has an acceptable, safe format.
  * Card IDs must be 1-64 characters, containing only alphanumeric characters, dashes, dots, or underscores.
  */
@@ -79,14 +100,14 @@ export function isValidCardId(id: string | null | undefined): boolean {
   const clean = id.trim();
   if (clean.length === 0 || clean.length > 64) return false;
   if (clean === '.' || clean === '..') return false;
-  // Disallow control characters, angle brackets, quotes, spaces, slashes
-  return /^[a-zA-Z0-9_\-\.]+$/.test(clean);
+  return /^[a-zA-Z0-9_\-.]+$/.test(clean);
 }
 
 /**
  * Updates a single card record in the local storage cache without clobbering other cards.
  */
 export function updateLocalStorageCard(card: CardRecord): void {
+  if (typeof localStorage === 'undefined') return;
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     let list: CardRecord[] = raw ? JSON.parse(raw) : [];
@@ -107,6 +128,7 @@ export function updateLocalStorageCard(card: CardRecord): void {
  * Retrieves a card from local storage cache if available.
  */
 export function getCachedCard(id: string): CardRecord | null {
+  if (typeof localStorage === 'undefined') return null;
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
@@ -119,18 +141,118 @@ export function getCachedCard(id: string): CardRecord | null {
 }
 
 /**
- * Authoritative, multi-tier card lookup:
+ * Computes scan outcome from a card's status and subscription dates.
+ */
+export function determineScanOutcome(card: CardRecord): ScanOutcome {
+  if (card.status === 'disabled') return 'disabled';
+  if (card.status === 'available') return 'unassigned';
+  const access = isSubscriptionAccessible(card);
+  if (!access.accessible) {
+    return access.status === 'upcoming' ? 'upcoming' : 'expired';
+  }
+  return 'allowed';
+}
+
+/**
+ * Records a live QR/NFC scan in Cloud Firestore:
+ * 1. Atomically increments scansCount (+1) and sets lastScannedAt/updatedAt on cards/{cardId}.
+ * 2. Appends an immutable scan event document into scan_logs/{logId} preserving full attribution.
+ * Never overwrites or deletes historical scan logs.
+ */
+export async function recordPublicCardScan(
+  card: CardRecord,
+  options: {
+    source?: ScanSource;
+    route?: string;
+    userAgent?: string;
+    dedupeWindowMs?: number;
+  } = {}
+): Promise<ScanLogRecord | null> {
+  if (!card || !isValidCardId(card.id)) return null;
+
+  // Prevent React StrictMode / instant duplicate effect mounts from double-logging the same scan
+  const dedupeWindowMs = options.dedupeWindowMs ?? 3000;
+  if (typeof sessionStorage !== 'undefined' && dedupeWindowMs > 0) {
+    try {
+      const key = `3dbysd_last_scan_${card.id}`;
+      const prevTs = Number(sessionStorage.getItem(key) || '0');
+      if (prevTs && Date.now() - prevTs < dedupeWindowMs) {
+        return null;
+      }
+      sessionStorage.setItem(key, String(Date.now()));
+    } catch {
+      // ignore sessionStorage restrictions
+    }
+  }
+
+  const now = new Date().toISOString();
+  const subStatus = getSubscriptionStatus(card);
+  const outcome = determineScanOutcome(card);
+  const source: ScanSource = options.source || detectScanSource();
+  const route = (
+    options.route ||
+    (typeof window !== 'undefined' ? `${window.location.pathname}${window.location.search}` : `/r/${card.id}`)
+  ).slice(0, 300);
+  const userAgent = (
+    options.userAgent ||
+    (typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown')
+  ).slice(0, 300);
+
+  const randomSuffix = Math.random().toString(36).slice(2, 8);
+  const logId = `scan_${card.id}_${Date.now()}_${randomSuffix}`;
+
+  const scanLog: ScanLogRecord = {
+    id: logId,
+    cardId: card.id,
+    businessName: (card.businessName || '').slice(0, 250),
+    category: (card.category || '').slice(0, 250),
+    assignedToEmail: (card.assignedToEmail || '').trim().toLowerCase().slice(0, 200),
+    assignedToUid: (card.assignedToUid || '').trim().slice(0, 128),
+    source,
+    outcome,
+    subscriptionStatus: subStatus,
+    route,
+    userAgent,
+    scannedAt: now,
+  };
+
+  // Run both Firestore writes in parallel; each strictly adheres to firestore.rules
+  const cardRef = doc(db, CARDS_COLLECTION, card.id);
+  const logRef = doc(db, SCAN_LOGS_COLLECTION, logId);
+
+  const [incRes, logRes] = await Promise.allSettled([
+    updateDoc(cardRef, {
+      scansCount: increment(1),
+      updatedAt: now,
+      lastScannedAt: now,
+    }),
+    setDoc(logRef, scanLog),
+  ]);
+
+  if (incRes.status === 'rejected') {
+    console.warn(`[3DBYSD Scan] Counter increment notice for #${card.id}:`, incRes.reason?.message || incRes.reason);
+  }
+  if (logRes.status === 'rejected') {
+    console.warn(`[3DBYSD Scan] Scan log write notice for #${card.id}:`, logRes.reason?.message || logRes.reason);
+    return null;
+  }
+
+  return scanLog;
+}
+
+/**
+ * Authoritative, Firestore-first multi-tier card lookup:
  * 1. Validates ID format (returns 'invalid_id' without making network requests if invalid).
- * 2. Checks local cache for instant rendering candidate.
- * 3. Queries server API (/api/cards/:id) which responds in <15ms.
- * 4. Queries Firestore directly for real-time consistency.
- * 5. Distinguishes between genuine 404 ('not_found') and transient network failure ('error').
- * 6. Implements bounded automatic retries for recoverable network errors.
+ * 2. Queries Cloud Firestore directly as the single authoritative source of truth.
+ * 3. Falls back to server API (/api/cards/:id) ONLY if Firestore is transiently unreachable.
+ * 4. Distinguishes between genuine 404 ('not_found') and transient network failure ('error').
+ * 5. Implements bounded automatic retries for recoverable network errors.
  */
 export async function lookupCard(
   rawId: string,
   options: {
     recordScan?: boolean;
+    source?: ScanSource;
     signal?: AbortSignal;
     maxRetries?: number;
   } = {}
@@ -148,103 +270,75 @@ export async function lookupCard(
 
   const cachedCandidate = getCachedCard(cleanId);
 
-  // Core single attempt function
   const executeSingleAttempt = async (): Promise<CardLookupResult> => {
     if (options.signal?.aborted) {
       throw new DOMException('Aborted', 'AbortError');
     }
 
-    let serverCard: CardRecord | null = null;
-    let serverNotFound = false;
-    let serverFailed = false;
+    let firestoreFailed = false;
+    let firestoreNotFound = false;
 
-    // A. Query local server REST API
-    try {
-      const baseUrl = typeof window !== 'undefined' ? '' : 'http://localhost:3000';
-      const scanParam = options.recordScan ? '?scan=true' : '';
-      const res = await fetch(`${baseUrl}/api/cards/${encodeURIComponent(cleanId)}${scanParam}`, {
-        signal: options.signal,
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        if (data.card) {
-          serverCard = data.card;
-        }
-      } else if (res.status === 404) {
-        serverNotFound = true;
-      } else {
-        serverFailed = true;
-      }
-    } catch (err: any) {
-      if (err.name === 'AbortError' || options.signal?.aborted) {
-        throw new DOMException('Aborted', 'AbortError');
-      }
-      serverFailed = true;
-    }
-
-    if (options.signal?.aborted) {
-      throw new DOMException('Aborted', 'AbortError');
-    }
-
-    if (serverCard) {
-      updateLocalStorageCard(serverCard);
-      return {
-        status: 'success',
-        card: serverCard,
-      };
-    }
-
-    // B. Query Cloud Firestore
-    // Firestore is authoritative. If server responded 404 or had a transient network error,
-    // verify with Firestore.
+    // A. Query Cloud Firestore FIRST (authoritative live database)
     try {
       const docRef = doc(db, CARDS_COLLECTION, cleanId);
       const docSnap = await getDoc(docRef);
 
+      if (options.signal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
+
       if (docSnap.exists()) {
-        const fsCard = docSnap.data() as CardRecord;
+        const fsCard = { id: docSnap.id, ...(docSnap.data() as Omit<CardRecord, 'id'>) } as CardRecord;
         if (options.recordScan) {
-          const newCount = (fsCard.scansCount || 0) + 1;
-          const updated: CardRecord = {
-            ...fsCard,
-            scansCount: newCount,
-            updatedAt: new Date().toISOString(),
-          };
-          setDoc(docRef, updated, { merge: true }).catch(() => {});
-          const scanLogId = `log-${cleanId}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-          const now = new Date().toISOString();
-          setDoc(doc(db, 'qr_logs', scanLogId), {
-            id: scanLogId,
-            cardId: cleanId,
-            businessName: fsCard.businessName || `Stand #${cleanId}`,
-            category: fsCard.category || 'Customer Experience',
-            timestamp: now,
-            scannedAt: now,
-            device: typeof navigator !== 'undefined' ? (navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Desktop') : 'Web',
-            source: 'qr',
-          }).catch(() => {});
-          updateLocalStorageCard(updated);
-          return { status: 'success', card: updated };
+          recordPublicCardScan(fsCard, { source: options.source }).catch(() => {});
         }
         updateLocalStorageCard(fsCard);
         return { status: 'success', card: fsCard };
       }
 
-      // If document does NOT exist in Firestore:
-      // If server also returned 404 (or was skipped), this card genuinely does not exist!
-      if (serverNotFound || !serverFailed) {
-        return {
-          status: 'not_found',
-          card: null,
-          errorMessage: `Could not retrieve business details for Stand #${cleanId}.`,
-        };
-      }
+      firestoreNotFound = true;
     } catch (fsErr: any) {
-      if (fsErr.name === 'AbortError') throw fsErr;
-      console.warn(`Firestore lookup notice for Stand #${cleanId}:`, fsErr);
+      if (fsErr?.name === 'AbortError') throw fsErr;
+      firestoreFailed = true;
+      console.warn(`Firestore lookup notice for Stand #${cleanId}:`, fsErr?.message || fsErr);
+    }
 
-      // If both server and Firestore encountered network failures, but we have a cached copy:
+    // If Firestore confirmed the document does not exist, verify briefly or return not_found
+    if (firestoreNotFound) {
+      return {
+        status: 'not_found',
+        card: null,
+        errorMessage: `Could not retrieve business details for Stand #${cleanId}.`,
+      };
+    }
+
+    // B. Fallback to Server REST API ONLY when Firestore was unreachable
+    if (firestoreFailed) {
+      try {
+        const baseUrl = typeof window !== 'undefined' ? '' : 'http://localhost:3000';
+        const res = await fetch(`${baseUrl}/api/cards/${encodeURIComponent(cleanId)}`, {
+          signal: options.signal,
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          if (data.card) {
+            updateLocalStorageCard(data.card);
+            return { status: 'success', card: data.card };
+          }
+        } else if (res.status === 404) {
+          return {
+            status: 'not_found',
+            card: null,
+            errorMessage: `Could not retrieve business details for Stand #${cleanId}.`,
+          };
+        }
+      } catch (err: any) {
+        if (err?.name === 'AbortError' || options.signal?.aborted) {
+          throw new DOMException('Aborted', 'AbortError');
+        }
+      }
+
       if (cachedCandidate) {
         return {
           status: 'success',
@@ -252,7 +346,6 @@ export async function lookupCard(
         };
       }
 
-      // Otherwise, return recoverable network error
       return {
         status: 'error',
         card: null,
@@ -261,7 +354,6 @@ export async function lookupCard(
       };
     }
 
-    // If doc doesn't exist in Firestore and server returned 404
     return {
       status: 'not_found',
       card: null,
@@ -283,29 +375,35 @@ export async function lookupCard(
     try {
       lastResult = await executeSingleAttempt();
 
-      // Definitive outcomes do not retry
-      if (lastResult.status === 'success' || lastResult.status === 'not_found' || lastResult.status === 'invalid_id') {
+      if (
+        lastResult.status === 'success' ||
+        lastResult.status === 'not_found' ||
+        lastResult.status === 'invalid_id'
+      ) {
         return lastResult;
       }
 
-      // If transient error and retries remaining, wait with exponential backoff + jitter
       if (attempt < maxRetries) {
         attempt++;
         const backoffMs = Math.min(300 * Math.pow(1.5, attempt) + Math.random() * 150, 1500);
         await new Promise((resolve, reject) => {
           const timer = setTimeout(resolve, backoffMs);
           if (options.signal) {
-            options.signal.addEventListener('abort', () => {
-              clearTimeout(timer);
-              reject(new DOMException('Aborted', 'AbortError'));
-            });
+            options.signal.addEventListener(
+              'abort',
+              () => {
+                clearTimeout(timer);
+                reject(new DOMException('Aborted', 'AbortError'));
+              },
+              { once: true }
+            );
           }
         });
       } else {
         break;
       }
     } catch (err: any) {
-      if (err.name === 'AbortError') throw err;
+      if (err?.name === 'AbortError') throw err;
       if (attempt < maxRetries) {
         attempt++;
         await new Promise((r) => setTimeout(r, 400));
@@ -313,7 +411,7 @@ export async function lookupCard(
         return {
           status: 'error',
           card: cachedCandidate || null,
-          errorMessage: err.message || 'Connection failed.',
+          errorMessage: err?.message || 'Connection failed.',
           isNetworkError: true,
         };
       }

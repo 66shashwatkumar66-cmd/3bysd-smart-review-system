@@ -2,281 +2,147 @@
   "entities": {
     "Card": {
       "title": "Card",
-      "description": "Represents an NFC and Dynamic QR Review Card",
+      "description": "Dynamic QR & NFC stand card configuration mapped to a local business and optional subscription window",
       "type": "object",
       "properties": {
-        "id": {
-          "type": "string",
-          "maxLength": 64,
-          "pattern": "^[a-zA-Z0-9_-]+$",
-          "description": "Card unique identifier, e.g. 0001"
-        },
-        "status": {
-          "type": "string",
-          "enum": ["available", "assigned", "disabled"],
-          "description": "Deployment status of the card"
-        },
-        "businessName": {
-          "type": "string",
-          "maxLength": 200,
-          "description": "Assigned business name"
-        },
-        "category": {
-          "type": "string",
-          "maxLength": 100,
-          "description": "Business cuisine or category"
-        },
-        "googleReviewUrl": {
-          "type": "string",
-          "maxLength": 1000,
-          "description": "Destination Google Review URL"
-        },
-        "notes": {
-          "type": "string",
-          "maxLength": 500,
-          "description": "Physical stand location notes"
-        },
-        "aiReviewEnabled": {
-          "type": "boolean",
-          "description": "Whether AI review draft assistant is enabled (true) or direct redirect (false)"
-        },
-        "assignedToEmail": {
-          "type": "string",
-          "maxLength": 200,
-          "description": "Email address of the merchant user this card is assigned to"
-        },
-        "assignedToUid": {
-          "type": "string",
-          "maxLength": 128,
-          "description": "Firebase UID of the merchant user"
-        },
-        "assignedToName": {
-          "type": "string",
-          "maxLength": 200,
-          "description": "Display name of the merchant user"
-        },
-        "scansCount": {
-          "type": "integer",
-          "description": "Total customer scans"
-        },
-        "subscriptionStartDate": {
-          "type": "string",
-          "maxLength": 64,
-          "description": "Start date for QR subscription (YYYY-MM-DD)"
-        },
-        "subscriptionEndDate": {
-          "type": "string",
-          "maxLength": 64,
-          "description": "Expiration date for QR subscription (YYYY-MM-DD)"
-        },
-        "subscriptionStatus": {
-          "type": "string",
-          "enum": ["unconfigured", "upcoming", "active", "expired"],
-          "description": "Current status of the subscription"
-        },
-        "createdAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Card creation timestamp"
-        },
-        "updatedAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Card last updated timestamp"
-        }
+        "id": { "type": "string", "description": "Unique card ID (e.g. 0001)" },
+        "status": { "type": "string", "enum": ["available", "assigned", "disabled"] },
+        "businessName": { "type": "string" },
+        "category": { "type": "string" },
+        "businessDescription": { "type": "string" },
+        "googleReviewUrl": { "type": "string" },
+        "notes": { "type": "string" },
+        "scansCount": { "type": "number" },
+        "lastScannedAt": { "type": "string", "format": "date-time" },
+        "aiReviewEnabled": { "type": "boolean" },
+        "customKeywords": { "type": "array", "items": { "type": "string" } },
+        "reviewTone": { "type": "string", "enum": ["enthusiastic", "friendly", "professional", "concise"] },
+        "promptStarter": { "type": "string" },
+        "customHeadline": { "type": "string" },
+        "logoUrl": { "type": "string" },
+        "whatsapp": { "type": "string" },
+        "instagram": { "type": "string" },
+        "subscriptionStartDate": { "type": "string" },
+        "subscriptionEndDate": { "type": "string" },
+        "subscriptionStatus": { "type": "string", "enum": ["active", "upcoming", "expired", "unconfigured"] },
+        "assignedToUid": { "type": "string" },
+        "assignedToEmail": { "type": "string" },
+        "assignedToName": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["id", "status"]
+      "required": ["id", "status", "createdAt", "updatedAt"]
+    },
+    "ScanLog": {
+      "title": "ScanLog",
+      "description": "Immutable historical QR and NFC scan event log associated with a specific card and business",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "cardId": { "type": "string" },
+        "businessName": { "type": "string" },
+        "category": { "type": "string" },
+        "assignedToEmail": { "type": "string" },
+        "assignedToUid": { "type": "string" },
+        "source": { "type": "string", "enum": ["qr", "nfc", "direct"] },
+        "outcome": { "type": "string", "enum": ["allowed", "expired", "upcoming", "disabled", "unassigned"] },
+        "subscriptionStatus": { "type": "string", "enum": ["active", "upcoming", "expired", "unconfigured"] },
+        "route": { "type": "string" },
+        "userAgent": { "type": "string" },
+        "scannedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "cardId", "source", "outcome", "scannedAt"]
     },
     "AdminUser": {
       "title": "AdminUser",
-      "description": "System admin profile with role-based card assignment permissions",
+      "description": "System administrator or sub-admin role profile with assigned cards and permissions",
       "type": "object",
       "properties": {
-        "id": {
-          "type": "string",
-          "maxLength": 128,
-          "description": "Admin UID or email identifier"
+        "id": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "name": { "type": "string" },
+        "role": { "type": "string", "enum": ["master", "restricted"] },
+        "assignedCardIds": { "type": "array", "items": { "type": "string" } },
+        "permissions": {
+          "type": "object",
+          "properties": {
+            "canEditCards": { "type": "boolean" },
+            "canToggleAi": { "type": "boolean" },
+            "canExportCsv": { "type": "boolean" },
+            "canCreateCards": { "type": "boolean" }
+          }
         },
-        "email": {
-          "type": "string",
-          "maxLength": 256,
-          "description": "Admin user email address"
-        },
-        "name": {
-          "type": "string",
-          "maxLength": 100,
-          "description": "Display name of the admin"
-        },
-        "role": {
-          "type": "string",
-          "enum": ["master", "restricted"],
-          "description": "Master admin with full powers or restricted admin for specific cards"
-        },
-        "assignedCardIds": {
-          "type": "string",
-          "description": "Comma-separated or list of card IDs this admin is authorized to edit"
-        },
-        "canEditCards": {
-          "type": "boolean",
-          "description": "Whether admin is permitted to edit assigned cards"
-        },
-        "canToggleAi": {
-          "type": "boolean",
-          "description": "Whether admin can toggle AI review feature"
-        },
-        "canExportCsv": {
-          "type": "boolean",
-          "description": "Whether admin can export CSV"
-        },
-        "createdAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Admin registration timestamp"
-        },
-        "updatedAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Admin last updated timestamp"
-        }
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["id", "email", "role"]
+      "required": ["id", "email", "name", "role"]
     },
     "UserProfile": {
       "title": "UserProfile",
-      "description": "User profile storing Google verified authentication details and metadata",
+      "description": "Google authenticated user record and session metadata",
       "type": "object",
       "properties": {
-        "uid": {
-          "type": "string",
-          "maxLength": 128,
-          "description": "Unique user ID"
-        },
-        "email": {
-          "type": "string",
-          "maxLength": 256,
-          "description": "User email address"
-        },
-        "displayName": {
-          "type": "string",
-          "maxLength": 120,
-          "description": "User display name"
-        },
-        "photoURL": {
-          "type": "string",
-          "maxLength": 1000,
-          "description": "User profile image URL"
-        },
-        "provider": {
-          "type": "string",
-          "maxLength": 64,
-          "description": "Authentication provider e.g. google.com"
-        },
-        "role": {
-          "type": "string",
-          "enum": ["master", "restricted", "member"],
-          "description": "User role"
-        },
-        "emailVerified": {
-          "type": "boolean",
-          "description": "Whether user email is verified"
-        },
-        "lastLoginAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Timestamp of the most recent login"
-        },
-        "createdAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "User account creation timestamp"
-        },
-        "loginCount": {
-          "type": "integer",
-          "description": "Number of times user logged in"
-        }
+        "uid": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "provider": { "type": "string" },
+        "role": { "type": "string", "enum": ["master", "restricted", "member"] },
+        "emailVerified": { "type": "boolean" },
+        "lastLoginAt": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "loginCount": { "type": "number" },
+        "device": { "type": "string" },
+        "assignedCardIds": { "type": "array", "items": { "type": "string" } }
       },
-      "required": ["uid", "email"]
+      "required": ["uid", "email", "displayName", "role"]
     },
-    "QRScanLog": {
-      "title": "QRScanLog",
-      "description": "Audit trail log of physical stand QR code scans and NFC tag taps",
+    "Advertisement": {
+      "title": "Advertisement",
+      "description": "Sponsor advertisement displayed on customer review pages",
       "type": "object",
       "properties": {
-        "id": {
-          "type": "string",
-          "maxLength": 128,
-          "description": "Unique scan event ID"
-        },
-        "cardId": {
-          "type": "string",
-          "maxLength": 64,
-          "description": "Scanned QR card identifier, e.g. 0001"
-        },
-        "businessName": {
-          "type": "string",
-          "maxLength": 200,
-          "description": "Business name at the time of the scan"
-        },
-        "category": {
-          "type": "string",
-          "maxLength": 100,
-          "description": "Business category"
-        },
-        "timestamp": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Scan event timestamp"
-        },
-        "scannedAt": {
-          "type": "string",
-          "format": "date-time",
-          "description": "Exact scan event timestamp"
-        },
-        "device": {
-          "type": "string",
-          "maxLength": 100,
-          "description": "Device category (e.g. Mobile Android, Mobile iOS, Desktop)"
-        },
-        "browser": {
-          "type": "string",
-          "maxLength": 100,
-          "description": "Browser name (e.g. Chrome, Safari)"
-        },
-        "ip": {
-          "type": "string",
-          "maxLength": 64,
-          "description": "Client IP address or masked identifier"
-        },
-        "source": {
-          "type": "string",
-          "enum": ["qr", "nfc", "direct", "simulator"],
-          "description": "Origin access channel"
-        },
-        "subscriptionStatusAtScan": {
-          "type": "string",
-          "maxLength": 32,
-          "description": "Status of the stand subscription when scanned"
-        }
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "advertiser": { "type": "string" },
+        "headline": { "type": "string" },
+        "description": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "targetUrl": { "type": "string" },
+        "ctaText": { "type": "string" },
+        "placement": { "type": "string", "enum": ["top_banner", "below_tags", "below_draft", "footer"] },
+        "status": { "type": "string", "enum": ["active", "paused"] },
+        "priority": { "type": "number" },
+        "impressions": { "type": "number" },
+        "clicks": { "type": "number" },
+        "startDate": { "type": "string" },
+        "endDate": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["id", "cardId", "timestamp"]
+      "required": ["id", "name", "headline", "targetUrl", "placement", "status"]
     }
   },
   "firestore": {
     "/cards/{cardId}": {
-      "schema": "Card",
-      "description": "Collection of all dynamic QR cards"
+      "schema": { "$ref": "#/entities/Card" },
+      "description": "Dynamic QR & NFC stand cards collection"
+    },
+    "/scan_logs/{logId}": {
+      "schema": { "$ref": "#/entities/ScanLog" },
+      "description": "Immutable historical QR/NFC scan event logs"
     },
     "/admins/{adminId}": {
-      "schema": "AdminUser",
-      "description": "Collection of master and restricted administrators"
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Master and restricted sub-admin profiles"
     },
     "/users/{userId}": {
-      "schema": "UserProfile",
-      "description": "Collection of all users and their Google verified login data"
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Google authenticated user accounts and login metadata"
     },
-    "/qr_logs/{logId}": {
-      "schema": "QRScanLog",
-      "description": "Audit collection of historical and real-time QR scans"
+    "/ads/{adId}": {
+      "schema": { "$ref": "#/entities/Advertisement" },
+      "description": "Sponsor advertisements for customer review pages"
     }
   }
 }

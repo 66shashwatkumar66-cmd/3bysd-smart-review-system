@@ -1,4 +1,4 @@
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel } from '@google/genai';
 import { ReviewLanguage, ReviewTone } from '../types';
 
 export interface GenerateReviewInput {
@@ -22,6 +22,7 @@ export interface GenerateReviewOutput {
   source?: 'gemini' | 'smart_fallback';
   message?: string;
   error?: string;
+  errorCode?: string;
   toneUsed?: ReviewTone;
   languageUsed?: ReviewLanguage;
 }
@@ -534,7 +535,7 @@ ${tagsList.length > 0 ? `Selected Highlights to include: ${tagsList.join(', ')}`
 ${safeNotes ? `Customer Personal Detail: "${safeNotes}"` : ''}
 Random variation seed: ${randomSeed}.`;
 
-  const geminiApiKey = process.env.GEMINI_API_KEY;
+  const geminiApiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
 
   if (geminiApiKey) {
     try {
@@ -547,33 +548,66 @@ Random variation seed: ${randomSeed}.`;
         },
       });
 
+      const callGeminiModel = async (modelName: string, timeoutMs: number): Promise<string> => {
+        const config: Record<string, any> = {
+          systemInstruction: systemPrompt,
+        };
+        if (modelName === 'gemini-4-hydrogen') {
+          config.thinkingConfig = { thinkingLevel: ThinkingLevel.LOW };
+        }
+        const geminiPromise = ai.models.generateContent({
+          model: modelName,
+          contents: userPrompt,
+          config,
+        });
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('AI review generation timed out. Please try again.')), timeoutMs)
+        );
+        const response = await Promise.race([geminiPromise, timeoutPromise]);
+        return (response.text ? response.text.trim() : '').replace(/^["'`]+|["'`]+$/g, '').trim();
+      };
+
+      const callWithResilience = async (): Promise<string> => {
+        const modelPlan: Array<{ model: string; timeoutMs: number; delayBeforeMs: number }> = [
+          { model: 'gemini-4-hydrogen', timeoutMs: 6500, delayBeforeMs: 0 },
+          { model: 'gemini-3.1-flash-lite', timeoutMs: 10000, delayBeforeMs: 250 },
+          { model: 'gemini-3.1-flash-lite', timeoutMs: 12000, delayBeforeMs: 700 },
+        ];
+
+        let lastErr: any = null;
+        for (const step of modelPlan) {
+          if (step.delayBeforeMs > 0) {
+            await new Promise((r) => setTimeout(r, step.delayBeforeMs));
+          }
+          try {
+            const text = await callGeminiModel(step.model, step.timeoutMs);
+            if (text) return text;
+          } catch (err: any) {
+            lastErr = err;
+            const status = Number(err?.status || err?.code || 0);
+            const msg = String(err?.message || '');
+            const isTransient =
+              status === 503 ||
+              status === 429 ||
+              status === 500 ||
+              msg.includes('UNAVAILABLE') ||
+              msg.includes('timed out');
+            if (!isTransient) {
+              throw err;
+            }
+          }
+        }
+        if (lastErr) throw lastErr;
+        return '';
+      };
+
       let candidateReview = '';
       let attempts = 0;
       const maxAttempts = recentDrafts.length > 0 ? 2 : 1;
 
       while (attempts < maxAttempts && !candidateReview) {
         attempts++;
-        const currentTemperature = attempts === 1 ? 0.75 : 0.88;
-
-        const geminiPromise = ai.models.generateContent({
-          model: 'gemini-3.8-flash',
-          contents: userPrompt,
-          config: {
-            systemInstruction: systemPrompt,
-            temperature: currentTemperature,
-          },
-        });
-
-        // 8-second timeout guard to ensure reliable API responses without premature fallback
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Gemini API request timed out')), 8000)
-        );
-
-        const response = await Promise.race([geminiPromise, timeoutPromise]);
-        let text = response.text ? response.text.trim() : '';
-
-        // Clean any stray quotes or markdown wrapping
-        text = text.replace(/^["'`]+|["'`]+$/g, '').trim();
+        const text = await callWithResilience();
 
         if (text) {
           let isTooSimilar = false;
@@ -601,12 +635,68 @@ Random variation seed: ${randomSeed}.`;
           languageUsed: targetLanguage,
         };
       }
+
+      return {
+        success: false,
+        error: 'The AI service returned an empty draft. Please tap Try Again.',
+        errorCode: 'EMPTY_RESPONSE',
+      };
     } catch (geminiError: any) {
-      console.warn('Gemini generation notice, employing smart fallback engine:', geminiError?.message || geminiError);
+      const status = Number(geminiError?.status || geminiError?.code || 0);
+      const rawMsg = String(geminiError?.message || '');
+      console.error('[3DBYSD AI] Gemini generation failed:', status || 'unknown', rawMsg);
+
+      if (rawMsg.includes('timed out')) {
+        return {
+          success: false,
+          error: 'Review generation timed out. Please try again.',
+          errorCode: 'TIMEOUT',
+        };
+      }
+      if (status === 403 || rawMsg.includes('PERMISSION_DENIED')) {
+        return {
+          success: false,
+          error: 'AI service permission error. Please check the GEMINI_API_KEY in Settings > Secrets.',
+          errorCode: 'PERMISSION_DENIED',
+        };
+      }
+      if (rawMsg.includes('API_KEY_INVALID') || rawMsg.includes('API key not valid')) {
+        return {
+          success: false,
+          error: 'Invalid Gemini API key configuration. Please verify GEMINI_API_KEY in Settings > Secrets.',
+          errorCode: 'API_KEY_INVALID',
+        };
+      }
+      if (status === 404 || rawMsg.includes('NOT_FOUND')) {
+        return {
+          success: false,
+          error: 'Configured AI model was not found. Please contact the administrator.',
+          errorCode: 'MODEL_NOT_FOUND',
+        };
+      }
+      if (status === 429 || rawMsg.includes('RESOURCE_EXHAUSTED')) {
+        return {
+          success: false,
+          error: 'AI review quota is temporarily busy. Please try again in a few seconds.',
+          errorCode: 'RESOURCE_EXHAUSTED',
+        };
+      }
+      if (status === 400 || rawMsg.includes('INVALID_ARGUMENT')) {
+        return {
+          success: false,
+          error: 'AI request parameter error. Please try again.',
+          errorCode: 'INVALID_ARGUMENT',
+        };
+      }
+      return {
+        success: false,
+        error: 'Unable to generate review right now. Please try again in a moment.',
+        errorCode: status ? `HTTP_${status}` : 'UPSTREAM_ERROR',
+      };
     }
   }
 
-  // Category-aware & Keyword-aware fallback generator
+  // Only used when GEMINI_API_KEY is not configured in local dev/offline test mode
   const fallbackText = generateSmartFallbackReview(
     safeBusinessName,
     safeCategory,

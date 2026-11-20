@@ -1,28 +1,70 @@
-import { CardRecord, AdminUser, UserProfile, QRScanLog, GenerateReviewRequest, GenerateReviewResponse } from '../types';
 import {
-  db,
-  handleFirestoreError,
-  OperationType,
-} from '../firebase';
+  CardRecord,
+  AdminUser,
+  UserProfile,
+  ScanLogRecord,
+  GenerateReviewRequest,
+  GenerateReviewResponse,
+} from '../types';
+import { auth, db, OperationType } from '../firebase';
 import {
   collection,
   doc,
   getDocs,
   getDoc,
   setDoc,
+  updateDoc,
   deleteDoc,
   writeBatch,
-  onSnapshot,
+  query,
+  where,
 } from 'firebase/firestore';
+import { lookupCard } from './cardLookup';
 
 const STORAGE_KEY = '3dbysd_smart_reviews_cards';
 const CARDS_COLLECTION = 'cards';
+const SCAN_LOGS_COLLECTION = 'scan_logs';
+const ADMINS_COLLECTION = 'admins';
+const ADMINS_STORAGE_KEY = '3dbysd_smart_reviews_admins';
+const USERS_COLLECTION = 'users';
+const USERS_STORAGE_KEY = '3dbysd_smart_reviews_users';
+
+export const MASTER_ADMIN_EMAIL = '66shashwatkumar66@gmail.com';
+
+/**
+ * Helper to check if current Firebase Auth session belongs to the Master Admin.
+ */
+export function isCurrentAuthMaster(): boolean {
+  const user = auth.currentUser;
+  return Boolean(
+    user &&
+      user.email &&
+      user.emailVerified &&
+      user.email.toLowerCase() === MASTER_ADMIN_EMAIL
+  );
+}
+
+/**
+ * Returns Authorization headers with a fresh Firebase ID Token when authenticated.
+ */
+export async function getAuthHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = {};
+  try {
+    if (auth.currentUser) {
+      const token = await auth.currentUser.getIdToken();
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+    }
+  } catch {
+    // ignore token fetch error
+  }
+  return headers;
+}
 
 /**
  * Deeply removes all keys with `undefined` or `null` values.
- * Firestore strictly rejects documents containing undefined values with:
- * "FirebaseError: Function setDoc() called with invalid data. Unsupported field value: undefined"
- * and strict security rules reject null values for string fields.
+ * Firestore rejects undefined values and strict rules reject null on typed fields.
  */
 export function cleanForFirestore<T extends Record<string, any>>(obj: T): T {
   if (obj === null || typeof obj !== 'object') {
@@ -47,151 +89,219 @@ export function cleanForFirestore<T extends Record<string, any>>(obj: T): T {
   return clean;
 }
 
-const INITIAL_CARDS: CardRecord[] = [
-  {
-    id: '0001',
-    status: 'assigned',
-    businessName: 'The Artisan Roastery & Bakery',
-    category: 'Specialty Coffee & Brunch',
-    googleReviewUrl: 'https://search.google.com/local/writereview?placeid=ChIJN1t_tDeuEmsRUsoyG83frY4',
-    notes: 'Table 4 Stand - NFC & QR display',
-    aiReviewEnabled: true,
-    scansCount: 42,
-    createdAt: new Date(Date.now() - 7 * 86400000).toISOString(),
-    updatedAt: new Date().toISOString(),
-  },
-  {
-    id: '0002',
-    status: 'assigned',
-    businessName: 'SD Wood-Fired Pizzeria',
-    category: 'Italian Restaurant',
-    googleReviewUrl: 'https://search.google.com/local/writereview?placeid=ChIJN1t_tDeuEmsRUsoyG83frY4',
-    notes: 'Host stand entrance',
-    aiReviewEnabled: true,
-    scansCount: 19,
-    createdAt: new Date(Date.now() - 5 * 86400000).toISOString(),
-    updatedAt: new Date().toISOString(),
-  },
-  {
-    id: '0003',
-    status: 'available',
-    businessName: '',
-    category: '',
-    googleReviewUrl: '',
-    notes: 'Batch #1 - Unassigned acrylic stand',
-    scansCount: 0,
-    createdAt: new Date(Date.now() - 3 * 86400000).toISOString(),
-    updatedAt: new Date().toISOString(),
-  },
-  {
-    id: '0004',
-    status: 'available',
-    businessName: '',
-    category: '',
-    googleReviewUrl: '',
-    notes: 'Batch #1 - Unassigned keychain badge',
-    scansCount: 0,
-    createdAt: new Date(Date.now() - 2 * 86400000).toISOString(),
-    updatedAt: new Date().toISOString(),
-  },
-];
-
-export async function fetchCards(): Promise<CardRecord[]> {
-  let firestoreCards: CardRecord[] = [];
-  try {
-    const colRef = collection(db, CARDS_COLLECTION);
-    const snapshot = await getDocs(colRef);
-
-    if (!snapshot.empty) {
-      snapshot.forEach((docSnap) => {
-        firestoreCards.push(docSnap.data() as CardRecord);
-      });
-      firestoreCards.sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
-    } else {
-      // Seed initial cards to Firestore
-      for (const card of INITIAL_CARDS) {
-        await setDoc(doc(db, CARDS_COLLECTION, card.id), cleanForFirestore(card));
-      }
-      firestoreCards = [...INITIAL_CARDS];
-    }
-  } catch (error) {
-    console.warn('Firestore fetch failed, attempting server API fallback:', error);
+function formatDbError(error: any, operation: OperationType, path: string): Error {
+  const code = error?.code || '';
+  const msg = error?.message || String(error);
+  console.error(`[3DBYSD Firestore ${operation.toUpperCase()} ${path}]`, code, msg);
+  if (code === 'permission-denied' || msg.includes('Missing or insufficient permissions')) {
+    return new Error(
+      `Permission denied while accessing "${path}". Ensure you are signed in with your verified Google account.`
+    );
   }
-
-  // Also query local server REST API to merge any cards not yet in Firestore or with newer data
-  let serverCards: CardRecord[] = [];
-  try {
-    const res = await fetch('/api/cards');
-    if (res.ok) {
-      const data = await res.json();
-      if (data.cards && Array.isArray(data.cards)) {
-        serverCards = data.cards;
-      }
-    }
-  } catch (err) {
-    console.warn('Network fetch failed, reading from local storage:', err);
-  }
-
-  // Smart harmonization: Merge Firestore and Server cards
-  if (firestoreCards.length > 0 || serverCards.length > 0) {
-    const mergedMap = new Map<string, CardRecord>();
-
-    // Add server cards first
-    for (const c of serverCards) {
-      mergedMap.set(c.id.toLowerCase(), c);
-    }
-
-    // Add or merge Firestore cards (Firestore wins unless server card has strictly newer updatedAt)
-    for (const fc of firestoreCards) {
-      const existing = mergedMap.get(fc.id.toLowerCase());
-      if (!existing) {
-        mergedMap.set(fc.id.toLowerCase(), fc);
-      } else {
-        const fcTime = fc.updatedAt ? new Date(fc.updatedAt).getTime() : 0;
-        const exTime = existing.updatedAt ? new Date(existing.updatedAt).getTime() : 0;
-        if (fcTime >= exTime) {
-          mergedMap.set(fc.id.toLowerCase(), fc);
-        } else {
-          // Server had newer data! Sync it back to Firestore so Firestore stays up to date
-          setDoc(doc(db, CARDS_COLLECTION, existing.id), cleanForFirestore(existing)).catch(() => {});
-        }
-      }
-    }
-
-    const mergedList = Array.from(mergedMap.values());
-    mergedList.sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(mergedList));
-    return mergedList;
-  }
-
-  // Fallback to localStorage
-  const cached = localStorage.getItem(STORAGE_KEY);
-  if (cached) {
-    try {
-      return JSON.parse(cached);
-    } catch {
-      // ignore
-    }
-  }
-  return INITIAL_CARDS;
+  return new Error(msg || `Database operation failed on ${path}`);
 }
 
-import { lookupCard } from './cardLookup';
+export interface FetchCardsScope {
+  isMaster?: boolean;
+  email?: string;
+  uid?: string;
+  assignedCardIds?: string[];
+}
+
+/**
+ * Authoritative Firestore card loader supporting both Master Admin (full inventory)
+ * and Sub-Admin (strictly scoped by assignedToEmail, assignedToUid, and assignedCardIds).
+ * Never overwrites live Firestore records with stale local JSON.
+ */
+export async function fetchCards(scope?: FetchCardsScope): Promise<CardRecord[]> {
+  const fbUser = auth.currentUser;
+  const effectiveEmail = (scope?.email || fbUser?.email || '').trim().toLowerCase();
+  const effectiveUid = (scope?.uid || fbUser?.uid || '').trim();
+  const isMaster =
+    scope?.isMaster !== undefined
+      ? scope.isMaster && isCurrentAuthMaster()
+      : isCurrentAuthMaster();
+
+  const cardsMap = new Map<string, CardRecord>();
+
+  if (isMaster) {
+    try {
+      const snapshot = await getDocs(collection(db, CARDS_COLLECTION));
+      snapshot.forEach((docSnap) => {
+        const data = { id: docSnap.id, ...(docSnap.data() as Omit<CardRecord, 'id'>) } as CardRecord;
+        cardsMap.set(data.id, data);
+      });
+    } catch (error) {
+      throw formatDbError(error, OperationType.LIST, CARDS_COLLECTION);
+    }
+  } else if (fbUser && (effectiveEmail || effectiveUid)) {
+    // Sub-Admin / Card Owner scoped queries matching firestore.rules query-planner constraints
+    const queries: Promise<void>[] = [];
+
+    if (effectiveEmail) {
+      queries.push(
+        getDocs(query(collection(db, CARDS_COLLECTION), where('assignedToEmail', '==', effectiveEmail)))
+          .then((snap) => {
+            snap.forEach((d) => {
+              const data = { id: d.id, ...(d.data() as Omit<CardRecord, 'id'>) } as CardRecord;
+              cardsMap.set(data.id, data);
+            });
+          })
+          .catch((err) => {
+            console.warn('[3DBYSD] Scoped email cards query notice:', err?.code || err?.message);
+          })
+      );
+    }
+
+    if (effectiveUid) {
+      queries.push(
+        getDocs(query(collection(db, CARDS_COLLECTION), where('assignedToUid', '==', effectiveUid)))
+          .then((snap) => {
+            snap.forEach((d) => {
+              const data = { id: d.id, ...(d.data() as Omit<CardRecord, 'id'>) } as CardRecord;
+              cardsMap.set(data.id, data);
+            });
+          })
+          .catch((err) => {
+            console.warn('[3DBYSD] Scoped uid cards query notice:', err?.code || err?.message);
+          })
+      );
+    }
+
+    // Also fetch any explicitly assigned card IDs via single-doc getDoc
+    if (scope?.assignedCardIds && scope.assignedCardIds.length > 0) {
+      for (const cid of scope.assignedCardIds) {
+        const cleanCid = cid.trim();
+        if (!cleanCid) continue;
+        queries.push(
+          getDoc(doc(db, CARDS_COLLECTION, cleanCid))
+            .then((snap) => {
+              if (snap.exists()) {
+                const data = { id: snap.id, ...(snap.data() as Omit<CardRecord, 'id'>) } as CardRecord;
+                cardsMap.set(data.id, data);
+              }
+            })
+            .catch(() => {})
+        );
+      }
+    }
+
+    await Promise.all(queries);
+  } else {
+    throw new Error('Authentication required to load QR cards inventory from Cloud Firestore.');
+  }
+
+  const list = Array.from(cardsMap.values());
+  list.sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
+
+  if (typeof localStorage !== 'undefined') {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+    } catch {
+      // ignore quota
+    }
+  }
+
+  return list;
+}
 
 export async function fetchCardById(id: string, recordScan: boolean = false): Promise<CardRecord | null> {
   const result = await lookupCard(id, { recordScan });
   return result.card;
 }
 
-export async function createBatchCards(payload: {
-  count: number;
-  startNumber: number;
-  paddingDigits: number;
-  prefix?: string;
-}): Promise<CardRecord[]> {
-  const currentCards = await fetchCards();
+/**
+ * Fetches historical QR/NFC scan event logs from Cloud Firestore with strict RBAC scoping.
+ */
+export async function fetchScanLogs(scope?: {
+  isMaster?: boolean;
+  email?: string;
+  uid?: string;
+}): Promise<ScanLogRecord[]> {
+  const fbUser = auth.currentUser;
+  const effectiveEmail = (scope?.email || fbUser?.email || '').trim().toLowerCase();
+  const effectiveUid = (scope?.uid || fbUser?.uid || '').trim();
+  const isMaster =
+    scope?.isMaster !== undefined
+      ? scope.isMaster && isCurrentAuthMaster()
+      : isCurrentAuthMaster();
+
+  const logsMap = new Map<string, ScanLogRecord>();
+
+  if (isMaster) {
+    try {
+      const snap = await getDocs(collection(db, SCAN_LOGS_COLLECTION));
+      snap.forEach((d) => {
+        const data = { id: d.id, ...(d.data() as Omit<ScanLogRecord, 'id'>) } as ScanLogRecord;
+        logsMap.set(data.id, data);
+      });
+    } catch (error) {
+      throw formatDbError(error, OperationType.LIST, SCAN_LOGS_COLLECTION);
+    }
+  } else if (fbUser && (effectiveEmail || effectiveUid)) {
+    const queries: Promise<void>[] = [];
+
+    if (effectiveEmail) {
+      queries.push(
+        getDocs(
+          query(collection(db, SCAN_LOGS_COLLECTION), where('assignedToEmail', '==', effectiveEmail))
+        )
+          .then((snap) => {
+            snap.forEach((d) => {
+              const data = { id: d.id, ...(d.data() as Omit<ScanLogRecord, 'id'>) } as ScanLogRecord;
+              logsMap.set(data.id, data);
+            });
+          })
+          .catch((err) => {
+            console.warn('[3DBYSD] Scoped email scan_logs query notice:', err?.code || err?.message);
+          })
+      );
+    }
+
+    if (effectiveUid) {
+      queries.push(
+        getDocs(
+          query(collection(db, SCAN_LOGS_COLLECTION), where('assignedToUid', '==', effectiveUid))
+        )
+          .then((snap) => {
+            snap.forEach((d) => {
+              const data = { id: d.id, ...(d.data() as Omit<ScanLogRecord, 'id'>) } as ScanLogRecord;
+              logsMap.set(data.id, data);
+            });
+          })
+          .catch((err) => {
+            console.warn('[3DBYSD] Scoped uid scan_logs query notice:', err?.code || err?.message);
+          })
+      );
+    }
+
+    await Promise.all(queries);
+  } else {
+    throw new Error('Authentication required to view QR scan logs.');
+  }
+
+  const list = Array.from(logsMap.values());
+  list.sort((a, b) => new Date(b.scannedAt || 0).getTime() - new Date(a.scannedAt || 0).getTime());
+  return list;
+}
+
+export async function createBatchCards(
+  payload: {
+    count: number;
+    startNumber: number;
+    paddingDigits: number;
+    prefix?: string;
+  },
+  _caller?: { id?: string; email?: string }
+): Promise<CardRecord[]> {
+  if (!isCurrentAuthMaster()) {
+    throw new Error('Only Master Admin can create new QR card batches.');
+  }
+
+  const currentCards = await fetchCards({ isMaster: true });
   const existingIds = new Set(currentCards.map((c) => c.id));
   const newCards: CardRecord[] = [];
+  const now = new Date().toISOString();
 
   let current = payload.startNumber;
   while (newCards.length < payload.count) {
@@ -207,132 +317,164 @@ export async function createBatchCards(payload: {
         googleReviewUrl: '',
         notes: `Batch created ${new Date().toLocaleDateString()}`,
         scansCount: 0,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+        createdAt: now,
+        updatedAt: now,
       };
       newCards.push(card);
       existingIds.add(id);
-
-      // Write to Firestore with sanitization
-      try {
-        await setDoc(doc(db, CARDS_COLLECTION, id), cleanForFirestore(card));
-      } catch (err) {
-        console.warn(`Failed writing card ${id} to Firestore:`, err);
-      }
     }
     current++;
   }
 
-  // Also notify server endpoint for backup
+  // Write in Firestore batches (max 500 per batch)
   try {
-    await fetch('/api/cards/batch', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  } catch {
-    // ignore
+    for (let i = 0; i < newCards.length; i += 400) {
+      const chunk = newCards.slice(i, i + 400);
+      const batch = writeBatch(db);
+      for (const card of chunk) {
+        batch.set(doc(db, CARDS_COLLECTION, card.id), cleanForFirestore(card));
+      }
+      await batch.commit();
+    }
+  } catch (err) {
+    throw formatDbError(err, OperationType.WRITE, CARDS_COLLECTION);
   }
 
   const updatedList = [...currentCards, ...newCards];
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedList));
+  updatedList.sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
+  if (typeof localStorage !== 'undefined') {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedList));
+    } catch {}
+  }
   return updatedList;
 }
+
+const SUB_ADMIN_ALLOWED_FIELDS = new Set<string>([
+  'businessName',
+  'category',
+  'businessDescription',
+  'googleReviewUrl',
+  'notes',
+  'aiReviewEnabled',
+  'customKeywords',
+  'reviewTone',
+  'promptStarter',
+  'customHeadline',
+  'logoUrl',
+  'whatsapp',
+  'instagram',
+  'status',
+  'updatedAt',
+]);
 
 export async function assignCard(
   id: string,
   updates: Partial<CardRecord>,
-  adminId?: string
+  _adminId?: string,
+  _callerEmail?: string,
+  _isMasterHint?: boolean
 ): Promise<CardRecord | null> {
-  const docRef = doc(db, CARDS_COLLECTION, id);
+  const cleanId = id.trim();
+  const docRef = doc(db, CARDS_COLLECTION, cleanId);
+  const now = new Date().toISOString();
 
-  // Read existing data from cache first as baseline
-  let existingData: Partial<CardRecord> = { id, status: 'available', scansCount: 0 };
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const list = JSON.parse(raw) as CardRecord[];
-      const hit = list.find((c) => c.id.toLowerCase() === id.toLowerCase());
-      if (hit) existingData = { ...hit };
-    }
-  } catch {}
-
-  // Read existing doc if available in Firestore
+  // Read authoritative existing document from Firestore to preserve scansCount, createdAt, and historical data
+  let existingData: CardRecord | null = null;
   try {
     const existingSnap = await getDoc(docRef);
     if (existingSnap.exists()) {
-      existingData = { ...existingData, ...(existingSnap.data() as CardRecord) };
+      existingData = { id: existingSnap.id, ...(existingSnap.data() as Omit<CardRecord, 'id'>) } as CardRecord;
     }
   } catch (readErr) {
-    console.warn(`Firestore read card ${id} notice:`, readErr);
+    throw formatDbError(readErr, OperationType.GET, `${CARDS_COLLECTION}/${cleanId}`);
   }
 
-  // Merge existing + new updates
-  const mergedCard: CardRecord = {
-    ...existingData,
-    ...updates,
-    id,
-    updatedAt: new Date().toISOString(),
-  } as CardRecord;
+  const isMaster = isCurrentAuthMaster();
 
-  // CRITICAL: Deeply sanitize all fields to eliminate undefined values
+  if (!isMaster) {
+    // Sub-admin strictly updates only permitted business/customization fields via updateDoc
+    if (!existingData) {
+      throw new Error(`Card #${cleanId} not found.`);
+    }
+
+    const patch: Record<string, any> = { updatedAt: now };
+    for (const [k, v] of Object.entries(updates)) {
+      if (SUB_ADMIN_ALLOWED_FIELDS.has(k) && v !== undefined && v !== null) {
+        patch[k] = v;
+      }
+    }
+    if (patch.status && patch.status !== 'available' && patch.status !== 'assigned') {
+      throw new Error('Sub-admins cannot disable cards.');
+    }
+
+    try {
+      await updateDoc(docRef, cleanForFirestore(patch));
+    } catch (err) {
+      throw formatDbError(err, OperationType.UPDATE, `${CARDS_COLLECTION}/${cleanId}`);
+    }
+
+    const updatedCard: CardRecord = {
+      ...existingData,
+      ...patch,
+      id: cleanId,
+      scansCount: existingData.scansCount || 0,
+      createdAt: existingData.createdAt || now,
+      updatedAt: now,
+    };
+
+    updateCardInLocalCache(updatedCard);
+    return updatedCard;
+  }
+
+  // Master Admin full update (preserving scansCount and createdAt)
+  const normalizedUpdates: Partial<CardRecord> = { ...updates };
+  if (typeof normalizedUpdates.assignedToEmail === 'string') {
+    normalizedUpdates.assignedToEmail = normalizedUpdates.assignedToEmail.trim().toLowerCase();
+  }
+
+  const mergedCard: CardRecord = {
+    id: cleanId,
+    status: existingData?.status || 'available',
+    businessName: existingData?.businessName || '',
+    category: existingData?.category || '',
+    googleReviewUrl: existingData?.googleReviewUrl || '',
+    notes: existingData?.notes || '',
+    ...(existingData || {}),
+    ...normalizedUpdates,
+    scansCount: existingData?.scansCount ?? normalizedUpdates.scansCount ?? 0,
+    createdAt: existingData?.createdAt || now,
+    updatedAt: now,
+  };
+
+  // Strip explicit undefined/empty subscription removal safely while keeping clean Firestore document
   const sanitizedCard = cleanForFirestore(mergedCard);
 
-  // 1. Write to Firestore
   try {
     await setDoc(docRef, sanitizedCard);
-    console.log(`✅ Firestore updated successfully for Card #${id}`);
-  } catch (error: any) {
-    console.error(`Firestore assign card ${id} error:`, error);
-    if (error?.code === 'permission-denied') {
-      throw new Error(`Permission denied: You do not have permission to edit Card #${id}`);
-    }
+  } catch (error) {
+    throw formatDbError(error, OperationType.WRITE, `${CARDS_COLLECTION}/${cleanId}`);
   }
 
-  // 2. ALWAYS sync with Server API (data/cards.json backup & Supabase cloud sync)
-  try {
-    const res = await fetch(`/api/cards/${encodeURIComponent(id)}/assign`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(adminId ? { 'x-admin-id': adminId } : {}),
-      },
-      body: JSON.stringify({ ...sanitizedCard, adminId }),
-    });
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      if (res.status === 403) {
-        throw new Error(errData.error || `Access denied: You are not authorized to edit Card #${id}`);
-      }
-    } else {
-      const data = await res.json();
-      if (data.card) {
-        Object.assign(sanitizedCard, data.card);
-      }
-    }
-  } catch (serverErr: any) {
-    if (serverErr.message?.includes('Access denied')) {
-      throw serverErr;
-    }
-    console.warn(`Server API assign card ${id} sync notice:`, serverErr);
-  }
+  updateCardInLocalCache(sanitizedCard);
+  return sanitizedCard;
+}
 
-  // 3. Update localStorage cache directly without redundant network reads
+function updateCardInLocalCache(card: CardRecord): void {
+  if (typeof localStorage === 'undefined') return;
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     const list: CardRecord[] = raw ? JSON.parse(raw) : [];
-    const idx = list.findIndex((c) => c.id.toLowerCase() === id.toLowerCase());
+    const idx = list.findIndex((c) => c.id.toLowerCase() === card.id.toLowerCase());
     if (idx !== -1) {
-      list[idx] = sanitizedCard;
+      list[idx] = card;
     } else {
-      list.push(sanitizedCard);
+      list.push(card);
     }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
   } catch {
     // ignore
   }
-
-  return sanitizedCard;
 }
 
 export async function uploadBusinessLogo(
@@ -359,10 +501,15 @@ export async function uploadBusinessLogo(
     reader.readAsDataURL(file);
   });
 
+  // Keep Firestore doc well under 1 MiB limit if storing inline; try server upload first
   try {
+    const authHeaders = await getAuthHeaders();
     const res = await fetch('/api/upload-logo', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders,
+      },
       body: JSON.stringify({
         image: dataUrl,
         fileName: file.name,
@@ -377,235 +524,205 @@ export async function uploadBusinessLogo(
       }
     }
   } catch (netErr) {
-    console.warn('Server logo upload endpoint notice, falling back to data URL:', netErr);
+    console.warn('Server logo upload endpoint notice, checking inline data URL fallback:', netErr);
   }
 
-  // Fallback to validated dataUrl if server unreachable
+  if (dataUrl.length > 850000) {
+    throw new Error(
+      'Image is too large for inline cloud storage after compression. Please upload a smaller image (under 600 KB).'
+    );
+  }
+
   return { success: true, url: dataUrl };
 }
 
 export async function bulkUpdateCardsStatus(
   ids: string[],
   status: 'available' | 'assigned',
-  adminId?: string
+  _adminId?: string,
+  _callerEmail?: string
 ): Promise<CardRecord[]> {
-  const normalizedIds = ids.map((id) => id.trim());
+  const normalizedIds = ids.map((id) => id.trim()).filter(Boolean);
+  if (normalizedIds.length === 0) return [];
   const now = new Date().toISOString();
 
-  // 1. Try batch updating in Firestore with sanitized payload
   try {
     const batch = writeBatch(db);
     for (const id of normalizedIds) {
       const docRef = doc(db, CARDS_COLLECTION, id);
-      batch.set(docRef, cleanForFirestore({ status, updatedAt: now }), { merge: true });
+      batch.update(docRef, { status, updatedAt: now });
     }
     await batch.commit();
   } catch (err) {
-    console.warn('Firestore bulk update failed, falling back:', err);
+    throw formatDbError(err, OperationType.UPDATE, CARDS_COLLECTION);
   }
 
-  // 2. Server API fallback/sync
-  try {
-    await fetch('/api/cards/bulk-status', {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(adminId ? { 'x-admin-id': adminId } : {}),
-      },
-      body: JSON.stringify({ ids: normalizedIds, status, adminId }),
-    });
-  } catch {
-    // ignore
-  }
-
-  // 3. Update local cache
   let updatedList: CardRecord[] = [];
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    const cached: CardRecord[] = raw ? JSON.parse(raw) : [];
-    const idSet = new Set(normalizedIds.map((id) => id.toLowerCase()));
-    updatedList = cached.map((c) => {
-      if (idSet.has(c.id.toLowerCase())) {
-        return {
-          ...c,
-          status,
-          updatedAt: now,
-        };
-      }
-      return c;
-    });
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedList));
-  } catch {
-    // ignore
+  if (typeof localStorage !== 'undefined') {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      const cached: CardRecord[] = raw ? JSON.parse(raw) : [];
+      const idSet = new Set(normalizedIds.map((id) => id.toLowerCase()));
+      updatedList = cached.map((c) =>
+        idSet.has(c.id.toLowerCase()) ? { ...c, status, updatedAt: now } : c
+      );
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedList));
+    } catch {}
   }
   return updatedList;
 }
 
 export async function deleteCard(id: string): Promise<boolean> {
+  if (!isCurrentAuthMaster()) {
+    throw new Error('Only Master Admin can delete QR cards.');
+  }
   const cleanId = id.trim();
   try {
     await deleteDoc(doc(db, CARDS_COLLECTION, cleanId));
   } catch (err) {
-    console.warn(`Firestore delete card ${cleanId} failed:`, err);
+    throw formatDbError(err, OperationType.DELETE, `${CARDS_COLLECTION}/${cleanId}`);
   }
 
-  try {
-    await fetch(`/api/cards/${encodeURIComponent(cleanId)}`, { method: 'DELETE' });
-  } catch {
-    // ignore
-  }
-
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const cached = JSON.parse(raw) as CardRecord[];
-      const filtered = cached.filter((c) => c.id.toLowerCase() !== cleanId.toLowerCase());
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(filtered));
-    }
-  } catch {
-    // ignore
+  if (typeof localStorage !== 'undefined') {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const cached = JSON.parse(raw) as CardRecord[];
+        const filtered = cached.filter((c) => c.id.toLowerCase() !== cleanId.toLowerCase());
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(filtered));
+      }
+    } catch {}
   }
   return true;
 }
 
-export async function generateAiReview(payload: GenerateReviewRequest): Promise<GenerateReviewResponse> {
+export async function generateAiReview(
+  payload: GenerateReviewRequest,
+  signal?: AbortSignal
+): Promise<GenerateReviewResponse> {
   try {
     const res = await fetch('/api/generate-review', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Accept': 'application/json',
+        Accept: 'application/json',
       },
       body: JSON.stringify(payload),
+      signal,
     });
 
     const rawText = await res.text();
 
     if (!res.ok) {
-      let serverError = `HTTP ${res.status}: ${res.statusText || 'Request failed'}`;
+      let serverError = `Request failed (${res.status}). Please try again.`;
       if (rawText && rawText.trim()) {
         try {
           const parsed = JSON.parse(rawText);
           serverError = parsed.error || parsed.message || serverError;
         } catch {
-          // If HTML error page was returned by CDN or serverless proxy
           if (res.status === 405) {
-            serverError = 'API endpoint method not allowed (405). Please verify Vercel serverless functions deployment.';
+            serverError = 'Review generation API method not allowed (405).';
           }
         }
       }
       return {
         success: false,
         message: serverError,
+        error: serverError,
       };
     }
 
     if (!rawText || !rawText.trim()) {
       return {
         success: false,
-        message: 'Empty response received from review generation server',
+        message: 'Empty response received from review generation service.',
       };
     }
 
     try {
-      const data = JSON.parse(rawText);
-      return data;
+      return JSON.parse(rawText);
     } catch {
       return {
         success: false,
-        message: 'Invalid JSON returned by server',
+        message: 'Invalid response format from review generation service.',
       };
     }
   } catch (err: any) {
-    console.error('Error in generateAiReview network call:', err);
+    if (err?.name === 'AbortError') {
+      throw err;
+    }
     return {
       success: false,
-      message: err.message || 'Network request failed',
+      message: err?.message || 'Network request failed. Please check your connection and try again.',
     };
   }
 }
 
 // ---------------- Admin Management Layer ----------------
-const ADMINS_COLLECTION = 'admins';
-const ADMINS_STORAGE_KEY = '3dbysd_smart_reviews_admins';
 
-const DEFAULT_ADMINS: AdminUser[] = [
-  {
-    id: 'master-admin-01',
-    email: '66shashwatkumar66@gmail.com',
-    name: 'Master Admin',
-    role: 'master',
-    assignedCardIds: [],
-    permissions: {
-      canEditCards: true,
-      canToggleAi: true,
-      canExportCsv: true,
-      canCreateCards: true,
-    },
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+const DEFAULT_MASTER_ADMIN: AdminUser = {
+  id: 'master-admin-01',
+  email: MASTER_ADMIN_EMAIL,
+  name: 'Master Admin',
+  role: 'master',
+  assignedCardIds: [],
+  permissions: {
+    canEditCards: true,
+    canToggleAi: true,
+    canExportCsv: true,
+    canCreateCards: true,
   },
-  {
-    id: 'sub-admin-01',
-    email: 'artisan.manager@example.com',
-    name: 'Artisan Branch Manager',
-    role: 'restricted',
-    assignedCardIds: ['0001', '0002'],
-    permissions: {
-      canEditCards: true,
-      canToggleAi: true,
-      canExportCsv: false,
-      canCreateCards: false,
-    },
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  },
-];
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+};
 
 export async function fetchAdmins(): Promise<AdminUser[]> {
+  const fbUser = auth.currentUser;
+  if (!fbUser) {
+    return [DEFAULT_MASTER_ADMIN];
+  }
+
   try {
-    const colRef = collection(db, ADMINS_COLLECTION);
-    const snapshot = await getDocs(colRef);
-    if (!snapshot.empty) {
+    if (isCurrentAuthMaster()) {
+      const snapshot = await getDocs(collection(db, ADMINS_COLLECTION));
       const list: AdminUser[] = [];
-      snapshot.forEach((d) => list.push(d.data() as AdminUser));
-      localStorage.setItem(ADMINS_STORAGE_KEY, JSON.stringify(list));
+      snapshot.forEach((d) => list.push({ id: d.id, ...(d.data() as Omit<AdminUser, 'id'>) } as AdminUser));
+      if (!list.some((a) => a.email.toLowerCase() === MASTER_ADMIN_EMAIL)) {
+        list.unshift(DEFAULT_MASTER_ADMIN);
+      }
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(ADMINS_STORAGE_KEY, JSON.stringify(list));
+      }
       return list;
     }
+
+    // Sub-admin: query ONLY their own admin document by verified email
+    const email = (fbUser.email || '').trim().toLowerCase();
+    if (!email) return [];
+    const snap = await getDocs(query(collection(db, ADMINS_COLLECTION), where('email', '==', email)));
+    const list: AdminUser[] = [];
+    snap.forEach((d) => list.push({ id: d.id, ...(d.data() as Omit<AdminUser, 'id'>) } as AdminUser));
+    return list;
   } catch (err) {
-    console.warn('Firestore fetch admins failed, falling back to server/cache:', err);
+    console.warn('[3DBYSD] fetchAdmins Firestore notice:', err);
+    return isCurrentAuthMaster() ? [DEFAULT_MASTER_ADMIN] : [];
   }
-
-  try {
-    const res = await fetch('/api/admins');
-    if (res.ok) {
-      const data = await res.json();
-      if (data.admins && data.admins.length > 0) {
-        localStorage.setItem(ADMINS_STORAGE_KEY, JSON.stringify(data.admins));
-        return data.admins;
-      }
-    }
-  } catch {
-    // ignore
-  }
-
-  const cached = localStorage.getItem(ADMINS_STORAGE_KEY);
-  if (cached) {
-    try {
-      return JSON.parse(cached) as AdminUser[];
-    } catch {
-      // ignore
-    }
-  }
-
-  localStorage.setItem(ADMINS_STORAGE_KEY, JSON.stringify(DEFAULT_ADMINS));
-  return DEFAULT_ADMINS;
 }
 
 export async function createAdmin(payload: Partial<AdminUser>): Promise<AdminUser | null> {
+  if (!isCurrentAuthMaster()) {
+    throw new Error('Only Master Admin can create admin accounts.');
+  }
+
+  const cleanEmail = (payload.email || '').toLowerCase().trim();
+  if (!cleanEmail || !cleanEmail.includes('@')) {
+    throw new Error('A valid email address is required.');
+  }
+
+  const now = new Date().toISOString();
   const newAdmin: AdminUser = {
     id: payload.id || `admin-${Date.now()}`,
-    email: payload.email?.toLowerCase().trim() || '',
+    email: cleanEmail,
     name: payload.name?.trim() || 'Sub-Admin',
     role: payload.role === 'master' ? 'master' : 'restricted',
     assignedCardIds: Array.isArray(payload.assignedCardIds) ? payload.assignedCardIds : [],
@@ -615,377 +732,326 @@ export async function createAdmin(payload: Partial<AdminUser>): Promise<AdminUse
       canExportCsv: payload.permissions?.canExportCsv ?? false,
       canCreateCards: payload.permissions?.canCreateCards ?? false,
     },
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    createdAt: now,
+    updatedAt: now,
   };
 
   try {
     await setDoc(doc(db, ADMINS_COLLECTION, newAdmin.id), cleanForFirestore(newAdmin));
   } catch (err) {
-    console.warn(`Firestore create admin failed:`, err);
+    throw formatDbError(err, OperationType.CREATE, `${ADMINS_COLLECTION}/${newAdmin.id}`);
   }
 
-  try {
-    await fetch('/api/admins', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newAdmin),
-    });
-  } catch {
-    // ignore
+  // Sync assignedCardIds onto the corresponding card docs so Firestore ownership rules match immediately
+  if (newAdmin.assignedCardIds.length > 0) {
+    const batch = writeBatch(db);
+    for (const cid of newAdmin.assignedCardIds) {
+      batch.update(doc(db, CARDS_COLLECTION, cid), {
+        assignedToEmail: cleanEmail,
+        assignedToName: newAdmin.name,
+        updatedAt: now,
+      });
+    }
+    await batch.commit().catch((err) => console.warn('Card ownership sync notice:', err));
   }
 
-  const current = await fetchAdmins();
-  const updated = [...current.filter((a) => a.id !== newAdmin.id), newAdmin];
-  localStorage.setItem(ADMINS_STORAGE_KEY, JSON.stringify(updated));
   return newAdmin;
 }
 
 export async function updateAdmin(id: string, updates: Partial<AdminUser>): Promise<AdminUser | null> {
+  if (!isCurrentAuthMaster()) {
+    throw new Error('Only Master Admin can update admin accounts.');
+  }
+
   const current = await fetchAdmins();
   const existing = current.find((a) => a.id === id || a.email.toLowerCase() === id.toLowerCase());
-  if (!existing) return null;
+  if (!existing) throw new Error('Admin account not found.');
 
+  const now = new Date().toISOString();
   const merged: AdminUser = {
     ...existing,
     ...updates,
     id: existing.id,
-    updatedAt: new Date().toISOString(),
+    email: (updates.email || existing.email).toLowerCase().trim(),
+    updatedAt: now,
   };
 
   try {
     await setDoc(doc(db, ADMINS_COLLECTION, merged.id), cleanForFirestore(merged));
   } catch (err) {
-    console.warn(`Firestore update admin failed:`, err);
+    throw formatDbError(err, OperationType.UPDATE, `${ADMINS_COLLECTION}/${merged.id}`);
   }
 
-  try {
-    await fetch(`/api/admins/${encodeURIComponent(merged.id)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updates),
-    });
-  } catch {
-    // ignore
+  // Keep card ownership fields aligned when assignedCardIds changes
+  if (Array.isArray(updates.assignedCardIds)) {
+    const prevSet = new Set(existing.assignedCardIds || []);
+    const nextSet = new Set(updates.assignedCardIds);
+    const batch = writeBatch(db);
+    let ops = 0;
+
+    for (const cid of nextSet) {
+      if (!prevSet.has(cid)) {
+        batch.update(doc(db, CARDS_COLLECTION, cid), {
+          assignedToEmail: merged.email,
+          assignedToName: merged.name,
+          updatedAt: now,
+        });
+        ops++;
+      }
+    }
+    for (const cid of prevSet) {
+      if (!nextSet.has(cid)) {
+        batch.update(doc(db, CARDS_COLLECTION, cid), {
+          assignedToEmail: '',
+          assignedToName: '',
+          assignedToUid: '',
+          updatedAt: now,
+        });
+        ops++;
+      }
+    }
+    if (ops > 0) {
+      await batch.commit().catch((err) => console.warn('Card ownership diff sync notice:', err));
+    }
   }
 
-  const updated = current.map((a) => (a.id === merged.id ? merged : a));
-  localStorage.setItem(ADMINS_STORAGE_KEY, JSON.stringify(updated));
   return merged;
 }
 
 export async function deleteAdmin(id: string): Promise<boolean> {
+  if (!isCurrentAuthMaster()) {
+    throw new Error('Only Master Admin can remove admin accounts.');
+  }
   try {
     await deleteDoc(doc(db, ADMINS_COLLECTION, id));
   } catch (err) {
-    console.warn(`Firestore delete admin failed:`, err);
+    throw formatDbError(err, OperationType.DELETE, `${ADMINS_COLLECTION}/${id}`);
   }
-
-  try {
-    await fetch(`/api/admins/${encodeURIComponent(id)}`, { method: 'DELETE' });
-  } catch {
-    // ignore
-  }
-
-  const current = await fetchAdmins();
-  const updated = current.filter((a) => a.id !== id);
-  localStorage.setItem(ADMINS_STORAGE_KEY, JSON.stringify(updated));
   return true;
 }
 
 // ---------------- Users & Google Verified Logins Layer ----------------
-const USERS_COLLECTION = 'users';
-const USERS_STORAGE_KEY = '3dbysd_smart_reviews_users';
 
 export async function fetchUsers(): Promise<UserProfile[]> {
+  const fbUser = auth.currentUser;
+  if (!fbUser) return [];
+
   try {
-    // 1. Try Firestore
-    const snapshot = await getDocs(collection(db, USERS_COLLECTION));
-    if (!snapshot.empty) {
+    if (isCurrentAuthMaster()) {
+      const snapshot = await getDocs(collection(db, USERS_COLLECTION));
       const list: UserProfile[] = [];
-      snapshot.forEach((d) => {
-        list.push(d.data() as UserProfile);
-      });
-      localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(list));
+      snapshot.forEach((d) => list.push(d.data() as UserProfile));
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(list));
+      }
       return list;
     }
+
+    const snap = await getDoc(doc(db, USERS_COLLECTION, fbUser.uid));
+    return snap.exists() ? [snap.data() as UserProfile] : [];
   } catch (err) {
-    console.warn('Firestore fetchUsers notice:', err);
+    console.warn('[3DBYSD] fetchUsers Firestore notice:', err);
+    return [];
   }
-
-  // 2. Try REST backend /api/users
-  try {
-    const res = await fetch('/api/users');
-    if (res.ok) {
-      const data = await res.json();
-      if (data.success && Array.isArray(data.users) && data.users.length > 0) {
-        localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(data.users));
-        return data.users;
-      }
-    }
-  } catch {
-    // fallback
-  }
-
-  // 3. Fallback to localStorage
-  const saved = localStorage.getItem(USERS_STORAGE_KEY);
-  if (saved) {
-    try {
-      return JSON.parse(saved) as UserProfile[];
-    } catch {
-      // ignore
-    }
-  }
-
-  return [
-    {
-      uid: 'google-user-66shashwatkumar66',
-      email: '66shashwatkumar66@gmail.com',
-      displayName: 'Shashwat Kumar',
-      photoURL: 'https://api.dicebear.com/7.x/initials/svg?seed=SK&backgroundColor=1a73e8&textColor=ffffff',
-      provider: 'google.com',
-      role: 'master',
-      emailVerified: true,
-      lastLoginAt: new Date().toISOString(),
-      createdAt: new Date().toISOString(),
-      loginCount: 1,
-      device: 'Web Browser (Google Verified)',
-      assignedCardIds: [],
-    },
-  ];
 }
 
-export async function saveUser(user: Partial<UserProfile> & { uid: string; email: string }): Promise<UserProfile> {
+export async function saveUser(
+  user: Partial<UserProfile> & { uid: string; email: string }
+): Promise<UserProfile> {
   const cleanEmail = user.email.trim().toLowerCase();
   const now = new Date().toISOString();
-  const isMaster = cleanEmail === '66shashwatkumar66@gmail.com';
+  const isMasterEmail = cleanEmail === MASTER_ADMIN_EMAIL;
+  const callerIsMaster = isCurrentAuthMaster();
+
+  let existing: UserProfile | null = null;
+  if (auth.currentUser) {
+    try {
+      const snap = await getDoc(doc(db, USERS_COLLECTION, user.uid));
+      if (snap.exists()) existing = snap.data() as UserProfile;
+    } catch {
+      // ignore read failure on first login
+    }
+  }
+
+  // Enforce strict role integrity matching firestore.rules (no self-escalation!)
+  const resolvedRole: 'master' | 'restricted' | 'member' = callerIsMaster
+    ? user.role || existing?.role || (isMasterEmail ? 'master' : 'member')
+    : existing?.role || 'member';
 
   const fullUser: UserProfile = {
     uid: user.uid,
-    email: cleanEmail,
-    displayName: user.displayName || cleanEmail.split('@')[0],
+    email: existing?.email || cleanEmail,
+    displayName: user.displayName || existing?.displayName || cleanEmail.split('@')[0],
     photoURL:
       user.photoURL ||
+      existing?.photoURL ||
       `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(cleanEmail)}&backgroundColor=1a73e8&textColor=ffffff`,
-    provider: user.provider || 'google.com',
-    role: isMaster ? 'master' : (user.role || 'member'),
+    provider: user.provider || existing?.provider || 'google.com',
+    role: resolvedRole,
     emailVerified: user.emailVerified !== undefined ? user.emailVerified : true,
     lastLoginAt: now,
-    createdAt: user.createdAt || now,
-    loginCount: (user.loginCount || 1),
-    device: user.device || navigator.userAgent.slice(0, 50) || 'Web Browser',
-    assignedCardIds: user.assignedCardIds || [],
+    createdAt: existing?.createdAt || user.createdAt || now,
+    loginCount: existing ? (existing.loginCount || 0) + 1 : user.loginCount || 1,
+    device:
+      user.device ||
+      (typeof navigator !== 'undefined' ? navigator.userAgent.slice(0, 60) : 'Web Browser'),
+    assignedCardIds: user.assignedCardIds || existing?.assignedCardIds || [],
   };
 
-  // 1. Save to Firestore
-  try {
-    await setDoc(doc(db, USERS_COLLECTION, fullUser.uid), cleanForFirestore(fullUser));
-  } catch (err) {
-    console.warn('Firestore saveUser notice:', err);
-  }
-
-  // 2. Save to Backend Server
-  try {
-    await fetch('/api/users', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(fullUser),
-    });
-  } catch {
-    // ignore
-  }
-
-  // 3. Save to localStorage cache
-  try {
-    const existing = await fetchUsers();
-    const idx = existing.findIndex((u) => u.uid === fullUser.uid || u.email.toLowerCase() === cleanEmail);
-    let updated: UserProfile[];
-    if (idx !== -1) {
-      updated = [...existing];
-      updated[idx] = { ...updated[idx], ...fullUser, loginCount: (updated[idx].loginCount || 0) + 1 };
-    } else {
-      updated = [fullUser, ...existing];
+  if (auth.currentUser) {
+    try {
+      await setDoc(doc(db, USERS_COLLECTION, fullUser.uid), cleanForFirestore(fullUser));
+    } catch (err) {
+      if (callerIsMaster) {
+        throw formatDbError(err, OperationType.WRITE, `${USERS_COLLECTION}/${fullUser.uid}`);
+      }
+      console.warn('[3DBYSD] saveUser notice:', err);
     }
-    localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(updated));
-  } catch {
-    // ignore
   }
 
   return fullUser;
 }
 
-export async function deleteUser(uid: string): Promise<boolean> {
-  // 1. Delete in Firestore
+export async function deleteUser(uid: string, _caller?: { id?: string; email?: string }): Promise<boolean> {
+  if (!isCurrentAuthMaster()) {
+    throw new Error('Only Master Admin can remove user profiles.');
+  }
   try {
     await deleteDoc(doc(db, USERS_COLLECTION, uid));
   } catch (err) {
-    console.warn('Firestore deleteUser notice:', err);
+    throw formatDbError(err, OperationType.DELETE, `${USERS_COLLECTION}/${uid}`);
   }
-
-  // 2. Delete on backend
-  try {
-    await fetch(`/api/users/${encodeURIComponent(uid)}`, { method: 'DELETE' });
-  } catch {
-    // ignore
-  }
-
-  // 3. Local storage
-  try {
-    const existing = await fetchUsers();
-    const updated = existing.filter((u) => u.uid !== uid);
-    localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(updated));
-  } catch {
-    // ignore
-  }
-
   return true;
 }
 
-const QR_LOGS_COLLECTION = 'qr_logs';
-
-export interface FetchLogsOptions {
-  cardId?: string;
-  businessName?: string;
-  search?: string;
-  source?: string;
-  startDate?: string;
-  endDate?: string;
-  page?: number;
-  limit?: number | 'all';
-  adminId?: string;
+export function formatApiError(err: unknown, fallback = 'Operation failed'): string {
+  if (!err) return fallback;
+  if (typeof err === 'string') return err;
+  if (err instanceof Error && err.message) return err.message;
+  const anyErr = err as any;
+  return anyErr?.message || anyErr?.error || fallback;
 }
 
-export async function fetchQrLogs(
-  options: FetchLogsOptions = {}
-): Promise<{ logs: QRScanLog[]; totalCount: number; totalPages?: number }> {
-  const queryParams = new URLSearchParams();
-  if (options.cardId && options.cardId !== 'all') queryParams.set('cardId', options.cardId);
-  if (options.businessName && options.businessName !== 'all') queryParams.set('businessName', options.businessName);
-  if (options.search) queryParams.set('search', options.search);
-  if (options.source && options.source !== 'all') queryParams.set('source', options.source);
-  if (options.startDate) queryParams.set('startDate', options.startDate);
-  if (options.endDate) queryParams.set('endDate', options.endDate);
-  if (options.page) queryParams.set('page', String(options.page));
-  if (options.limit) queryParams.set('limit', String(options.limit));
+export interface SessionAuthResult {
+  authorized: boolean;
+  revoked: boolean;
+  role: 'master' | 'restricted' | 'member';
+  admin?: AdminUser;
+  message?: string;
+}
 
-  const url = `/api/logs${queryParams.toString() ? `?${queryParams.toString()}` : ''}`;
+export async function checkSessionAuthorization(
+  email: string,
+  uid?: string
+): Promise<SessionAuthResult> {
+  const cleanEmail = (email || '').trim().toLowerCase();
+  if (!cleanEmail) {
+    return { authorized: false, revoked: false, role: 'member' };
+  }
+  if (cleanEmail === MASTER_ADMIN_EMAIL) {
+    return { authorized: true, revoked: false, role: 'master' };
+  }
 
   try {
-    const res = await fetch(url, {
-      headers: {
-        ...(options.adminId ? { 'x-admin-id': options.adminId } : {}),
-      },
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.success && Array.isArray(data.logs)) {
-        return {
-          logs: data.logs,
-          totalCount: data.totalCount || data.logs.length,
-          totalPages: data.totalPages || 1,
-        };
+    const admins = await fetchAdmins();
+    const matchedAdmin = admins.find(
+      (a) => a.email.trim().toLowerCase() === cleanEmail || (uid && a.id === uid)
+    );
+    if (matchedAdmin) {
+      return {
+        authorized: true,
+        revoked: false,
+        role: matchedAdmin.role === 'master' ? 'master' : 'restricted',
+        admin: matchedAdmin,
+      };
+    }
+
+    if (uid && auth.currentUser) {
+      const userSnap = await getDoc(doc(db, USERS_COLLECTION, uid)).catch(() => null);
+      if (userSnap && userSnap.exists()) {
+        const userData = userSnap.data() as UserProfile;
+        if (userData.accessRevoked) {
+          return {
+            authorized: false,
+            revoked: true,
+            role: 'member',
+            message: 'Access Denied: Your administrator access has been revoked by the Master Admin.',
+          };
+        }
+        if (userData.role === 'restricted' || userData.role === 'master') {
+          return {
+            authorized: true,
+            revoked: false,
+            role: userData.role,
+          };
+        }
       }
     }
   } catch (err) {
-    console.warn('Backend /api/logs fetch notice, falling back to Firestore:', err);
+    console.warn('[3DBYSD] checkSessionAuthorization notice:', err);
   }
 
-  // Firestore direct fallback
-  try {
-    const snap = await getDocs(collection(db, QR_LOGS_COLLECTION));
-    const firestoreLogs: QRScanLog[] = [];
-    snap.forEach((docSnap) => {
-      firestoreLogs.push(docSnap.data() as QRScanLog);
-    });
-    firestoreLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-
-    let filtered = firestoreLogs;
-    if (options.cardId && options.cardId !== 'all') {
-      filtered = filtered.filter((l) => l.cardId.toLowerCase() === options.cardId!.toLowerCase());
-    }
-    if (options.search) {
-      const t = options.search.toLowerCase();
-      filtered = filtered.filter((l) => l.cardId.includes(t) || l.businessName.toLowerCase().includes(t));
-    }
-
-    return {
-      logs: filtered,
-      totalCount: filtered.length,
-      totalPages: 1,
-    };
-  } catch (fsErr) {
-    console.error('Firestore logs fetch error:', fsErr);
-    return { logs: [], totalCount: 0, totalPages: 1 };
-  }
+  return { authorized: false, revoked: false, role: 'member' };
 }
 
-export async function recordQrScanLog(payload: {
-  cardId: string;
-  source?: 'qr' | 'nfc' | 'direct' | 'simulator';
-  businessName?: string;
-  category?: string;
-}): Promise<QRScanLog | null> {
-  const scanLogId = `log-${payload.cardId}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-  const now = new Date().toISOString();
-  const scanLog: QRScanLog = {
-    id: scanLogId,
-    cardId: payload.cardId,
-    businessName: payload.businessName || `Stand #${payload.cardId}`,
-    category: payload.category || 'Customer Experience',
-    timestamp: now,
-    scannedAt: now,
-    source: payload.source || 'qr',
-    device: typeof navigator !== 'undefined' ? (navigator.userAgent.includes('Mobile') ? 'Mobile' : 'Desktop') : 'Web',
-    referrer: typeof document !== 'undefined' ? document.referrer || 'Direct Scan' : 'Direct Scan',
-  };
-
-  // 1. Write to Firestore
-  try {
-    await setDoc(doc(db, QR_LOGS_COLLECTION, scanLogId), cleanForFirestore(scanLog));
-  } catch (err) {
-    console.warn('Firestore scan log write notice:', err);
+export async function authorizeUserAsAdmin(
+  payload: {
+    email: string;
+    displayName?: string;
+    role: 'master' | 'restricted' | 'member';
+    existingUid?: string;
+    assignedCardIds?: string[];
+  },
+  _caller?: { id?: string; email?: string }
+): Promise<{ user: UserProfile; admin?: AdminUser | null }> {
+  if (!isCurrentAuthMaster()) {
+    throw new Error('Only Master Admin can authorize or change user roles.');
   }
 
-  // 2. Notify backend server
-  try {
-    const res = await fetch('/api/logs', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(scanLog),
-    });
-    if (res.ok) {
-      const data = await res.json();
-      return data.log || scanLog;
+  const cleanEmail = payload.email.trim().toLowerCase();
+  if (!cleanEmail || !cleanEmail.includes('@')) {
+    throw new Error('A valid email address is required.');
+  }
+  if (cleanEmail === MASTER_ADMIN_EMAIL && payload.role !== 'master') {
+    throw new Error('Cannot demote the primary Master Administrator.');
+  }
+
+  const uid =
+    payload.existingUid || `preauth-${cleanEmail.replace(/[^a-zA-Z0-9]/g, '-')}`;
+  const displayName = payload.displayName?.trim() || cleanEmail.split('@')[0];
+
+  const savedUser = await saveUser({
+    uid,
+    email: cleanEmail,
+    displayName,
+    role: payload.role,
+    emailVerified: true,
+    ...(payload.assignedCardIds ? { assignedCardIds: payload.assignedCardIds } : {}),
+  });
+
+  const existingAdmins = await fetchAdmins();
+  const matchedAdmin = existingAdmins.find((a) => a.email.trim().toLowerCase() === cleanEmail);
+  let syncedAdmin: AdminUser | null = null;
+
+  if (payload.role === 'restricted' || payload.role === 'master') {
+    if (matchedAdmin) {
+      syncedAdmin = await updateAdmin(matchedAdmin.id, {
+        name: displayName,
+        email: cleanEmail,
+        role: payload.role,
+        ...(payload.assignedCardIds ? { assignedCardIds: payload.assignedCardIds } : {}),
+      });
+    } else {
+      syncedAdmin = await createAdmin({
+        email: cleanEmail,
+        name: displayName,
+        role: payload.role,
+        assignedCardIds: payload.assignedCardIds || [],
+      });
     }
-  } catch {
-    // ignore
+  } else if (matchedAdmin && matchedAdmin.email.trim().toLowerCase() !== MASTER_ADMIN_EMAIL) {
+    await deleteAdmin(matchedAdmin.id);
   }
 
-  return scanLog;
+  return { user: savedUser, admin: syncedAdmin };
 }
-
-export async function fetchQrLogStats(adminId?: string): Promise<{
-  totalScans: number;
-  uniqueCards: number;
-  todayScans: number;
-  sourceBreakdown: Record<string, number>;
-  deviceBreakdown: Record<string, number>;
-} | null> {
-  try {
-    const res = await fetch('/api/logs/stats', {
-      headers: {
-        ...(adminId ? { 'x-admin-id': adminId } : {}),
-      },
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.success) return data;
-    }
-  } catch (err) {
-    console.warn('Log stats fetch notice:', err);
-  }
-  return null;
-}
-
-
-

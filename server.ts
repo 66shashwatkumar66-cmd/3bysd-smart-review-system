@@ -1,63 +1,83 @@
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import fs from 'fs';
 import dotenv from 'dotenv';
-import { GoogleGenAI } from '@google/genai';
+import { initializeApp, getApps } from 'firebase/app';
+import {
+  getFirestore,
+  doc,
+  getDoc,
+  getDocs,
+  collection,
+  updateDoc,
+  setDoc,
+  increment,
+} from 'firebase/firestore';
 import { generateReviewWithGemini } from './src/services/reviewGenerator';
 import {
   getSubscriptionStatus,
   isSubscriptionAccessible,
   validateSubscriptionDates,
-  normalizeDateString,
 } from './src/utils/subscription';
 
 dotenv.config();
 
+const MASTER_ADMIN_EMAIL = '66shashwatkumar66@gmail.com';
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const DATA_FILE = path.join(DATA_DIR, 'cards.json');
 const ADMINS_FILE = path.join(DATA_DIR, 'admins.json');
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
+const ADS_FILE = path.join(DATA_DIR, 'ads.json');
 const UPLOADS_DIR = path.resolve(process.cwd(), 'public', 'uploads', 'logos');
+
 if (!fs.existsSync(UPLOADS_DIR)) {
   fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 }
 
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+// Load Firebase applet configuration for authoritative live Firestore lookups and ID token verification
+let firebaseAppletConfig: Record<string, any> = {};
+try {
+  const cfgPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
+  if (fs.existsSync(cfgPath)) {
+    firebaseAppletConfig = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+  }
+} catch (err) {
+  console.warn('[Server] Could not load firebase-applet-config.json:', err);
+}
+
+let serverDb: ReturnType<typeof getFirestore> | null = null;
+try {
+  if (firebaseAppletConfig.projectId && firebaseAppletConfig.apiKey) {
+    const existingApp = getApps().find((a) => a.name === 'server-firestore');
+    const fbApp = existingApp || initializeApp(firebaseAppletConfig, 'server-firestore');
+    serverDb = firebaseAppletConfig.firestoreDatabaseId
+      ? getFirestore(fbApp, firebaseAppletConfig.firestoreDatabaseId)
+      : getFirestore(fbApp);
+  }
+} catch (err) {
+  console.warn('[Server] Firestore client initialization warning:', err);
+}
+
+app.use(express.json({ limit: '5mb' }));
+app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 app.use('/uploads', express.static(path.resolve(process.cwd(), 'public', 'uploads')));
 
-// Enable CORS and handle OPTIONS preflight for all API routes
+// Security & CORS headers
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-admin-id');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   if (req.method === 'OPTIONS') {
     return res.status(204).end();
   }
   next();
 });
 
-
-
-// Initialize Gemini SDK with telemetry header
-const geminiApiKey = process.env.GEMINI_API_KEY;
-let ai: GoogleGenAI | null = null;
-if (geminiApiKey) {
-  ai = new GoogleGenAI({
-    apiKey: geminiApiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
-    },
-  });
-}
-
-
 export interface CardRecord {
-  id: string; // e.g. "0001", "0002"
+  id: string;
   status: 'available' | 'assigned' | 'disabled';
   businessName: string;
   category: string;
@@ -76,6 +96,7 @@ export interface CardRecord {
   subscriptionEndDate?: string;
   subscriptionStatus?: 'unconfigured' | 'upcoming' | 'active' | 'expired';
   scansCount: number;
+  lastScannedAt?: string;
   assignedToEmail?: string;
   assignedToUid?: string;
   assignedToName?: string;
@@ -99,67 +120,6 @@ export interface AdminUser {
   updatedAt: string;
 }
 
-function ensureAdminsFile(): void {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-  if (!fs.existsSync(ADMINS_FILE)) {
-    const initialAdmins: AdminUser[] = [
-      {
-        id: 'master-admin-01',
-        email: '66shashwatkumar66@gmail.com',
-        name: 'Master Admin',
-        role: 'master',
-        assignedCardIds: [],
-        permissions: {
-          canEditCards: true,
-          canToggleAi: true,
-          canExportCsv: true,
-          canCreateCards: true,
-        },
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
-      {
-        id: 'sub-admin-01',
-        email: 'branch.manager@example.com',
-        name: 'Branch Manager (Restricted)',
-        role: 'restricted',
-        assignedCardIds: ['0001', '0002'],
-        permissions: {
-          canEditCards: true,
-          canToggleAi: true,
-          canExportCsv: false,
-          canCreateCards: false,
-        },
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
-    ];
-    fs.writeFileSync(ADMINS_FILE, JSON.stringify(initialAdmins, null, 2), 'utf-8');
-  }
-}
-
-function readAdmins(): AdminUser[] {
-  try {
-    ensureAdminsFile();
-    const data = fs.readFileSync(ADMINS_FILE, 'utf-8');
-    return JSON.parse(data) as AdminUser[];
-  } catch (err) {
-    console.error('Error reading admins file:', err);
-    return [];
-  }
-}
-
-function writeAdmins(admins: AdminUser[]): void {
-  try {
-    ensureAdminsFile();
-    fs.writeFileSync(ADMINS_FILE, JSON.stringify(admins, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error saving admins file:', err);
-  }
-}
-
 export interface UserProfile {
   uid: string;
   email: string;
@@ -175,409 +135,319 @@ export interface UserProfile {
   assignedCardIds?: string[];
 }
 
-function ensureUsersFile(): void {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+interface VerifiedAuthUser {
+  uid: string;
+  email: string;
+  emailVerified: boolean;
+  isMaster: boolean;
+}
+
+interface AuthenticatedRequest extends Request {
+  authUser?: VerifiedAuthUser;
+}
+
+/**
+ * Verifies a Firebase Auth ID token against Google Identity Toolkit.
+ * Never defaults to authorized if missing or invalid.
+ */
+async function verifyFirebaseIdToken(req: Request): Promise<VerifiedAuthUser | null> {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return null;
   }
-  if (!fs.existsSync(USERS_FILE)) {
-    const initialUsers: UserProfile[] = [
+  const idToken = authHeader.slice(7).trim();
+  if (!idToken || idToken.length < 20) {
+    return null;
+  }
+
+  const apiKey = firebaseAppletConfig.apiKey || process.env.VITE_FIREBASE_API_KEY;
+  if (!apiKey) {
+    return null;
+  }
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    const resp = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(apiKey)}`,
       {
-        uid: 'google-user-66shashwatkumar66',
-        email: '66shashwatkumar66@gmail.com',
-        displayName: 'Shashwat Kumar',
-        photoURL: 'https://api.dicebear.com/7.x/initials/svg?seed=SK&backgroundColor=1a73e8&textColor=ffffff',
-        provider: 'google.com',
-        role: 'master',
-        emailVerified: true,
-        lastLoginAt: new Date().toISOString(),
-        createdAt: new Date().toISOString(),
-        loginCount: 1,
-        device: 'Web Browser (Google Verified)',
-        assignedCardIds: [],
-      },
-    ];
-    fs.writeFileSync(USERS_FILE, JSON.stringify(initialUsers, null, 2), 'utf-8');
-  }
-}
-
-function readUsers(): UserProfile[] {
-  try {
-    ensureUsersFile();
-    const data = fs.readFileSync(USERS_FILE, 'utf-8');
-    return JSON.parse(data) as UserProfile[];
-  } catch (err) {
-    console.error('Error reading users file:', err);
-    return [];
-  }
-}
-
-function writeUsers(users: UserProfile[]): void {
-  try {
-    ensureUsersFile();
-    fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error saving users file:', err);
-  }
-}
-
-const ADS_FILE = path.join(DATA_DIR, 'ads.json');
-
-function ensureAdsFile(): void {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-  if (!fs.existsSync(ADS_FILE)) {
-    const initialAds = [
-      {
-        id: 'ad-001',
-        name: '3D Printed QR Stands Promotion',
-        advertiser: '3DBYSD Studios',
-        headline: 'Custom 3D Printed NFC & QR Stands for Businesses',
-        description: 'Elevate your counter or table with durable, branded acrylic and wood review stands.',
-        imageUrl: 'https://images.unsplash.com/photo-1581291518857-4e27b48ff24e?auto=format&fit=crop&w=400&q=80',
-        targetUrl: 'https://3dbysd.com',
-        ctaText: 'Explore Stands',
-        placement: 'below_draft',
-        status: 'active',
-        priority: 10,
-        impressions: 48,
-        clicks: 6,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
-    ];
-    fs.writeFileSync(ADS_FILE, JSON.stringify(initialAds, null, 2), 'utf-8');
-  }
-}
-
-function readAds(): any[] {
-  try {
-    ensureAdsFile();
-    const data = fs.readFileSync(ADS_FILE, 'utf-8');
-    return JSON.parse(data);
-  } catch (err) {
-    console.error('Error reading ads file:', err);
-    return [];
-  }
-}
-
-function writeAds(ads: any[]): void {
-  try {
-    ensureAdsFile();
-    fs.writeFileSync(ADS_FILE, JSON.stringify(ads, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error saving ads file:', err);
-  }
-}
-
-const LOGS_FILE = path.join(DATA_DIR, 'qr_logs.json');
-
-export interface QRScanLog {
-  id: string;
-  cardId: string;
-  businessName: string;
-  category?: string;
-  timestamp: string;
-  scannedAt: string;
-  device?: string;
-  browser?: string;
-  ip?: string;
-  referrer?: string;
-  source: 'qr' | 'nfc' | 'direct' | 'simulator';
-  subscriptionStatusAtScan?: string;
-}
-
-function parseDeviceInfo(userAgent: string = ''): { device: string; browser: string } {
-  const ua = userAgent.toLowerCase();
-  let device = 'Desktop (Web)';
-  let browser = 'Chrome';
-
-  if (ua.includes('iphone') || ua.includes('ipad')) {
-    device = 'Mobile (iPhone / iOS)';
-  } else if (ua.includes('android')) {
-    device = 'Mobile (Android)';
-  } else if (ua.includes('mobile')) {
-    device = 'Mobile (Other)';
-  } else if (ua.includes('macintosh') || ua.includes('mac os')) {
-    device = 'Desktop (macOS)';
-  } else if (ua.includes('windows')) {
-    device = 'Desktop (Windows)';
-  } else if (ua.includes('linux')) {
-    device = 'Desktop (Linux)';
-  }
-
-  if (ua.includes('safari') && !ua.includes('chrome') && !ua.includes('crios') && !ua.includes('android')) {
-    browser = 'Safari';
-  } else if (ua.includes('edg') || ua.includes('edge')) {
-    browser = 'Edge';
-  } else if (ua.includes('firefox')) {
-    browser = 'Firefox';
-  } else if (ua.includes('chrome') || ua.includes('crios')) {
-    browser = 'Chrome';
-  }
-
-  return { device, browser };
-}
-
-function ensureLogsFile(): void {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-  if (!fs.existsSync(LOGS_FILE)) {
-    fs.writeFileSync(LOGS_FILE, JSON.stringify([], null, 2), 'utf-8');
-    seedRecoveredHistoricalLogs();
-  }
-}
-
-function readLogs(): QRScanLog[] {
-  try {
-    ensureLogsFile();
-    const data = fs.readFileSync(LOGS_FILE, 'utf-8');
-    const logs = JSON.parse(data) as QRScanLog[];
-    if (logs.length === 0) {
-      seedRecoveredHistoricalLogs();
-      return JSON.parse(fs.readFileSync(LOGS_FILE, 'utf-8'));
-    }
-    return logs;
-  } catch (err) {
-    console.error('Error reading logs file:', err);
-    return [];
-  }
-}
-
-function writeLogs(logs: QRScanLog[]): void {
-  try {
-    ensureLogsFile();
-    fs.writeFileSync(LOGS_FILE, JSON.stringify(logs, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error saving logs file:', err);
-  }
-}
-
-function seedRecoveredHistoricalLogs(): void {
-  try {
-    const cards = readCards();
-    const existingLogs: QRScanLog[] = fs.existsSync(LOGS_FILE)
-      ? JSON.parse(fs.readFileSync(LOGS_FILE, 'utf-8') || '[]')
-      : [];
-
-    if (existingLogs.length > 0) return;
-
-    const recovered: QRScanLog[] = [];
-    const devicesPool = [
-      { device: 'Mobile (Android)', browser: 'Chrome' },
-      { device: 'Mobile (Android)', browser: 'Samsung Internet' },
-      { device: 'Mobile (iPhone / iOS)', browser: 'Safari' },
-      { device: 'Mobile (iPhone / iOS)', browser: 'Chrome' },
-      { device: 'Mobile (Android)', browser: 'Chrome' },
-      { device: 'Desktop (macOS)', browser: 'Chrome' },
-      { device: 'Desktop (Windows)', browser: 'Chrome' },
-    ];
-
-    for (const card of cards) {
-      const count = card.scansCount || 0;
-      if (count <= 0) continue;
-
-      const startMs = card.createdAt ? new Date(card.createdAt).getTime() : Date.now() - 30 * 86400000;
-      const endMs = card.updatedAt ? new Date(card.updatedAt).getTime() : Date.now();
-      const span = Math.max(endMs - startMs, 3600000);
-
-      for (let i = 0; i < count; i++) {
-        const offsetRatio = (i + 0.5) / count;
-        const scanTime = new Date(startMs + span * offsetRatio).toISOString();
-        const dev = devicesPool[(i + (parseInt(card.id, 10) || 0)) % devicesPool.length];
-        const source: 'qr' | 'nfc' = i % 4 === 0 ? 'nfc' : 'qr';
-
-        recovered.push({
-          id: `rec-${card.id}-${String(i + 1).padStart(4, '0')}`,
-          cardId: card.id,
-          businessName: card.businessName?.trim() || `Stand #${card.id}`,
-          category: card.category || 'Customer Experience',
-          timestamp: scanTime,
-          scannedAt: scanTime,
-          device: dev.device,
-          browser: dev.browser,
-          ip: `192.168.${(i % 10) + 1}.${(i % 250) + 1}`,
-          referrer: source === 'nfc' ? 'Physical NFC Tag Tap' : 'Google Camera QR Scan',
-          source,
-          subscriptionStatusAtScan: card.subscriptionStatus || 'active',
-        });
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken }),
+        signal: controller.signal,
       }
+    );
+    clearTimeout(timer);
+
+    if (!resp.ok) {
+      return null;
     }
 
-    recovered.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-    fs.writeFileSync(LOGS_FILE, JSON.stringify(recovered, null, 2), 'utf-8');
-    console.log(`✅ Recovered ${recovered.length} historical QR scan logs from cards database.`);
-  } catch (err) {
-    console.error('Failed to seed historical logs:', err);
+    const data: any = await resp.json();
+    const user = Array.isArray(data?.users) ? data.users[0] : null;
+    if (!user || !user.localId || !user.email) {
+      return null;
+    }
+
+    const cleanEmail = String(user.email).trim().toLowerCase();
+    const emailVerified = Boolean(user.emailVerified);
+    return {
+      uid: String(user.localId),
+      email: cleanEmail,
+      emailVerified,
+      isMaster: emailVerified && cleanEmail === MASTER_ADMIN_EMAIL,
+    };
+  } catch {
+    return null;
   }
 }
 
-function logQrScan(card: CardRecord, req?: Request, overrideSource?: string): QRScanLog {
-  const userAgent = req?.headers['user-agent'] || '';
-  const { device, browser } = parseDeviceInfo(userAgent);
-  const ip = (req?.headers['x-forwarded-for'] as string)?.split(',')[0] || req?.socket?.remoteAddress || '127.0.0.1';
-  const referrer = (req?.headers['referer'] as string) || (req?.headers['referrer'] as string) || (overrideSource === 'nfc' ? 'NFC Tag Tap' : 'QR Camera Scan');
-  const source = overrideSource || (req?.path?.startsWith('/nfc') ? 'nfc' : 'qr');
-  const now = new Date().toISOString();
-
-  const scanLog: QRScanLog = {
-    id: `log-${card.id}-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-    cardId: card.id,
-    businessName: card.businessName?.trim() || `Stand #${card.id}`,
-    category: card.category || 'Local Business',
-    timestamp: now,
-    scannedAt: now,
-    device,
-    browser,
-    ip,
-    referrer,
-    source: (source as any) || 'qr',
-    subscriptionStatusAtScan: card.subscriptionStatus || 'unconfigured',
-  };
-
-  const logs = readLogs();
-  logs.unshift(scanLog);
-  writeLogs(logs);
-
-  return scanLog;
+async function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  const verified = await verifyFirebaseIdToken(req);
+  if (!verified) {
+    return res.status(401).json({
+      success: false,
+      message: 'Authentication required. Please sign in with your verified Google account.',
+    });
+  }
+  req.authUser = verified;
+  next();
 }
 
-// In-memory + file-backed persistent card store
-function ensureDataFile(): void {
-  ensureAdminsFile();
-  ensureUsersFile();
-  ensureAdsFile();
-  ensureLogsFile();
+async function requireMasterAdmin(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  const verified = await verifyFirebaseIdToken(req);
+  if (!verified) {
+    return res.status(401).json({
+      success: false,
+      message: 'Authentication required. Please sign in with your verified Google account.',
+    });
+  }
+  if (!verified.isMaster) {
+    return res.status(403).json({
+      success: false,
+      message: 'Forbidden: Master Admin access is required for this operation.',
+    });
+  }
+  req.authUser = verified;
+  next();
+}
+
+/**
+ * Strips private owner/internal admin fields before returning a card to public endpoints.
+ */
+function sanitizePublicCard(card: CardRecord) {
+  return {
+    id: card.id,
+    status: card.status,
+    businessName: card.businessName,
+    category: card.category,
+    googleReviewUrl: card.googleReviewUrl,
+    aiReviewEnabled: card.aiReviewEnabled,
+    customKeywords: card.customKeywords,
+    reviewTone: card.reviewTone,
+    promptStarter: card.promptStarter,
+    customHeadline: card.customHeadline,
+    logoUrl: card.logoUrl,
+    businessDescription: card.businessDescription,
+    whatsapp: card.whatsapp,
+    instagram: card.instagram,
+    subscriptionStartDate: card.subscriptionStartDate,
+    subscriptionEndDate: card.subscriptionEndDate,
+    subscriptionStatus: card.subscriptionStatus,
+    scansCount: card.scansCount || 0,
+    lastScannedAt: card.lastScannedAt,
+    createdAt: card.createdAt,
+    updatedAt: card.updatedAt,
+  };
+}
+
+/**
+ * Authoritative server-side card lookup: Cloud Firestore FIRST, local JSON fallback only on network outage.
+ */
+async function fetchAuthoritativeCardServer(cardId: string): Promise<{
+  card: CardRecord | null;
+  source: 'firestore' | 'local' | 'none';
+}> {
+  const cleanId = String(cardId || '').trim();
+  if (!cleanId || !/^[a-zA-Z0-9_-]{1,32}$/.test(cleanId)) {
+    return { card: null, source: 'none' };
+  }
+
+  if (serverDb) {
+    try {
+      const snap = await getDoc(doc(serverDb, 'cards', cleanId));
+      if (snap.exists()) {
+        const data = snap.data() as Omit<CardRecord, 'id'>;
+        return {
+          card: { id: snap.id, ...data } as CardRecord,
+          source: 'firestore',
+        };
+      }
+      // Confirmed absent in authoritative Firestore
+      return { card: null, source: 'firestore' };
+    } catch (err) {
+      console.warn(`[Server] Firestore lookup error for card ${cleanId}, checking local cache:`, err);
+    }
+  }
+
+  const localCards = readCards();
+  const found = localCards.find((c) => c.id.toLowerCase() === cleanId.toLowerCase()) || null;
+  return { card: found, source: found ? 'local' : 'none' };
+}
+
+/**
+ * Records a direct-redirect scan in live Cloud Firestore (scansCount +1 + immutable scan_logs doc).
+ */
+async function recordServerDirectScan(card: CardRecord, source: 'qr' | 'nfc' | 'direct', outcome: string): Promise<void> {
+  if (!serverDb) return;
+  try {
+    const now = new Date().toISOString();
+    await updateDoc(doc(serverDb, 'cards', card.id), {
+      scansCount: increment(1),
+      updatedAt: now,
+      lastScannedAt: now,
+    });
+
+    const logId = `scan_${card.id}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const logDoc: Record<string, any> = {
+      id: logId,
+      cardId: card.id,
+      businessName: card.businessName || '',
+      category: card.category || '',
+      scannedAt: now,
+      source,
+      outcome,
+      subscriptionStatus: getSubscriptionStatus(card),
+      path: `/r/${card.id}`,
+    };
+    if (card.assignedToEmail) logDoc.assignedToEmail = card.assignedToEmail.trim().toLowerCase();
+    if (card.assignedToUid) logDoc.assignedToUid = card.assignedToUid.trim();
+
+    await setDoc(doc(serverDb, 'scan_logs', logId), logDoc);
+  } catch (err) {
+    console.warn(`[Server] Direct scan log write skipped for card ${card.id}:`, err);
+  }
+}
+
+// ---------------- Local Fallback File Helpers (Never Overwrite Live Firestore) ----------------
+
+function ensureDataDir(): void {
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
-  if (!fs.existsSync(DATA_FILE)) {
-    const initialCards: CardRecord[] = [
-      {
-        id: '0001',
-        status: 'assigned',
-        businessName: 'The Artisan Roastery & Bakery',
-        category: 'Specialty Coffee & Brunch',
-        googleReviewUrl: 'https://search.google.com/local/writereview?placeid=ChIJN1t_tDeuEmsRUsoyG83frY4',
-        notes: 'Table 4 Stand - NFC & QR display',
-        scansCount: 42,
-        createdAt: new Date(Date.now() - 7 * 86400000).toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
-      {
-        id: '0002',
-        status: 'assigned',
-        businessName: 'SD Wood-Fired Pizzeria',
-        category: 'Italian Restaurant',
-        googleReviewUrl: 'https://search.google.com/local/writereview?placeid=ChIJN1t_tDeuEmsRUsoyG83frY4',
-        notes: 'Host stand entrance',
-        scansCount: 19,
-        createdAt: new Date(Date.now() - 5 * 86400000).toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
-      {
-        id: '0003',
-        status: 'available',
-        businessName: '',
-        category: '',
-        googleReviewUrl: '',
-        notes: 'Batch #1 - Unassigned acrylic stand',
-        scansCount: 0,
-        createdAt: new Date(Date.now() - 3 * 86400000).toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
-      {
-        id: '0004',
-        status: 'available',
-        businessName: '',
-        category: '',
-        googleReviewUrl: '',
-        notes: 'Batch #1 - Unassigned keychain badge',
-        scansCount: 0,
-        createdAt: new Date(Date.now() - 2 * 86400000).toISOString(),
-        updatedAt: new Date().toISOString(),
-      },
-    ];
-    fs.writeFileSync(DATA_FILE, JSON.stringify(initialCards, null, 2), 'utf-8');
+}
+
+function readJsonArray<T>(filePath: string): T[] {
+  try {
+    ensureDataDir();
+    if (!fs.existsSync(filePath)) return [];
+    const data = fs.readFileSync(filePath, 'utf-8');
+    const parsed = JSON.parse(data);
+    return Array.isArray(parsed) ? (parsed as T[]) : [];
+  } catch (err) {
+    console.error(`Error reading ${path.basename(filePath)}:`, err);
+    return [];
+  }
+}
+
+function writeJsonArray<T>(filePath: string, items: T[]): void {
+  try {
+    ensureDataDir();
+    fs.writeFileSync(filePath, JSON.stringify(items, null, 2), 'utf-8');
+  } catch (err) {
+    console.error(`Error writing ${path.basename(filePath)}:`, err);
   }
 }
 
 function readCards(): CardRecord[] {
-  try {
-    ensureDataFile();
-    const data = fs.readFileSync(DATA_FILE, 'utf-8');
-    return JSON.parse(data) as CardRecord[];
-  } catch (err) {
-    console.error('Error reading cards file:', err);
-    return [];
-  }
+  return readJsonArray<CardRecord>(DATA_FILE);
 }
-
 function writeCards(cards: CardRecord[]): void {
-  try {
-    ensureDataFile();
-    fs.writeFileSync(DATA_FILE, JSON.stringify(cards, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error saving cards file:', err);
-  }
+  writeJsonArray(DATA_FILE, cards);
+}
+function readAdmins(): AdminUser[] {
+  return readJsonArray<AdminUser>(ADMINS_FILE);
+}
+function writeAdmins(admins: AdminUser[]): void {
+  writeJsonArray(ADMINS_FILE, admins);
+}
+function readUsers(): UserProfile[] {
+  return readJsonArray<UserProfile>(USERS_FILE);
+}
+function writeUsers(users: UserProfile[]): void {
+  writeJsonArray(USERS_FILE, users);
+}
+function readAds(): any[] {
+  return readJsonArray<any>(ADS_FILE);
+}
+function writeAds(ads: any[]): void {
+  writeJsonArray(ADS_FILE, ads);
 }
 
-// REST API: Get all cards
-app.get('/api/cards', (_req: Request, res: Response) => {
+// ================= Health Check =================
+
+app.get('/api/health', (_req: Request, res: Response) => {
+  res.json({
+    success: true,
+    status: 'ok',
+    database: serverDb ? 'firestore' : 'local_fallback',
+    aiConfigured: Boolean(process.env.GEMINI_API_KEY),
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// ================= Cards REST API =================
+
+// Master Admin only: Get all cached cards
+app.get('/api/cards', requireMasterAdmin, (_req: AuthenticatedRequest, res: Response) => {
   const cards = readCards();
   res.json({ success: true, cards });
 });
 
-// REST API: Get single card by ID (with scan count increment)
-app.get('/api/cards/:id', (req: Request, res: Response) => {
+// Public endpoint: Get single card by ID from LIVE Cloud Firestore (sanitized, no admin PII)
+app.get('/api/cards/:id', async (req: Request, res: Response) => {
   const { id } = req.params;
-  const cards = readCards();
-  const card = cards.find((c) => c.id.toLowerCase() === id.toLowerCase());
+  const { card } = await fetchAuthoritativeCardServer(id);
 
   if (!card) {
     return res.status(404).json({ success: false, message: `Card ${id} not found` });
   }
 
-  // Increment scan count and record scan log if requested with increment query
+  const subCheck = isSubscriptionAccessible(card);
+  const publicCard = sanitizePublicCard({
+    ...card,
+    subscriptionStatus: subCheck.status,
+  });
+
   if (req.query.scan === 'true') {
-    card.scansCount = (card.scansCount || 0) + 1;
-    card.updatedAt = new Date().toISOString();
-    writeCards(cards);
-    logQrScan(card, req, (req.query.source as string) || 'qr');
+    const outcome =
+      card.status === 'disabled'
+        ? 'disabled'
+        : card.status === 'available'
+          ? 'unassigned'
+          : subCheck.accessible
+            ? 'allowed'
+            : subCheck.status === 'upcoming'
+              ? 'upcoming'
+              : 'expired';
+    recordServerDirectScan(card, 'qr', outcome).catch(() => {});
   }
 
-  // Compute live subscription status
-  const subCheck = isSubscriptionAccessible(card);
-  card.subscriptionStatus = subCheck.status;
-
-  res.json({
+  return res.json({
     success: true,
-    card,
-    ...card,
-    subscriptionAccessible: subCheck.accessible,
+    card: publicCard,
+    subscriptionAccessible: card.status !== 'disabled' && subCheck.accessible,
     subscriptionStatus: subCheck.status,
-    subscriptionMessage: subCheck.customerMessage,
+    subscriptionMessage:
+      card.status === 'disabled'
+        ? 'This QR stand is currently disabled. Please contact the business for assistance.'
+        : subCheck.customerMessage,
   });
 });
 
-// REST API: Create single or batch cards (Master Admin Only)
-app.post('/api/cards/batch', (req: Request, res: Response) => {
+// Master Admin only: Create batch cards
+app.post('/api/cards/batch', requireMasterAdmin, (req: AuthenticatedRequest, res: Response) => {
   try {
-    const requesterAdminId = (req.headers['x-admin-id'] as string) || req.body.adminId;
-    if (requesterAdminId) {
-      const admins = readAdmins();
-      const admin = admins.find(
-        (a) => a.id === requesterAdminId || a.email.toLowerCase() === requesterAdminId.toLowerCase()
-      );
-      if (admin && admin.role === 'restricted') {
-        return res.status(403).json({
-          success: false,
-          message: 'Permission Denied: Only Master Admin can generate new QR inventory cards.',
-        });
-      }
-    }
-
     const { count = 1, startNumber = 1, paddingDigits = 4, prefix = '' } = req.body;
     const cards = readCards();
     const existingIds = new Set(cards.map((c) => c.id));
@@ -592,6 +462,7 @@ app.post('/api/cards/batch', (req: Request, res: Response) => {
       const candidateId = prefix ? `${prefix}-${paddedNum}` : paddedNum;
 
       if (!existingIds.has(candidateId)) {
+        const now = new Date().toISOString();
         const newCard: CardRecord = {
           id: candidateId,
           status: 'available',
@@ -600,8 +471,8 @@ app.post('/api/cards/batch', (req: Request, res: Response) => {
           googleReviewUrl: '',
           notes: `Batch created ${new Date().toLocaleDateString()}`,
           scansCount: 0,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
+          createdAt: now,
+          updatedAt: now,
         };
         newCards.push(newCard);
         existingIds.add(candidateId);
@@ -624,10 +495,11 @@ app.post('/api/cards/batch', (req: Request, res: Response) => {
   }
 });
 
-// REST API: Assign or update card details (supports /api/cards/:id/assign and /api/cards/:id)
-app.put(['/api/cards/:id/assign', '/api/cards/:id'], (req: Request, res: Response) => {
+// Authenticated Admin/Owner: Assign or update card details (enforces ownership and Master-only fields)
+app.put('/api/cards/:id/assign', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
+    const authUser = req.authUser!;
     const {
       businessName,
       googleReviewUrl,
@@ -646,7 +518,14 @@ app.put(['/api/cards/:id/assign', '/api/cards/:id'], (req: Request, res: Respons
     let index = cards.findIndex((c) => c.id.toLowerCase() === id.toLowerCase());
 
     if (index === -1) {
-      const initial: CardRecord = {
+      if (!authUser.isMaster) {
+        return res.status(403).json({
+          success: false,
+          message: 'Permission Denied: Only Master Admin can create new QR cards.',
+        });
+      }
+      const now = new Date().toISOString();
+      cards.push({
         id,
         status: status || 'available',
         businessName: businessName !== undefined ? String(businessName).trim() : '',
@@ -654,26 +533,56 @@ app.put(['/api/cards/:id/assign', '/api/cards/:id'], (req: Request, res: Respons
         googleReviewUrl: googleReviewUrl !== undefined ? String(googleReviewUrl).trim() : '',
         notes: notes !== undefined ? String(notes).trim() : '',
         scansCount: 0,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      cards.push(initial);
+        createdAt: now,
+        updatedAt: now,
+      });
       index = cards.length - 1;
     }
 
     const existingCard = cards[index];
-    if (!existingCard) {
-      return res.status(404).json({ success: false, message: 'Card not found' });
+
+    // Enforce Sub-Admin ownership & Master-only field protection
+    if (!authUser.isMaster) {
+      const ownsCard =
+        (existingCard.assignedToEmail &&
+          existingCard.assignedToEmail.toLowerCase() === authUser.email) ||
+        (existingCard.assignedToUid && existingCard.assignedToUid === authUser.uid);
+
+      if (!ownsCard) {
+        return res.status(403).json({
+          success: false,
+          message: 'Permission Denied: You are only authorized to edit your assigned cards.',
+        });
+      }
+
+      if (
+        assignedToEmail !== undefined ||
+        assignedToUid !== undefined ||
+        assignedToName !== undefined ||
+        subscriptionStartDate !== undefined ||
+        subscriptionEndDate !== undefined ||
+        status === 'disabled'
+      ) {
+        return res.status(403).json({
+          success: false,
+          message: 'Permission Denied: Only Master Admin can modify ownership, subscription dates, or disable cards.',
+        });
+      }
     }
 
-    // Validate subscription dates if provided
     if (subscriptionStartDate !== undefined || subscriptionEndDate !== undefined) {
-      const startCandidate = subscriptionStartDate !== undefined
-        ? (subscriptionStartDate ? String(subscriptionStartDate).trim() : null)
-        : (existingCard.subscriptionStartDate || null);
-      const endCandidate = subscriptionEndDate !== undefined
-        ? (subscriptionEndDate ? String(subscriptionEndDate).trim() : null)
-        : (existingCard.subscriptionEndDate || null);
+      const startCandidate =
+        subscriptionStartDate !== undefined
+          ? subscriptionStartDate
+            ? String(subscriptionStartDate).trim()
+            : null
+          : existingCard.subscriptionStartDate || null;
+      const endCandidate =
+        subscriptionEndDate !== undefined
+          ? subscriptionEndDate
+            ? String(subscriptionEndDate).trim()
+            : null
+          : existingCard.subscriptionEndDate || null;
 
       const valRes = validateSubscriptionDates(startCandidate, endCandidate);
       if (!valRes.valid) {
@@ -681,120 +590,118 @@ app.put(['/api/cards/:id/assign', '/api/cards/:id'], (req: Request, res: Respons
       }
     }
 
-    // Sub-admin permission validation: restricted admins can only edit their assigned cards
-    const requesterAdminId = (req.headers['x-admin-id'] as string) || req.body.adminId;
-    if (requesterAdminId) {
-      const admins = readAdmins();
-      const admin = admins.find(
-        (a) => a.id === requesterAdminId || a.email.toLowerCase() === requesterAdminId.toLowerCase()
-      );
-      if (admin && admin.role === 'restricted') {
-        const isAssignedByList = admin.assignedCardIds && admin.assignedCardIds.some((cid) => cid.toLowerCase() === id.toLowerCase());
-        const isAssignedByEmail = existingCard.assignedToEmail && existingCard.assignedToEmail.toLowerCase() === admin.email.toLowerCase();
-        const isAssignedByUid = existingCard.assignedToUid && existingCard.assignedToUid === admin.id;
-
-        if (!isAssignedByList && !isAssignedByEmail && !isAssignedByUid) {
-          return res.status(403).json({
-            success: false,
-            message: `Restricted Access: Sub-admin ${admin.name} is only authorized to edit assigned cards [${admin.assignedCardIds.join(', ')}].`,
-          });
-        }
-
-        // Sub-admins cannot reassign card ownership to someone else
-        if (assignedToEmail !== undefined && assignedToEmail && existingCard.assignedToEmail && assignedToEmail.toLowerCase() !== existingCard.assignedToEmail.toLowerCase()) {
-          return res.status(403).json({
-            success: false,
-            message: 'Permission Denied: Sub-admins cannot reassign card ownership.',
-          });
-        }
-      }
-    }
-
-    const effectiveStart = subscriptionStartDate !== undefined
-      ? (subscriptionStartDate ? String(subscriptionStartDate).trim() : undefined)
-      : existingCard.subscriptionStartDate;
-    const effectiveEnd = subscriptionEndDate !== undefined
-      ? (subscriptionEndDate ? String(subscriptionEndDate).trim() : undefined)
-      : existingCard.subscriptionEndDate;
+    const effectiveStart =
+      authUser.isMaster && subscriptionStartDate !== undefined
+        ? subscriptionStartDate
+          ? String(subscriptionStartDate).trim()
+          : undefined
+        : existingCard.subscriptionStartDate;
+    const effectiveEnd =
+      authUser.isMaster && subscriptionEndDate !== undefined
+        ? subscriptionEndDate
+          ? String(subscriptionEndDate).trim()
+          : undefined
+        : existingCard.subscriptionEndDate;
     const computedSubStatus = getSubscriptionStatus({
       subscriptionStartDate: effectiveStart,
       subscriptionEndDate: effectiveEnd,
     });
 
     cards[index] = {
-      ...cards[index],
-      businessName: businessName !== undefined ? businessName.trim() : cards[index].businessName,
-      googleReviewUrl: googleReviewUrl !== undefined ? googleReviewUrl.trim() : cards[index].googleReviewUrl,
-      category: category !== undefined ? category.trim() : cards[index].category,
-      notes: notes !== undefined ? notes.trim() : cards[index].notes,
+      ...existingCard,
+      businessName: businessName !== undefined ? String(businessName).trim() : existingCard.businessName,
+      googleReviewUrl:
+        googleReviewUrl !== undefined ? String(googleReviewUrl).trim() : existingCard.googleReviewUrl,
+      category: category !== undefined ? String(category).trim() : existingCard.category,
+      notes: notes !== undefined ? String(notes).trim() : existingCard.notes,
       aiReviewEnabled:
         aiReviewEnabled !== undefined
-            ? Boolean(aiReviewEnabled)
-          : (cards[index].aiReviewEnabled ?? false),
-      status:
-        status !== undefined
-          ? status
-          : (cards[index].status || (cards[index].businessName && cards[index].googleReviewUrl ? 'assigned' : 'available')),
-      assignedToEmail: assignedToEmail !== undefined ? (assignedToEmail ? String(assignedToEmail).trim() : undefined) : cards[index].assignedToEmail,
-      assignedToUid: assignedToUid !== undefined ? (assignedToUid ? String(assignedToUid).trim() : undefined) : cards[index].assignedToUid,
-      assignedToName: assignedToName !== undefined ? (assignedToName ? String(assignedToName).trim() : undefined) : cards[index].assignedToName,
+          ? Boolean(aiReviewEnabled)
+          : existingCard.aiReviewEnabled ?? true,
+      status: status !== undefined ? status : existingCard.status,
+      assignedToEmail: authUser.isMaster && assignedToEmail !== undefined
+        ? assignedToEmail
+          ? String(assignedToEmail).trim().toLowerCase()
+          : undefined
+        : existingCard.assignedToEmail,
+      assignedToUid: authUser.isMaster && assignedToUid !== undefined
+        ? assignedToUid
+          ? String(assignedToUid).trim()
+          : undefined
+        : existingCard.assignedToUid,
+      assignedToName: authUser.isMaster && assignedToName !== undefined
+        ? assignedToName
+          ? String(assignedToName).trim()
+          : undefined
+        : existingCard.assignedToName,
       customKeywords:
         req.body.customKeywords !== undefined
-          ? (Array.isArray(req.body.customKeywords) ? req.body.customKeywords.map((k: string) => String(k).trim()).filter(Boolean) : [])
-          : cards[index].customKeywords,
-      reviewTone: req.body.reviewTone !== undefined ? req.body.reviewTone : cards[index].reviewTone,
-      promptStarter: req.body.promptStarter !== undefined ? String(req.body.promptStarter).trim() : cards[index].promptStarter,
-      customHeadline: req.body.customHeadline !== undefined ? String(req.body.customHeadline).trim() : cards[index].customHeadline,
-      logoUrl: req.body.logoUrl !== undefined ? (req.body.logoUrl ? String(req.body.logoUrl).trim() : undefined) : cards[index].logoUrl,
-      businessDescription: req.body.businessDescription !== undefined ? (req.body.businessDescription ? String(req.body.businessDescription).trim() : undefined) : cards[index].businessDescription,
-      whatsapp: req.body.whatsapp !== undefined ? (req.body.whatsapp ? String(req.body.whatsapp).trim() : undefined) : cards[index].whatsapp,
-      instagram: req.body.instagram !== undefined ? (req.body.instagram ? String(req.body.instagram).trim() : undefined) : cards[index].instagram,
+          ? Array.isArray(req.body.customKeywords)
+            ? req.body.customKeywords.map((k: string) => String(k).trim()).filter(Boolean)
+            : []
+          : existingCard.customKeywords,
+      reviewTone: req.body.reviewTone !== undefined ? req.body.reviewTone : existingCard.reviewTone,
+      promptStarter:
+        req.body.promptStarter !== undefined
+          ? String(req.body.promptStarter).trim()
+          : existingCard.promptStarter,
+      customHeadline:
+        req.body.customHeadline !== undefined
+          ? String(req.body.customHeadline).trim()
+          : existingCard.customHeadline,
+      logoUrl:
+        req.body.logoUrl !== undefined
+          ? req.body.logoUrl
+            ? String(req.body.logoUrl).trim()
+            : undefined
+          : existingCard.logoUrl,
+      businessDescription:
+        req.body.businessDescription !== undefined
+          ? req.body.businessDescription
+            ? String(req.body.businessDescription).trim()
+            : undefined
+          : existingCard.businessDescription,
+      whatsapp:
+        req.body.whatsapp !== undefined
+          ? req.body.whatsapp
+            ? String(req.body.whatsapp).trim()
+            : undefined
+          : existingCard.whatsapp,
+      instagram:
+        req.body.instagram !== undefined
+          ? req.body.instagram
+            ? String(req.body.instagram).trim()
+            : undefined
+          : existingCard.instagram,
       subscriptionStartDate: effectiveStart,
       subscriptionEndDate: effectiveEnd,
       subscriptionStatus: computedSubStatus,
+      scansCount: existingCard.scansCount || 0,
+      createdAt: existingCard.createdAt,
       updatedAt: new Date().toISOString(),
     };
 
     writeCards(cards);
-
-    // Sync with users storage
-    if (assignedToEmail) {
-      try {
-        const users = readUsers();
-        const target = users.find((u) => u.email.toLowerCase() === String(assignedToEmail).trim().toLowerCase());
-        if (target) {
-          if (!target.assignedCardIds) target.assignedCardIds = [];
-          if (!target.assignedCardIds.includes(cards[index].id)) {
-            target.assignedCardIds.push(cards[index].id);
-            writeUsers(users);
-          }
-        }
-      } catch (uErr) {
-        console.warn('Could not update user assignedCardIds:', uErr);
-      }
-    }
-
-    res.json({ success: true, card: cards[index], ...cards[index] });
+    res.json({ success: true, card: cards[index] });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message || 'Assignment failed' });
   }
 });
 
-// REST API: Upload Business Logo with validation & persistent storage
-app.post('/api/upload-logo', (req: Request, res: Response) => {
+// Authenticated Admin/Owner: Upload Business Logo with strict magic-byte & size validation
+app.post('/api/upload-logo', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { image, dataUrl, fileName, cardId } = req.body;
+    const { image, dataUrl, cardId } = req.body;
     const rawImage = image || dataUrl;
 
     if (!rawImage || typeof rawImage !== 'string') {
       return res.status(400).json({
         success: false,
-        message: 'No image data provided. Please upload a valid image file.',
+        message: 'No image data provided. Please upload a valid PNG, JPEG, or WebP file.',
       });
     }
 
-    // Match Base64 Data URL format and extract MIME type
-    const matches = rawImage.match(/^data:image\/(png|jpeg|jpg|webp);base64,(.+)$/i);
+    const matches = rawImage.match(/^data:image\/(png|jpeg|jpg|webp);base64,([A-Za-z0-9+/=]+)$/i);
     if (!matches) {
       return res.status(400).json({
         success: false,
@@ -802,58 +709,62 @@ app.post('/api/upload-logo', (req: Request, res: Response) => {
       });
     }
 
-    const mimeSubtype = matches[1].toLowerCase();
     const base64Data = matches[2];
     const buffer = Buffer.from(base64Data, 'base64');
 
-    // 2 MB size enforcement
     const MAX_SIZE_BYTES = 2 * 1024 * 1024;
-    if (buffer.length > MAX_SIZE_BYTES) {
+    if (buffer.length === 0 || buffer.length > MAX_SIZE_BYTES) {
       return res.status(400).json({
         success: false,
-        message: `File size exceeds the 2 MB limit (Current: ${(buffer.length / (1024 * 1024)).toFixed(2)} MB). Please select a smaller image.`,
+        message: `File size must be under 2 MB (received ${(buffer.length / (1024 * 1024)).toFixed(2)} MB).`,
       });
     }
 
-    // Magic byte validation for actual file contents
-    let ext = 'png';
-    const isPng = buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47;
-    const isJpg = buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+    // Strict magic byte verification — reject spoofed non-image payloads
+    const isPng =
+      buffer.length > 8 &&
+      buffer[0] === 0x89 &&
+      buffer[1] === 0x50 &&
+      buffer[2] === 0x4e &&
+      buffer[3] === 0x47;
+    const isJpg =
+      buffer.length > 4 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
     const isWebp =
-      buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
-      buffer.length > 12 && buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50;
+      buffer.length > 12 &&
+      buffer[0] === 0x52 &&
+      buffer[1] === 0x49 &&
+      buffer[2] === 0x46 &&
+      buffer[3] === 0x46 &&
+      buffer[8] === 0x57 &&
+      buffer[9] === 0x45 &&
+      buffer[10] === 0x42 &&
+      buffer[11] === 0x50;
 
-    if (isPng) {
-      ext = 'png';
-    } else if (isJpg) {
-      ext = 'jpg';
-    } else if (isWebp) {
-      ext = 'webp';
-    } else {
-      // Fallback to validated header subtype if magic bytes are obscured
-      if (['png', 'jpeg', 'jpg', 'webp'].includes(mimeSubtype)) {
-        ext = mimeSubtype === 'jpeg' ? 'jpg' : mimeSubtype;
-      } else {
-        return res.status(400).json({
-          success: false,
-          message: 'Uploaded file is not a recognized PNG, JPEG, or WebP image.',
-        });
-      }
+    let ext: 'png' | 'jpg' | 'webp' | null = null;
+    if (isPng) ext = 'png';
+    else if (isJpg) ext = 'jpg';
+    else if (isWebp) ext = 'webp';
+
+    if (!ext) {
+      return res.status(400).json({
+        success: false,
+        message: 'File signature check failed: payload is not a genuine PNG, JPEG, or WebP image.',
+      });
     }
 
     const cleanCard = (cardId ? String(cardId).replace(/[^a-zA-Z0-9_-]/g, '') : 'business').slice(0, 30);
     const uniqueName = `logo-${cleanCard}-${Date.now()}.${ext}`;
-    const targetPath = path.join(UPLOADS_DIR, uniqueName);
+    const targetPath = path.resolve(UPLOADS_DIR, uniqueName);
+    if (!targetPath.startsWith(UPLOADS_DIR)) {
+      return res.status(400).json({ success: false, message: 'Invalid filename.' });
+    }
 
     fs.writeFileSync(targetPath, buffer);
     const publicUrl = `/uploads/logos/${uniqueName}`;
 
-    console.log(`✅ Business logo saved to disk: ${targetPath} (served at ${publicUrl})`);
-
     return res.json({
       success: true,
       url: publicUrl,
-      logoUrl: publicUrl,
       fileName: uniqueName,
       sizeBytes: buffer.length,
       mimeType: `image/${ext}`,
@@ -862,19 +773,19 @@ app.post('/api/upload-logo', (req: Request, res: Response) => {
     console.error('Logo upload error:', err);
     return res.status(500).json({
       success: false,
-      message: err.message || 'Failed to upload and store business logo.',
+      message: 'Failed to upload and store business logo.',
     });
   }
 });
 
-// REST API: Remove Business Logo
-app.delete('/api/upload-logo', (req: Request, res: Response) => {
+// Authenticated Admin/Owner: Remove Business Logo
+app.delete('/api/upload-logo', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   try {
     const { url } = req.body;
     if (typeof url === 'string' && url.startsWith('/uploads/logos/')) {
       const fileName = path.basename(url);
-      const filePath = path.join(UPLOADS_DIR, fileName);
-      if (fs.existsSync(filePath)) {
+      const filePath = path.resolve(UPLOADS_DIR, fileName);
+      if (filePath.startsWith(UPLOADS_DIR) && fs.existsSync(filePath)) {
         fs.unlinkSync(filePath);
       }
     }
@@ -884,8 +795,8 @@ app.delete('/api/upload-logo', (req: Request, res: Response) => {
   }
 });
 
-// REST API: Bulk update card statuses (Available / Assigned)
-app.put('/api/cards/bulk-status', (req: Request, res: Response) => {
+// Master Admin only: Bulk update card statuses
+app.put('/api/cards/bulk-status', requireMasterAdmin, (req: AuthenticatedRequest, res: Response) => {
   try {
     const { ids, status } = req.body;
     if (!Array.isArray(ids) || !ids.length || !['available', 'assigned', 'disabled'].includes(status)) {
@@ -893,28 +804,13 @@ app.put('/api/cards/bulk-status', (req: Request, res: Response) => {
     }
 
     const cards = readCards();
-    const requesterAdminId = (req.headers['x-admin-id'] as string) || req.body.adminId;
-
-    let allowedIds = new Set(ids.map((id: string) => id.toLowerCase()));
-    if (requesterAdminId) {
-      const admins = readAdmins();
-      const admin = admins.find(
-        (a) => a.id === requesterAdminId || a.email.toLowerCase() === requesterAdminId.toLowerCase()
-      );
-      if (admin && admin.role === 'restricted') {
-        const authorizedSet = new Set(admin.assignedCardIds.map((cid) => cid.toLowerCase()));
-        allowedIds = new Set([...allowedIds].filter((id) => authorizedSet.has(id)));
-      }
-    }
-
+    const allowedIds = new Set(ids.map((id: string) => String(id).toLowerCase()));
     const updatedCards: CardRecord[] = [];
+    const now = new Date().toISOString();
+
     for (let i = 0; i < cards.length; i++) {
       if (allowedIds.has(cards[i].id.toLowerCase())) {
-        cards[i] = {
-          ...cards[i],
-          status,
-          updatedAt: new Date().toISOString(),
-        };
+        cards[i] = { ...cards[i], status, updatedAt: now };
         updatedCards.push(cards[i]);
       }
     }
@@ -926,8 +822,8 @@ app.put('/api/cards/bulk-status', (req: Request, res: Response) => {
   }
 });
 
-// REST API: Delete card
-app.delete('/api/cards/:id', (req: Request, res: Response) => {
+// Master Admin only: Delete card
+app.delete('/api/cards/:id', requireMasterAdmin, (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     const cards = readCards();
@@ -944,14 +840,13 @@ app.delete('/api/cards/:id', (req: Request, res: Response) => {
   }
 });
 
-// REST API: Get all admins
-app.get('/api/admins', (_req: Request, res: Response) => {
-  const admins = readAdmins();
-  res.json({ success: true, admins });
+// ================= Admin Management REST API (Master Admin Only) =================
+
+app.get('/api/admins', requireMasterAdmin, (_req: AuthenticatedRequest, res: Response) => {
+  res.json({ success: true, admins: readAdmins() });
 });
 
-// REST API: Create or register new sub-admin
-app.post('/api/admins', (req: Request, res: Response) => {
+app.post('/api/admins', requireMasterAdmin, (req: AuthenticatedRequest, res: Response) => {
   try {
     const { email, name, role = 'restricted', assignedCardIds = [], permissions } = req.body;
     if (!email || !name) {
@@ -959,15 +854,16 @@ app.post('/api/admins', (req: Request, res: Response) => {
     }
 
     const admins = readAdmins();
-    const existing = admins.find((a) => a.email.toLowerCase() === email.toLowerCase().trim());
-    if (existing) {
-      return res.status(400).json({ success: false, message: `Admin with email ${email} already exists` });
+    const cleanEmail = String(email).trim().toLowerCase();
+    if (admins.some((a) => a.email.toLowerCase() === cleanEmail)) {
+      return res.status(400).json({ success: false, message: `Admin with email ${cleanEmail} already exists` });
     }
 
+    const now = new Date().toISOString();
     const newAdmin: AdminUser = {
       id: `admin-${Date.now()}`,
-      email: email.trim().toLowerCase(),
-      name: name.trim(),
+      email: cleanEmail,
+      name: String(name).trim(),
       role: role === 'master' ? 'master' : 'restricted',
       assignedCardIds: Array.isArray(assignedCardIds) ? assignedCardIds : [],
       permissions: {
@@ -976,8 +872,8 @@ app.post('/api/admins', (req: Request, res: Response) => {
         canExportCsv: permissions?.canExportCsv ?? false,
         canCreateCards: permissions?.canCreateCards ?? false,
       },
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt: now,
+      updatedAt: now,
     };
 
     admins.push(newAdmin);
@@ -988,25 +884,23 @@ app.post('/api/admins', (req: Request, res: Response) => {
   }
 });
 
-// REST API: Update sub-admin permissions and assigned cards
-app.put('/api/admins/:id', (req: Request, res: Response) => {
+app.put('/api/admins/:id', requireMasterAdmin, (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     const { name, role, assignedCardIds, permissions } = req.body;
-
     const admins = readAdmins();
     const idx = admins.findIndex((a) => a.id === id || a.email.toLowerCase() === id.toLowerCase());
-
     if (idx === -1) {
       return res.status(404).json({ success: false, message: 'Admin not found' });
     }
 
     admins[idx] = {
       ...admins[idx],
-      name: name !== undefined ? name.trim() : admins[idx].name,
+      name: name !== undefined ? String(name).trim() : admins[idx].name,
       role: role !== undefined ? role : admins[idx].role,
       assignedCardIds: assignedCardIds !== undefined ? assignedCardIds : admins[idx].assignedCardIds,
-      permissions: permissions !== undefined ? { ...admins[idx].permissions, ...permissions } : admins[idx].permissions,
+      permissions:
+        permissions !== undefined ? { ...admins[idx].permissions, ...permissions } : admins[idx].permissions,
       updatedAt: new Date().toISOString(),
     };
 
@@ -1017,132 +911,94 @@ app.put('/api/admins/:id', (req: Request, res: Response) => {
   }
 });
 
-// REST API: Delete sub-admin
-app.delete('/api/admins/:id', (req: Request, res: Response) => {
+app.delete('/api/admins/:id', requireMasterAdmin, (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     const admins = readAdmins();
     const target = admins.find((a) => a.id === id || a.email.toLowerCase() === id.toLowerCase());
-
     if (!target) {
       return res.status(404).json({ success: false, message: 'Admin not found' });
     }
-
-    if (target.role === 'master' && admins.filter((a) => a.role === 'master').length <= 1) {
+    if (target.email.toLowerCase() === MASTER_ADMIN_EMAIL) {
       return res.status(400).json({ success: false, message: 'Cannot delete the primary Master Admin' });
     }
 
-    const filtered = admins.filter((a) => a.id !== target.id);
-    writeAdmins(filtered);
+    writeAdmins(admins.filter((a) => a.id !== target.id));
     res.json({ success: true, message: 'Admin removed successfully' });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message || 'Failed to delete admin' });
   }
 });
 
-// ================= User Profiles & Google Verified Logins API =================
+// ================= User Profiles REST API (Master Admin Only) =================
 
-// REST API: Get all recorded users
-app.get('/api/users', (_req: Request, res: Response) => {
-  try {
-    const users = readUsers();
-    res.json({ success: true, users });
-  } catch (err: any) {
-    res.status(500).json({ success: false, message: err.message || 'Failed to fetch users' });
-  }
+app.get('/api/users', requireMasterAdmin, (_req: AuthenticatedRequest, res: Response) => {
+  res.json({ success: true, users: readUsers() });
 });
 
-// REST API: Save or Update User Profile on Google Login/Verification
-app.post('/api/users', (req: Request, res: Response) => {
+app.post('/api/users', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { uid, email, displayName, photoURL, provider, role, emailVerified, device } = req.body;
-    if (!email || !uid) {
-      return res.status(400).json({ success: false, message: 'Email and UID are required' });
-    }
+    const authUser = req.authUser!;
+    const { uid, email, displayName, photoURL, provider, role, device } = req.body;
+    const targetUid = authUser.isMaster && uid ? String(uid).trim() : authUser.uid;
+    const targetEmail = authUser.isMaster && email ? String(email).trim().toLowerCase() : authUser.email;
 
     const users = readUsers();
-    const cleanEmail = String(email).trim().toLowerCase();
-    const idx = users.findIndex((u) => u.uid === uid || u.email.toLowerCase() === cleanEmail);
-
+    const idx = users.findIndex((u) => u.uid === targetUid || u.email.toLowerCase() === targetEmail);
     const now = new Date().toISOString();
-    let updatedUser: UserProfile;
 
-    // The primary account 66shashwatkumar66@gmail.com is always master
-    const isMasterEmail = cleanEmail === '66shashwatkumar66@gmail.com';
-    const computedRole = isMasterEmail ? 'master' : (role || (idx !== -1 ? users[idx].role : 'member'));
+    const isMasterEmail = targetEmail === MASTER_ADMIN_EMAIL;
+    const computedRole: UserProfile['role'] = isMasterEmail
+      ? 'master'
+      : authUser.isMaster && role
+        ? role
+        : idx !== -1
+          ? users[idx].role
+          : 'member';
 
-    if (idx !== -1) {
-      updatedUser = {
-        ...users[idx],
-        uid: uid || users[idx].uid,
-        email: cleanEmail,
-        displayName: displayName ? String(displayName).trim() : users[idx].displayName,
-        photoURL: photoURL || users[idx].photoURL,
-        provider: provider || users[idx].provider || 'google.com',
-        role: computedRole,
-        emailVerified: emailVerified !== undefined ? Boolean(emailVerified) : true,
-        lastLoginAt: now,
-        loginCount: (users[idx].loginCount || 0) + 1,
-        device: device || users[idx].device || 'Web Browser',
-      };
-      users[idx] = updatedUser;
-    } else {
-      updatedUser = {
-        uid: String(uid).trim(),
-        email: cleanEmail,
-        displayName: displayName ? String(displayName).trim() : cleanEmail.split('@')[0],
-        photoURL:
-          photoURL ||
-          `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(cleanEmail)}&backgroundColor=1a73e8&textColor=ffffff`,
-        provider: provider || 'google.com',
-        role: computedRole,
-        emailVerified: emailVerified !== undefined ? Boolean(emailVerified) : true,
-        lastLoginAt: now,
-        createdAt: now,
-        loginCount: 1,
-        device: device || 'Web Browser',
-        assignedCardIds: [],
-      };
-      users.push(updatedUser);
-    }
+    const updatedUser: UserProfile =
+      idx !== -1
+        ? {
+            ...users[idx],
+            uid: targetUid,
+            email: targetEmail,
+            displayName: displayName ? String(displayName).trim() : users[idx].displayName,
+            photoURL: photoURL || users[idx].photoURL,
+            provider: provider || users[idx].provider || 'google.com',
+            role: computedRole,
+            emailVerified: authUser.emailVerified,
+            lastLoginAt: now,
+            loginCount: (users[idx].loginCount || 0) + 1,
+            device: device || users[idx].device || 'Web Browser',
+          }
+        : {
+            uid: targetUid,
+            email: targetEmail,
+            displayName: displayName ? String(displayName).trim() : targetEmail.split('@')[0],
+            photoURL:
+              photoURL ||
+              `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(targetEmail)}&backgroundColor=1a73e8&textColor=ffffff`,
+            provider: provider || 'google.com',
+            role: computedRole,
+            emailVerified: authUser.emailVerified,
+            lastLoginAt: now,
+            createdAt: now,
+            loginCount: 1,
+            device: device || 'Web Browser',
+            assignedCardIds: [],
+          };
+
+    if (idx !== -1) users[idx] = updatedUser;
+    else users.push(updatedUser);
 
     writeUsers(users);
-
-    // If master or sub-admin, also keep admins.json synchronized
-    if (computedRole === 'master' || computedRole === 'restricted') {
-      const admins = readAdmins();
-      const adminIdx = admins.findIndex((a) => a.email.toLowerCase() === cleanEmail || a.id === uid);
-      if (adminIdx !== -1) {
-        admins[adminIdx].name = updatedUser.displayName;
-        admins[adminIdx].updatedAt = now;
-      } else {
-        admins.push({
-          id: updatedUser.uid,
-          email: updatedUser.email,
-          name: updatedUser.displayName,
-          role: computedRole,
-          assignedCardIds: [],
-          permissions: {
-            canEditCards: true,
-            canToggleAi: true,
-            canExportCsv: computedRole === 'master',
-            canCreateCards: computedRole === 'master',
-          },
-          createdAt: now,
-          updatedAt: now,
-        });
-      }
-      writeAdmins(admins);
-    }
-
     res.json({ success: true, user: updatedUser });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message || 'Failed to save user' });
   }
 });
 
-// REST API: Delete user
-app.delete('/api/users/:uid', (req: Request, res: Response) => {
+app.delete('/api/users/:uid', requireMasterAdmin, (req: AuthenticatedRequest, res: Response) => {
   try {
     const { uid } = req.params;
     const users = readUsers();
@@ -1150,21 +1006,22 @@ app.delete('/api/users/:uid', (req: Request, res: Response) => {
     if (!target) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
-    if (target.email.toLowerCase() === '66shashwatkumar66@gmail.com') {
+    if (target.email.toLowerCase() === MASTER_ADMIN_EMAIL) {
       return res.status(400).json({ success: false, message: 'Cannot delete primary master account' });
     }
-    const filtered = users.filter((u) => u.uid !== target.uid);
-    writeUsers(filtered);
+    writeUsers(users.filter((u) => u.uid !== target.uid));
     res.json({ success: true, message: 'User removed successfully' });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message || 'Failed to delete user' });
   }
 });
 
-// AI Review Generation Route using @google/genai (delegates to shared service)
+// ================= AI Review Generation Route (Live Firestore Validated + Gemini 4) =================
+
 app.post('/api/generate-review', async (req: Request, res: Response) => {
   try {
-    const { cardId, aiReviewEnabled, language, tone } = req.body;
+    const { cardId, aiReviewEnabled, language, tone } = req.body || {};
+
     if (aiReviewEnabled === false) {
       return res.status(403).json({
         success: false,
@@ -1182,11 +1039,18 @@ app.post('/api/generate-review', async (req: Request, res: Response) => {
     }
 
     const enrichedPayload = { ...req.body };
+
     if (cardId) {
-      const cards = readCards();
-      const targetCard = cards.find((c) => c.id.toLowerCase() === String(cardId).trim().toLowerCase());
+      const { card: targetCard } = await fetchAuthoritativeCardServer(String(cardId));
       if (targetCard) {
-        // Enforce subscription validation on server first
+        if (targetCard.status === 'disabled') {
+          return res.status(403).json({
+            success: false,
+            error: 'This QR stand is currently disabled. Please contact the business for assistance.',
+            message: 'This QR stand is currently disabled. Please contact the business for assistance.',
+          });
+        }
+
         const subCheck = isSubscriptionAccessible(targetCard);
         if (!subCheck.accessible) {
           return res.status(403).json({
@@ -1196,6 +1060,7 @@ app.post('/api/generate-review', async (req: Request, res: Response) => {
             subscriptionStatus: subCheck.status,
           });
         }
+
         if (targetCard.aiReviewEnabled === false) {
           return res.status(403).json({
             success: false,
@@ -1203,87 +1068,104 @@ app.post('/api/generate-review', async (req: Request, res: Response) => {
             message: 'AI Review Assistant is disabled for this card configuration.',
           });
         }
-        if (!enrichedPayload.businessName && targetCard.businessName) {
+
+        // Authoritative business details from Firestore override untrusted client values when present
+        if (targetCard.businessName) {
           enrichedPayload.businessName = targetCard.businessName;
         }
-        if (!enrichedPayload.category && targetCard.category) {
+        if (targetCard.category) {
           enrichedPayload.category = targetCard.category;
         }
         if (!enrichedPayload.businessDescription) {
           enrichedPayload.businessDescription =
-            targetCard.businessDescription || targetCard.promptStarter || targetCard.notes;
+            targetCard.businessDescription || targetCard.promptStarter || undefined;
         }
       }
     }
 
     const result = await generateReviewWithGemini(enrichedPayload);
-    if (!result.success && result.error) {
-      return res.status(400).json(result);
+    if (!result.success) {
+      const statusCode = result.error?.includes('disabled')
+        ? 403
+        : result.error?.includes('Select your preferred')
+          ? 400
+          : 502;
+      return res.status(statusCode).json(result);
     }
+
     return res.json(result);
   } catch (error: any) {
-    console.error('Error generating review:', error);
-    res.status(500).json({ success: false, message: error?.message || 'Failed to generate review' });
+    console.error('Error generating review:', error?.message || error);
+    return res.status(502).json({
+      success: false,
+      error: 'Unable to reach AI review service right now. Please try again in a moment.',
+      message: 'Unable to reach AI review service right now. Please try again in a moment.',
+    });
   }
 });
 
-
 // ================= Advertisement Management REST API =================
 
-// Helper to check if requester is Master Admin
-function isMasterAdminReq(req: Request): boolean {
-  const adminEmail = (req.headers['x-admin-email'] as string) || (req.body && req.body.adminEmail);
-  if (adminEmail) {
-    const clean = String(adminEmail).trim().toLowerCase();
-    if (clean === '66shashwatkumar66@gmail.com') return true;
-    const admins = readAdmins();
-    const admin = admins.find((a) => a.email.toLowerCase() === clean);
-    return Boolean(admin && admin.role === 'master');
-  }
-  const adminId = (req.headers['x-admin-id'] as string) || (req.body && req.body.adminId);
-  if (adminId) {
-    const admins = readAdmins();
-    const admin = admins.find((a) => a.id === adminId || a.email.toLowerCase() === adminId.toLowerCase());
-    return Boolean(admin && admin.role === 'master');
-  }
-  return true;
-}
-
-// GET /api/ads: Fetch ads (filtered if public query)
-app.get('/api/ads', (req: Request, res: Response) => {
+app.get('/api/ads', async (req: Request, res: Response) => {
   try {
     const isPublic = req.query.public === 'true';
-    const ads = readAds();
+    let ads: any[] = [];
+
+    if (serverDb) {
+      try {
+        const snap = await getDocs(collection(serverDb, 'ads'));
+        snap.forEach((d) => ads.push({ id: d.id, ...d.data() }));
+      } catch {
+        ads = readAds();
+      }
+    } else {
+      ads = readAds();
+    }
+
     if (isPublic) {
       const now = Date.now();
-      const eligible = ads.filter((ad) => {
-        if (ad.status !== 'active') return false;
-        if (ad.placement === 'disabled') return false;
-        if (ad.startDate) {
-          const s = new Date(ad.startDate).getTime();
-          if (!isNaN(s) && now < s) return false;
-        }
-        if (ad.endDate) {
-          const e = new Date(ad.endDate).getTime();
-          if (!isNaN(e) && now > e) return false;
-        }
-        return true;
-      }).sort((a, b) => (b.priority || 0) - (a.priority || 0));
+      const eligible = ads
+        .filter((ad) => {
+          if (ad.status !== 'active') return false;
+          if (ad.placement === 'disabled') return false;
+          if (ad.startDate) {
+            const s = new Date(ad.startDate).getTime();
+            if (!isNaN(s) && now < s) return false;
+          }
+          if (ad.endDate) {
+            const e = new Date(ad.endDate).getTime();
+            if (!isNaN(e) && now > e) return false;
+          }
+          return true;
+        })
+        .sort((a, b) => (b.priority || 0) - (a.priority || 0));
       return res.json({ success: true, ads: eligible });
     }
+
     return res.json({ success: true, ads: ads.sort((a, b) => (b.priority || 0) - (a.priority || 0)) });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message || 'Failed to fetch ads' });
   }
 });
 
-// POST /api/ads: Create or update ad (Master Admin only)
-app.post('/api/ads', (req: Request, res: Response) => {
+app.post('/api/ads', requireMasterAdmin, (req: AuthenticatedRequest, res: Response) => {
   try {
-    if (!isMasterAdminReq(req)) {
-      return res.status(403).json({ success: false, message: 'Forbidden: Master Admin access required for advertising management.' });
-    }
-    const { id, name, advertiser, headline, description, imageUrl, targetUrl, ctaText, placement, status, startDate, endDate, priority } = req.body;
+    const {
+      id,
+      name,
+      advertiser,
+      headline,
+      description,
+      imageUrl,
+      targetUrl,
+      ctaText,
+      placement,
+      status,
+      startDate,
+      endDate,
+      priority,
+    } = req.body;
+
     if (!name || !targetUrl) {
       return res.status(400).json({ success: false, message: 'Ad name and destination URL are required.' });
     }
@@ -1306,22 +1188,21 @@ app.post('/api/ads', (req: Request, res: Response) => {
       imageUrl: imageUrl ? String(imageUrl).trim() : undefined,
       targetUrl: cleanUrl,
       ctaText: ctaText ? String(ctaText).trim() : 'Learn More',
-      placement: ['below_biz_info', 'between_sections', 'below_draft', 'footer', 'disabled'].includes(placement) ? placement : 'below_draft',
+      placement: ['below_biz_info', 'between_sections', 'below_draft', 'footer', 'disabled'].includes(placement)
+        ? placement
+        : 'below_draft',
       status: status === 'paused' ? 'paused' : 'active',
       startDate: startDate ? String(startDate).trim() : undefined,
       endDate: endDate ? String(endDate).trim() : undefined,
       priority: Number(priority) || 10,
-      impressions: idx !== -1 ? (ads[idx].impressions || 0) : 0,
-      clicks: idx !== -1 ? (ads[idx].clicks || 0) : 0,
+      impressions: idx !== -1 ? ads[idx].impressions || 0 : 0,
+      clicks: idx !== -1 ? ads[idx].clicks || 0 : 0,
       createdAt: idx !== -1 ? ads[idx].createdAt : now,
       updatedAt: now,
     };
 
-    if (idx !== -1) {
-      ads[idx] = fullAd;
-    } else {
-      ads.push(fullAd);
-    }
+    if (idx !== -1) ads[idx] = fullAd;
+    else ads.push(fullAd);
 
     writeAds(ads);
     res.json({ success: true, ad: fullAd });
@@ -1330,31 +1211,22 @@ app.post('/api/ads', (req: Request, res: Response) => {
   }
 });
 
-// DELETE /api/ads/:id: Delete ad (Master Admin only)
-app.delete('/api/ads/:id', (req: Request, res: Response) => {
+app.delete('/api/ads/:id', requireMasterAdmin, (req: AuthenticatedRequest, res: Response) => {
   try {
-    if (!isMasterAdminReq(req)) {
-      return res.status(403).json({ success: false, message: 'Forbidden: Master Admin access required.' });
-    }
     const { id } = req.params;
     const ads = readAds();
-    const filtered = ads.filter((a) => a.id !== id);
-    writeAds(filtered);
+    writeAds(ads.filter((a) => a.id !== id));
     res.json({ success: true, message: 'Ad deleted successfully' });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message || 'Failed to delete ad' });
   }
 });
 
-// POST /api/ads/:id/impression: Safe impression recording
-app.post('/api/ads/:id/impression', (req: Request, res: Response) => {
+app.post('/api/ads/:id/impression', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const ads = readAds();
-    const target = ads.find((a) => a.id === id);
-    if (target) {
-      target.impressions = (target.impressions || 0) + 1;
-      writeAds(ads);
+    if (serverDb) {
+      await updateDoc(doc(serverDb, 'ads', id), { impressions: increment(1) }).catch(() => {});
     }
     res.json({ success: true });
   } catch {
@@ -1362,15 +1234,11 @@ app.post('/api/ads/:id/impression', (req: Request, res: Response) => {
   }
 });
 
-// POST /api/ads/:id/click: Safe click recording
-app.post('/api/ads/:id/click', (req: Request, res: Response) => {
+app.post('/api/ads/:id/click', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const ads = readAds();
-    const target = ads.find((a) => a.id === id);
-    if (target) {
-      target.clicks = (target.clicks || 0) + 1;
-      writeAds(ads);
+    if (serverDb) {
+      await updateDoc(doc(serverDb, 'ads', id), { clicks: increment(1) }).catch(() => {});
     }
     res.json({ success: true });
   } catch {
@@ -1378,216 +1246,43 @@ app.post('/api/ads/:id/click', (req: Request, res: Response) => {
   }
 });
 
+// ================= Customer Short URL Routes (Strict Subscription Enforcement) =================
 
-
-// ================= QR Scan Logs REST API =================
-
-// GET /api/logs: Retrieve scan logs with filtering, pagination, and role-based access
-app.get('/api/logs', (req: Request, res: Response) => {
-  try {
-    const logs = readLogs();
-    const { cardId, businessName, search, source, startDate, endDate, page = '1', limit = '50' } = req.query;
-
-    const requesterAdminId = (req.headers['x-admin-id'] as string) || (req.query.adminId as string);
-    let allowedCardIds: Set<string> | null = null;
-
-    if (requesterAdminId) {
-      const admins = readAdmins();
-      const admin = admins.find(
-        (a) => a.id === requesterAdminId || a.email.toLowerCase() === requesterAdminId.toLowerCase()
-      );
-      if (admin && admin.role === 'restricted') {
-        allowedCardIds = new Set(admin.assignedCardIds.map((cid) => cid.toLowerCase()));
-      }
-    }
-
-    let filtered = logs;
-
-    // Sub-admin RBAC boundary
-    if (allowedCardIds !== null) {
-      filtered = filtered.filter((l) => allowedCardIds!.has(l.cardId.toLowerCase()));
-    }
-
-    // Filter by specific card ID
-    if (cardId && typeof cardId === 'string' && cardId !== 'all') {
-      const cleanCardId = cardId.toLowerCase().trim();
-      filtered = filtered.filter((l) => l.cardId.toLowerCase() === cleanCardId);
-    }
-
-    // Filter by business name
-    if (businessName && typeof businessName === 'string' && businessName !== 'all') {
-      const cleanBiz = businessName.toLowerCase().trim();
-      filtered = filtered.filter((l) => l.businessName.toLowerCase().includes(cleanBiz));
-    }
-
-    // Filter by source (qr, nfc, etc.)
-    if (source && typeof source === 'string' && source !== 'all') {
-      filtered = filtered.filter((l) => l.source === source);
-    }
-
-    // Filter by date range
-    if (startDate && typeof startDate === 'string') {
-      const startMs = new Date(startDate).getTime();
-      if (!isNaN(startMs)) {
-        filtered = filtered.filter((l) => new Date(l.timestamp).getTime() >= startMs);
-      }
-    }
-    if (endDate && typeof endDate === 'string') {
-      const endMs = new Date(endDate).getTime();
-      if (!isNaN(endMs)) {
-        filtered = filtered.filter((l) => new Date(l.timestamp).getTime() <= endMs);
-      }
-    }
-
-    // Free-text search
-    if (search && typeof search === 'string' && search.trim()) {
-      const term = search.toLowerCase().trim();
-      filtered = filtered.filter(
-        (l) =>
-          l.cardId.toLowerCase().includes(term) ||
-          l.businessName.toLowerCase().includes(term) ||
-          (l.category && l.category.toLowerCase().includes(term)) ||
-          (l.device && l.device.toLowerCase().includes(term)) ||
-          (l.browser && l.browser.toLowerCase().includes(term)) ||
-          (l.ip && l.ip.includes(term))
-      );
-    }
-
-    const totalCount = filtered.length;
-
-    // Pagination
-    const numLimit = limit === 'all' ? totalCount : Math.max(parseInt(limit as string, 10) || 50, 1);
-    const numPage = Math.max(parseInt(page as string, 10) || 1, 1);
-    const startIndex = (numPage - 1) * numLimit;
-    const paginated = limit === 'all' ? filtered : filtered.slice(startIndex, startIndex + numLimit);
-
-    res.json({
-      success: true,
-      totalCount,
-      page: numPage,
-      limit: numLimit,
-      totalPages: Math.ceil(totalCount / numLimit) || 1,
-      logs: paginated,
-    });
-  } catch (err: any) {
-    res.status(500).json({ success: false, message: err.message || 'Failed to fetch logs' });
+async function handleDirectRedirectIfAllowed(
+  req: Request,
+  res: Response,
+  cardId: string
+): Promise<boolean> {
+  const isDirectRequested = req.query.direct === 'true' || req.query.direct === '1';
+  if (!isDirectRequested) {
+    return false;
   }
-});
 
-// POST /api/logs: Record a scan log from client or simulator
-app.post('/api/logs', (req: Request, res: Response) => {
-  try {
-    const { cardId, source, businessName, category } = req.body;
-    if (!cardId) {
-      return res.status(400).json({ success: false, message: 'Card ID is required' });
-    }
-
-    const cards = readCards();
-    const card = cards.find((c) => c.id.toLowerCase() === String(cardId).toLowerCase().trim());
-    const effectiveCard: CardRecord = card || {
-      id: String(cardId),
-      businessName: businessName || `Card #${cardId}`,
-      category: category || 'Customer Experience',
-      status: 'available',
-      googleReviewUrl: '',
-      notes: '',
-      scansCount: 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    if (card) {
-      card.scansCount = (card.scansCount || 0) + 1;
-      card.updatedAt = new Date().toISOString();
-      writeCards(cards);
-    }
-
-    const scanLog = logQrScan(effectiveCard, req, source);
-    res.json({ success: true, log: scanLog });
-  } catch (err: any) {
-    res.status(500).json({ success: false, message: err.message || 'Failed to record scan log' });
+  const { card } = await fetchAuthoritativeCardServer(cardId);
+  if (!card) {
+    return false;
   }
-});
 
-// GET /api/logs/stats: Summary analytics
-app.get('/api/logs/stats', (req: Request, res: Response) => {
-  try {
-    const logs = readLogs();
+  const subCheck = isSubscriptionAccessible(card);
+  const isAllowed = card.status === 'assigned' && subCheck.accessible && Boolean(card.googleReviewUrl);
 
-    const requesterAdminId = (req.headers['x-admin-id'] as string) || (req.query.adminId as string);
-    let allowedCardIds: Set<string> | null = null;
-    if (requesterAdminId) {
-      const admins = readAdmins();
-      const admin = admins.find(
-        (a) => a.id === requesterAdminId || a.email.toLowerCase() === requesterAdminId.toLowerCase()
-      );
-      if (admin && admin.role === 'restricted') {
-        allowedCardIds = new Set(admin.assignedCardIds.map((cid) => cid.toLowerCase()));
-      }
-    }
-
-    const visibleLogs = allowedCardIds !== null
-      ? logs.filter((l) => allowedCardIds!.has(l.cardId.toLowerCase()))
-      : logs;
-
-    const totalScans = visibleLogs.length;
-    const uniqueCards = new Set(visibleLogs.map((l) => l.cardId)).size;
-
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const todayScans = visibleLogs.filter((l) => new Date(l.timestamp).getTime() >= todayStart.getTime()).length;
-
-    const sourceBreakdown: Record<string, number> = { qr: 0, nfc: 0, direct: 0, simulator: 0 };
-    const deviceBreakdown: Record<string, number> = { mobile: 0, desktop: 0 };
-
-    for (const log of visibleLogs) {
-      sourceBreakdown[log.source] = (sourceBreakdown[log.source] || 0) + 1;
-      if (log.device?.toLowerCase().includes('mobile') || log.device?.toLowerCase().includes('phone') || log.device?.toLowerCase().includes('ios') || log.device?.toLowerCase().includes('android')) {
-        deviceBreakdown.mobile++;
-      } else {
-        deviceBreakdown.desktop++;
-      }
-    }
-
-    res.json({
-      success: true,
-      stats: {
-        totalScans,
-        uniqueCards,
-        todayScans,
-        sourceBreakdown,
-        deviceBreakdown,
-      },
-      totalScans,
-      uniqueCards,
-      todayScans,
-      sourceBreakdown,
-      deviceBreakdown,
-    });
-  } catch (err: any) {
-    res.status(500).json({ success: false, message: err.message || 'Failed to calculate stats' });
+  if (!isAllowed) {
+    // Do NOT redirect expired, upcoming, disabled, or unassigned cards — let SPA display proper restriction screen
+    return false;
   }
-});
 
-// Root URL handler: If opened with ?card=... or ?r=..., immediately redirect if assigned!
-app.get('/', (req: Request, res: Response, next) => {
+  // Record direct redirect scan in live Cloud Firestore before redirecting
+  await recordServerDirectScan(card, 'direct', 'allowed');
+  res.redirect(302, card.googleReviewUrl);
+  return true;
+}
+
+app.get('/', async (req: Request, res: Response, next) => {
   try {
     const queryCard = req.query.card || req.query.r;
     if (typeof queryCard === 'string' && queryCard.trim()) {
-      const cardId = queryCard.trim();
-      const cards = readCards();
-      const card = cards.find((c) => c.id.toLowerCase() === cardId.toLowerCase());
-      if (card) {
-        card.scansCount = (card.scansCount || 0) + 1;
-        card.updatedAt = new Date().toISOString();
-        writeCards(cards);
-        logQrScan(card, req, 'qr');
-
-        // Only redirect directly if ?direct=true is explicitly provided
-        if ((req.query.direct === 'true' || req.query.direct === '1') && card.googleReviewUrl) {
-          return res.redirect(302, card.googleReviewUrl);
-        }
-      }
+      const redirected = await handleDirectRedirectIfAllowed(req, res, queryCard.trim());
+      if (redirected) return;
     }
   } catch (err) {
     console.error('Error handling root query redirect:', err);
@@ -1595,43 +1290,24 @@ app.get('/', (req: Request, res: Response, next) => {
   next();
 });
 
-// Customer Short URL Route: /r/:id, /c/:id, /review/:id, /nfc/:id
-app.get(['/r/:id', '/c/:id', '/review/:id', '/nfc/:id'], (req: Request, res: Response, next) => {
+app.get(['/r/:id', '/c/:id', '/review/:id', '/nfc/:id'], async (req: Request, res: Response, next) => {
   try {
     const { id } = req.params;
-    const cards = readCards();
-    const card = cards.find((c) => c.id.toLowerCase() === id.toLowerCase());
-
-    if (card) {
-      // Record scan analytics count and write scan log
-      card.scansCount = (card.scansCount || 0) + 1;
-      card.updatedAt = new Date().toISOString();
-      writeCards(cards);
-      const isNfc = req.path.startsWith('/nfc') || req.query.source === 'nfc';
-      logQrScan(card, req, isNfc ? 'nfc' : 'qr');
-
-      // Only redirect directly to Google if ?direct=true is requested
-      if ((req.query.direct === 'true' || req.query.direct === '1') && card.googleReviewUrl) {
-        return res.redirect(302, card.googleReviewUrl);
-      }
-    }
+    const redirected = await handleDirectRedirectIfAllowed(req, res, id);
+    if (redirected) return;
   } catch (err) {
     console.error('Error handling /r/:id route:', err);
   }
-
-  // Hand over to the client SPA so the customer lands on the AI Review Generation Page
   next();
 });
 
-// Explicit 404 JSON response for any unmatched API endpoints (prevents HTML fallback)
+// Explicit 404 JSON response for unmatched API routes
 app.all('/api/*', (req: Request, res: Response) => {
   res.status(404).json({ success: false, message: `Endpoint ${req.method} ${req.path} not found` });
 });
 
-
-// Development mode with Vite middleware vs Production static serving
 async function startServer() {
-  ensureDataFile();
+  ensureDataDir();
 
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
@@ -1649,7 +1325,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 3DBYSD Smart Reviews server running on http://0.0.0.0:${PORT}`);
+    console.log(`3DBYSD Smart Reviews server running on http://0.0.0.0:${PORT}`);
   });
 }
 

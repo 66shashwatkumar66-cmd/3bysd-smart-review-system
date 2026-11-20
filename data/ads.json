@@ -1,34 +1,21 @@
 [
   {
-    "id": "ad-001",
-    "name": "3D Printed QR Stands Promotion",
-    "advertiser": "3DBYSD Studios",
-    "headline": "Custom 3D Printed NFC & QR Stands for Businesses",
-    "description": "Elevate your counter or table with durable, branded acrylic and wood review stands.",
-    "imageUrl": "https://images.unsplash.com/photo-1581291518857-4e27b48ff24e?auto=format&fit=crop&w=400&q=80",
-    "targetUrl": "https://3dbysd.com",
-    "ctaText": "Explore Stands",
-    "placement": "below_draft",
+    "id": "ad-mvmolmq1",
     "status": "active",
+    "startDate": "2026-10-24T00:00:00.000Z",
+    "endDate": "2028-10-24T00:00:00.000Z",
+    "name": "Diwali Sale",
+    "imageUrl": "https://3dbysd.in/cdn/shop/files/6b492700-bab8-43aa-98d7-0f13c5efaed1.png?v=1787231735&width=1200",
+    "clicks": 0,
+    "advertiser": "3dbysd",
+    "ctaText": "Shop Diwali Gifts",
+    "updatedAt": "2026-10-24T17:37:38.630Z",
+    "targetUrl": "https://3dbysd.in",
+    "headline": "Make This Diwali Uniquely Yours ✨",
+    "description": "Light up your Diwali with unique lamps, personalized gifts and creative décor made to stand out. Get 15% OFF your festive order with code DIWALI15. Find something different this Diwali with 3DbySD!",
     "priority": 10,
-    "impressions": 48,
-    "clicks": 6,
-    "createdAt": "2026-10-23T13:42:26.417Z",
-    "updatedAt": "2026-10-23T13:42:26.418Z"
-  },
-  {
-    "id": "ad-mvl0ryq0",
-    "name": "Automated Test Ad",
-    "advertiser": "Acme Test Corp",
-    "headline": "High Quality Test Stands",
-    "targetUrl": "https://acme.test.com",
-    "ctaText": "Learn More",
     "placement": "below_draft",
-    "status": "active",
-    "priority": 15,
-    "impressions": 3,
-    "clicks": 3,
-    "createdAt": "2026-10-23T13:42:36.936Z",
-    "updatedAt": "2026-10-23T13:42:36.936Z"
+    "createdAt": "2026-10-24T17:37:18.409Z",
+    "impressions": 0
   }
 ]

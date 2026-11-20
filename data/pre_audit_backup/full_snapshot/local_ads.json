@@ -1,0 +1,34 @@
+[
+  {
+    "id": "ad-001",
+    "name": "3D Printed QR Stands Promotion",
+    "advertiser": "3DBYSD Studios",
+    "headline": "Custom 3D Printed NFC & QR Stands for Businesses",
+    "description": "Elevate your counter or table with durable, branded acrylic and wood review stands.",
+    "imageUrl": "https://images.unsplash.com/photo-1581291518857-4e27b48ff24e?auto=format&fit=crop&w=400&q=80",
+    "targetUrl": "https://3dbysd.com",
+    "ctaText": "Explore Stands",
+    "placement": "below_draft",
+    "status": "active",
+    "priority": 10,
+    "impressions": 48,
+    "clicks": 6,
+    "createdAt": "2026-10-23T13:42:26.417Z",
+    "updatedAt": "2026-10-23T13:42:26.418Z"
+  },
+  {
+    "id": "ad-mvl0ryq0",
+    "name": "Automated Test Ad",
+    "advertiser": "Acme Test Corp",
+    "headline": "High Quality Test Stands",
+    "targetUrl": "https://acme.test.com",
+    "ctaText": "Learn More",
+    "placement": "below_draft",
+    "status": "active",
+    "priority": 15,
+    "impressions": 0,
+    "clicks": 0,
+    "createdAt": "2026-10-23T13:42:36.936Z",
+    "updatedAt": "2026-10-23T13:42:36.936Z"
+  }
+]

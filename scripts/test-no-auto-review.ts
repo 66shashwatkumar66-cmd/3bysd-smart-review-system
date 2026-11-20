@@ -60,10 +60,13 @@ async function runTests() {
   if (!code.includes('Creating your personalized review...')) {
     throw new Error('Test 4 failed: Missing "Creating your personalized review..." loading state text');
   }
-  if (!code.includes('if (isGenerating) return;')) {
-    throw new Error('Test 4 failed: Missing isGenerating guard against duplicate concurrent generation requests');
+  if (
+    !code.includes('if (isGenerating) return;') &&
+    !(code.includes('abortControllerRef') && code.includes('requestIdRef'))
+  ) {
+    throw new Error('Test 4 failed: Missing concurrency guard (AbortController + requestIdRef or isGenerating guard)');
   }
-  console.log('✅ 4: State B shows "Creating your personalized review..." loading indicator and blocks duplicate requests.');
+  console.log('✅ 4: State B shows "Creating your personalized review..." loading indicator and prevents stale/duplicate responses.');
 
   // Test 5: Verify State C – Generated UI Elements
   console.log('\n[TEST 5] Verifying State C (Generated) UI Elements...');

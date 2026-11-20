@@ -1,5 +1,5 @@
 import React, { useState, useId } from 'react';
-import { CardRecord, AdminUser, AdminPermissions } from '../types';
+import { CardRecord, AdminUser, AdminPermissions, UserProfile } from '../types';
 import {
   Shield,
   ShieldCheck,
@@ -21,8 +21,11 @@ import {
   AlertCircle,
   HelpCircle,
   Eye,
+  Clock,
+  XCircle,
 } from 'lucide-react';
 import { FirebaseCloudPanel } from './FirebaseCloudPanel';
+import { formatApiError } from '../utils/api';
 
 interface MasterAdminViewProps {
   cards: CardRecord[];
@@ -32,7 +35,12 @@ interface MasterAdminViewProps {
   onSaveAdmin: (adminData: Partial<AdminUser>) => Promise<void>;
   onDeleteAdmin: (adminId: string) => Promise<void>;
   onRefreshCards?: () => Promise<void>;
+  adminRequests?: UserProfile[];
+  onApproveRequest?: (user: UserProfile) => Promise<void>;
+  onRejectRequest?: (user: UserProfile) => Promise<void>;
 }
+
+export const isMasterTestCardId = (id: string): boolean => /^0*([1-9]|10)$/.test(id.trim());
 
 export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
   cards,
@@ -42,6 +50,9 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
   onSaveAdmin,
   onDeleteAdmin,
   onRefreshCards,
+  adminRequests = [],
+  onApproveRequest,
+  onRejectRequest,
 }) => {
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [editingAdmin, setEditingAdmin] = useState<AdminUser | null>(null);
@@ -61,13 +72,18 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
   const [cardSearch, setCardSearch] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formError, setFormError] = useState('');
+  const [adminToDelete, setAdminToDelete] = useState<AdminUser | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [actionFeedback, setActionFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [requestTab, setRequestTab] = useState<'pending' | 'approved' | 'rejected'>('pending');
+  const [processingRequestUid, setProcessingRequestUid] = useState<string | null>(null);
 
   const openCreateModal = () => {
     setEditingAdmin(null);
     setName('');
     setEmail('');
     setRole('restricted');
-    setAssignedCardIds(cards.slice(0, 2).map((c) => c.id)); // Default pick first 2 cards
+    setAssignedCardIds([]);
     setCanEditCards(true);
     setCanToggleAi(true);
     setCanExportCsv(false);
@@ -85,7 +101,7 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
     setCanEditCards(admin.permissions?.canEditCards ?? true);
     setCanToggleAi(admin.permissions?.canToggleAi ?? true);
     setCanExportCsv(admin.permissions?.canExportCsv ?? false);
-    setCanCreateCards(admin.permissions?.canCreateCards ?? false);
+    setCanCreateCards(admin.role === 'master');
     setFormError('');
     setIsModalOpen(true);
   };
@@ -97,7 +113,7 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
   };
 
   const handleSelectAllCards = () => {
-    setAssignedCardIds(cards.map((c) => c.id));
+    setAssignedCardIds(cards.filter((c) => !isMasterTestCardId(c.id)).map((c) => c.id));
   };
 
   const handleClearAllCards = () => {
@@ -106,42 +122,83 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) {
+    if (isSubmitting) return;
+
+    const trimmedName = name.trim();
+    const trimmedEmail = email.trim().toLowerCase();
+    if (!trimmedName) {
       setFormError('Please enter the admin name.');
       return;
     }
-    if (!email.trim() || !email.includes('@')) {
+    if (!trimmedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
       setFormError('Please enter a valid email address.');
       return;
     }
-    if (role === 'restricted' && assignedCardIds.length === 0) {
-      setFormError('Please select at least one card this restricted admin is responsible for.');
-      return;
-    }
+
+    const isPrimaryMasterTarget = editingAdmin?.email?.toLowerCase().trim() === '66shashwatkumar66@gmail.com';
+    const effectiveRole: 'master' | 'restricted' = isPrimaryMasterTarget ? 'master' : role;
+    const effectiveEmail = isPrimaryMasterTarget ? '66shashwatkumar66@gmail.com' : trimmedEmail;
+    const dedupedCardIds =
+      effectiveRole === 'master'
+        ? []
+        : Array.from(new Set(assignedCardIds.map((id) => id.trim()).filter(Boolean)));
 
     setFormError('');
     setIsSubmitting(true);
     try {
       await onSaveAdmin({
         id: editingAdmin ? editingAdmin.id : undefined,
-        name: name.trim(),
-        email: email.trim().toLowerCase(),
-        role,
-        assignedCardIds: role === 'master' ? [] : assignedCardIds,
+        name: trimmedName,
+        email: effectiveEmail,
+        role: effectiveRole,
+        assignedCardIds: dedupedCardIds,
         permissions: {
           canEditCards,
           canToggleAi,
-          canExportCsv,
-          canCreateCards,
+          canExportCsv: effectiveRole === 'master' ? true : canExportCsv,
+          canCreateCards: effectiveRole === 'master',
         },
       });
       setIsModalOpen(false);
+      setActionFeedback({
+        type: 'success',
+        text: editingAdmin
+          ? `Updated permissions for "${trimmedName}" (${effectiveEmail}).`
+          : `Registered sub-admin "${trimmedName}" (${effectiveEmail}) successfully.`,
+      });
     } catch (err: any) {
-      setFormError(err.message || 'Failed to save admin user');
+      setFormError(formatApiError(err, 'Failed to update administrator permissions.'));
     } finally {
       setIsSubmitting(false);
     }
   };
+
+  const handleConfirmDeleteAdmin = async () => {
+    if (!adminToDelete || isDeleting) return;
+    const target = adminToDelete;
+    setIsDeleting(true);
+    setActionFeedback(null);
+    try {
+      await onDeleteAdmin(target.id);
+      setAdminToDelete(null);
+      setActionFeedback({
+        type: 'success',
+        text: `Admin "${target.name}" (${target.email}) was deleted and their access has been revoked immediately. Assigned QR cards, business configs, and scan logs remain untouched.`,
+      });
+    } catch (err: any) {
+      setAdminToDelete(null);
+      setActionFeedback({
+        type: 'error',
+        text: formatApiError(err, `Failed to delete admin "${target.name}". Please try again.`),
+      });
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const editingIsPrimaryMaster = editingAdmin?.email?.toLowerCase().trim() === '66shashwatkumar66@gmail.com';
+  const knownCardIdsLower = new Set(cards.map((c) => c.id.toLowerCase()));
+  const unlistedAssignedIds = assignedCardIds.filter((cid) => !knownCardIdsLower.has(cid.toLowerCase()));
 
   const filteredCardsForModal = cards.filter((c) => {
     const term = cardSearch.toLowerCase().trim();
@@ -153,8 +210,57 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
     );
   });
 
+  const handleApproveRequestClick = async (reqUser: UserProfile) => {
+    if (!onApproveRequest || processingRequestUid) return;
+    setProcessingRequestUid(reqUser.uid || reqUser.email);
+    setActionFeedback(null);
+    try {
+      await onApproveRequest(reqUser);
+      setActionFeedback({
+        type: 'success',
+        text: `Approved "${reqUser.displayName || reqUser.email}" (${reqUser.email}) as Sub-Admin. You can now assign specific QR cards to their account.`,
+      });
+    } catch (err: any) {
+      setActionFeedback({
+        type: 'error',
+        text: formatApiError(err, `Failed to approve request for ${reqUser.email}.`),
+      });
+    } finally {
+      setProcessingRequestUid(null);
+    }
+  };
+
+  const handleRejectRequestClick = async (reqUser: UserProfile) => {
+    if (!onRejectRequest || processingRequestUid) return;
+    setProcessingRequestUid(reqUser.uid || reqUser.email);
+    setActionFeedback(null);
+    try {
+      await onRejectRequest(reqUser);
+      setActionFeedback({
+        type: 'success',
+        text: `Rejected Sub-Admin request for "${reqUser.displayName || reqUser.email}" (${reqUser.email}). Their access remains blocked.`,
+      });
+    } catch (err: any) {
+      setActionFeedback({
+        type: 'error',
+        text: formatApiError(err, `Failed to reject request for ${reqUser.email}.`),
+      });
+    } finally {
+      setProcessingRequestUid(null);
+    }
+  };
+
   const masterAdminCount = admins.filter((a) => a.role === 'master').length;
   const restrictedAdminCount = admins.filter((a) => a.role === 'restricted').length;
+  const pendingRequests = adminRequests.filter((r) => r.requestStatus === 'pending');
+  const approvedRequests = adminRequests.filter((r) => r.requestStatus === 'approved');
+  const rejectedRequests = adminRequests.filter((r) => r.requestStatus === 'rejected');
+  const visibleRequests =
+    requestTab === 'pending'
+      ? pendingRequests
+      : requestTab === 'approved'
+      ? approvedRequests
+      : rejectedRequests;
 
   return (
     <div className="space-y-6 w-full max-w-full min-w-0">
@@ -189,6 +295,208 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Action Success / Error Feedback Banner */}
+      {actionFeedback && (
+        <div
+          className={`p-3.5 rounded-2xl border text-xs flex items-center justify-between gap-3 shadow-2xs ${
+            actionFeedback.type === 'success'
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+              : 'bg-red-50 border-red-200 text-red-900'
+          }`}
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            {actionFeedback.type === 'success' ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            ) : (
+              <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+            )}
+            <span className="font-semibold">{actionFeedback.text}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setActionFeedback(null)}
+            className="p-1 rounded-lg opacity-70 hover:opacity-100 transition-opacity shrink-0"
+            aria-label="Dismiss message"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Pending Sub-Admin Access Requests Panel (Master Admin Only) */}
+      {activeAdmin.role === 'master' && (onApproveRequest || onRejectRequest) && (
+        <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-amber-50 border border-amber-200 text-amber-600 flex items-center justify-center shrink-0">
+                <Clock className="w-4.5 h-4.5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-sm font-bold text-slate-900">Sub-Admin Access Requests</h2>
+                  {pendingRequests.length > 0 && (
+                    <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200 text-[10px] font-extrabold">
+                      {pendingRequests.length} Pending
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  Review Google users requesting Sub-Admin access. Approving grants Sub-Admin login with 0 cards until you assign specific stands.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl self-start sm:self-auto">
+              {(
+                [
+                  { id: 'pending', label: 'Pending', count: pendingRequests.length },
+                  { id: 'approved', label: 'Approved', count: approvedRequests.length },
+                  { id: 'rejected', label: 'Rejected', count: rejectedRequests.length },
+                ] as const
+              ).map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setRequestTab(t.id)}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                    requestTab === t.id
+                      ? 'bg-white text-slate-900 shadow-2xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <span>{t.label}</span>
+                  <span
+                    className={`text-[10px] px-1.5 py-0.2 rounded-full ${
+                      requestTab === t.id
+                        ? t.id === 'pending' && t.count > 0
+                          ? 'bg-amber-100 text-amber-800'
+                          : 'bg-slate-100 text-slate-700'
+                        : 'bg-slate-200/70 text-slate-600'
+                    }`}
+                  >
+                    {t.count}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {visibleRequests.length === 0 ? (
+            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200/80 text-center text-xs text-slate-500">
+              {requestTab === 'pending'
+                ? 'No pending Sub-Admin access requests right now.'
+                : requestTab === 'approved'
+                ? 'No approved Sub-Admin requests recorded yet.'
+                : 'No rejected Sub-Admin requests.'}
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl overflow-hidden">
+              {visibleRequests.map((reqUser) => {
+                const reqKey = reqUser.uid || reqUser.email;
+                const isBusy = processingRequestUid === reqKey;
+                const matchedAdmin = admins.find(
+                  (a) => a.email.toLowerCase().trim() === reqUser.email.toLowerCase().trim()
+                );
+                const requestedDate = reqUser.requestedAt || reqUser.createdAt;
+                return (
+                  <div
+                    key={reqKey}
+                    className="p-3.5 bg-white hover:bg-slate-50/70 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  >
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs font-bold text-slate-900 truncate">
+                          {reqUser.displayName || reqUser.email.split('@')[0]}
+                        </span>
+                        <span className="text-[11px] font-mono text-slate-600 truncate">
+                          {reqUser.email}
+                        </span>
+                        <span
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                            reqUser.requestStatus === 'pending'
+                              ? 'bg-amber-50 text-amber-800 border-amber-200'
+                              : reqUser.requestStatus === 'approved'
+                              ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                              : 'bg-red-50 text-red-700 border-red-200'
+                          }`}
+                        >
+                          {reqUser.requestStatus === 'pending' && <Clock className="w-2.5 h-2.5" />}
+                          {reqUser.requestStatus === 'approved' && <CheckCircle2 className="w-2.5 h-2.5" />}
+                          {reqUser.requestStatus === 'rejected' && <XCircle className="w-2.5 h-2.5" />}
+                          <span className="capitalize">{reqUser.requestStatus}</span>
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-slate-500 flex items-center gap-3 flex-wrap">
+                        {requestedDate && (
+                          <span>
+                            Requested: {new Date(requestedDate).toLocaleString()}
+                          </span>
+                        )}
+                        {reqUser.requestNote && (
+                          <span className="text-slate-600 italic truncate max-w-md">
+                            "{reqUser.requestNote}"
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      {reqUser.requestStatus === 'pending' && (
+                        <>
+                          <button
+                            type="button"
+                            disabled={Boolean(processingRequestUid)}
+                            onClick={() => handleApproveRequestClick(reqUser)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-colors disabled:opacity-50 cursor-pointer"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            <span>{isBusy ? 'Saving...' : 'Approve'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={Boolean(processingRequestUid)}
+                            onClick={() => handleRejectRequestClick(reqUser)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white hover:bg-red-50 text-red-700 border border-red-200 text-xs font-bold transition-colors disabled:opacity-50 cursor-pointer"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                            <span>Reject</span>
+                          </button>
+                        </>
+                      )}
+
+                      {reqUser.requestStatus === 'approved' && matchedAdmin && (
+                        <button
+                          type="button"
+                          onClick={() => openEditModal(matchedAdmin)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100 text-[#1A73E8] border border-blue-200 text-xs font-bold transition-colors cursor-pointer"
+                        >
+                          <Layers className="w-3.5 h-3.5" />
+                          <span>
+                            Assign Cards ({matchedAdmin.assignedCardIds?.length || 0})
+                          </span>
+                        </button>
+                      )}
+
+                      {reqUser.requestStatus === 'rejected' && (
+                        <button
+                          type="button"
+                          disabled={Boolean(processingRequestUid)}
+                          onClick={() => handleApproveRequestClick(reqUser)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition-colors disabled:opacity-50 cursor-pointer"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          <span>{isBusy ? 'Saving...' : 'Approve Now'}</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Active Role Simulation Switcher */}
       <div className="bg-gradient-to-r from-blue-900 via-slate-900 to-slate-900 text-white rounded-2xl p-4 sm:p-5 shadow-sm border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -306,8 +614,8 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
                       Unrestricted access to generate, edit, and assign all cards in system.
                     </div>
                   ) : admin.assignedCardIds.length === 0 ? (
-                    <div className="p-2 bg-red-50 border border-red-200 rounded-xl text-[11px] text-red-600">
-                      No cards assigned yet. Edit this admin to grant access to specific cards.
+                    <div className="p-2 bg-slate-50 border border-slate-200 rounded-xl text-[11px] text-slate-600">
+                      No QR cards assigned yet. Sub-admin can log in cleanly and will see an empty state until cards are assigned.
                     </div>
                   ) : (
                     <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto p-1 bg-slate-50 border border-slate-200 rounded-xl">
@@ -379,20 +687,17 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
                     <Edit3 className="w-3.5 h-3.5" />
                   </button>
 
-                  {!isMaster && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (confirm(`Remove admin "${admin.name}" (${admin.email})?`)) {
-                          onDeleteAdmin(admin.id);
-                        }
-                      }}
-                      title="Delete Admin"
-                      className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  )}
+                  {admin.email.toLowerCase() !== '66shashwatkumar66@gmail.com' &&
+                    (!isMaster || masterAdminCount > 1) && (
+                      <button
+                        type="button"
+                        onClick={() => setAdminToDelete(admin)}
+                        title="Delete Admin"
+                        className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                 </div>
               </div>
             </div>
@@ -423,8 +728,10 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
                 </div>
               </div>
               <button
+                type="button"
+                disabled={isSubmitting}
                 onClick={() => setIsModalOpen(false)}
-                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100"
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 disabled:opacity-40"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -462,9 +769,10 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
                     id={emailId}
                     type="email"
                     value={email}
+                    disabled={editingIsPrimaryMaster}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="e.g. rahul@artisan.com"
-                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#1A73E8] focus:bg-white"
+                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#1A73E8] focus:bg-white disabled:opacity-60 disabled:cursor-not-allowed"
                   />
                 </div>
               </div>
@@ -476,7 +784,9 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
                 </label>
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   <label
-                    className={`flex items-start gap-2 p-3 rounded-xl border cursor-pointer transition-all ${
+                    className={`flex items-start gap-2 p-3 rounded-xl border transition-all ${
+                      editingIsPrimaryMaster ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
+                    } ${
                       role === 'restricted'
                         ? 'bg-blue-50/50 border-[#1A73E8] text-slate-900'
                         : 'bg-white border-slate-200 text-slate-600'
@@ -485,6 +795,7 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
                     <input
                       type="radio"
                       name="adminRole"
+                      disabled={editingIsPrimaryMaster}
                       checked={role === 'restricted'}
                       onChange={() => setRole('restricted')}
                       className="mt-0.5 text-[#1A73E8]"
@@ -510,6 +821,7 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
                     <input
                       type="radio"
                       name="adminRole"
+                      disabled={editingIsPrimaryMaster}
                       checked={role === 'master'}
                       onChange={() => setRole('master')}
                       className="mt-0.5 text-purple-600"
@@ -596,6 +908,11 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
                                 className="rounded text-[#1A73E8] focus:ring-blue-500"
                               />
                               <span className="font-mono font-bold text-xs">#{card.id}</span>
+                              {isMasterTestCardId(card.id) && (
+                                <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 text-[9px] font-bold border border-purple-200 shrink-0">
+                                  Master Test Card
+                                </span>
+                              )}
                               <span className="truncate font-medium text-slate-800">
                                 {card.businessName || 'Unassigned stock'}
                               </span>
@@ -611,6 +928,28 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
                       })
                     )}
                   </div>
+
+                  {unlistedAssignedIds.length > 0 && (
+                    <div className="pt-1.5 space-y-1">
+                      <p className="text-[10px] font-semibold text-amber-800">
+                        Additional assigned card IDs ({unlistedAssignedIds.length}):
+                      </p>
+                      <div className="flex flex-wrap gap-1">
+                        {unlistedAssignedIds.map((cid) => (
+                          <button
+                            key={cid}
+                            type="button"
+                            onClick={() => handleToggleCardSelection(cid)}
+                            title={`Remove #${cid}`}
+                            className="inline-flex items-center gap-1 font-mono text-[10px] font-bold px-2 py-0.5 rounded-md bg-amber-50 text-amber-900 border border-amber-200 hover:bg-red-50 hover:text-red-700 hover:border-red-200 transition-colors"
+                          >
+                            <span>#{cid}</span>
+                            <X className="w-2.5 h-2.5" />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -651,15 +990,12 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
                     />
                   </label>
 
-                  <label className="flex items-center justify-between cursor-pointer">
-                    <span className="text-slate-700">Can generate new card batches (Bulk generator)</span>
-                    <input
-                      type="checkbox"
-                      checked={canCreateCards}
-                      onChange={(e) => setCanCreateCards(e.target.checked)}
-                      className="rounded text-[#1A73E8]"
-                    />
-                  </label>
+                  <div className="flex items-center justify-between pt-1 text-[11px] text-slate-500">
+                    <span>QR card batch creation & deletion</span>
+                    <span className="font-semibold text-slate-700">
+                      {role === 'master' ? 'Enabled (Master Admin)' : 'Master Admin Only'}
+                    </span>
+                  </div>
                 </div>
               </div>
 
@@ -683,6 +1019,53 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Admin Confirmation Modal */}
+      {adminToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="w-12 h-12 rounded-2xl bg-red-50 text-[#EA4335] flex items-center justify-center mx-auto border border-red-100">
+              <Trash2 className="w-6 h-6" />
+            </div>
+
+            <div className="text-center space-y-1.5">
+              <h3 className="text-sm font-bold text-slate-900">
+                Delete Registered Admin?
+              </h3>
+              <p className="text-xs text-slate-600">
+                Remove <strong>{adminToDelete.name}</strong>{' '}
+                (<span className="font-mono">{adminToDelete.email}</span>) and revoke their admin access immediately.
+              </p>
+            </div>
+
+            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-[11px] text-slate-600 space-y-1">
+              <div className="font-semibold text-slate-800">Data Protection Guarantee:</div>
+              <p>
+                Assigned QR cards ({adminToDelete.assignedCardIds?.length || 0}), business configurations, historical scan logs, customer reviews, and subscriptions will remain completely untouched.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-3 pt-1">
+              <button
+                type="button"
+                onClick={() => setAdminToDelete(null)}
+                disabled={isDeleting}
+                className="flex-1 py-2 px-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteAdmin}
+                disabled={isDeleting}
+                className="flex-1 py-2 px-3 rounded-xl bg-[#EA4335] text-white text-xs font-bold hover:bg-red-700 transition-colors shadow-sm disabled:opacity-50 cursor-pointer"
+              >
+                {isDeleting ? 'Deleting...' : 'Delete Admin'}
+              </button>
+            </div>
           </div>
         </div>
       )}

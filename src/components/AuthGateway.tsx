@@ -1,18 +1,14 @@
 import React, { useState } from 'react';
 import {
-  ShieldCheck,
   Lock,
   QrCode,
-  ArrowRight,
   AlertCircle,
   Eye,
-  KeyRound,
-  CheckCircle,
-  Clock,
   ShieldAlert,
+  ExternalLink,
 } from 'lucide-react';
-import { auth, googleProvider, signInWithPopup } from '../firebase';
-import { saveUser, fetchAdmins, fetchCards } from '../utils/api';
+import { auth, googleProvider, signInWithPopup, signInWithRedirect } from '../firebase';
+import { saveUser, fetchAdmins, fetchCards, MASTER_ADMIN_EMAIL } from '../utils/api';
 import { UserProfile } from '../types';
 import { logAuthFailure } from '../utils/firebaseDiagnostics';
 import { FirebaseDiagnosticsModal } from './FirebaseDiagnosticsModal';
@@ -28,25 +24,30 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
 }) => {
   const [loading, setLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [googleEmail, setGoogleEmail] = useState<string>('');
-  const [showEmailInput, setShowEmailInput] = useState<boolean>(false);
+  const [showRedirectHint, setShowRedirectHint] = useState<boolean>(false);
   const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState<boolean>(false);
 
-  // 1. Google OAuth Authentication via Firebase
+  // Official Google OAuth Popup Authentication via Firebase
   const handleGoogleSignIn = async () => {
     setLoading(true);
     setErrorMsg(null);
+    setShowRedirectHint(false);
     try {
       const result = await signInWithPopup(auth, googleProvider);
       const user = result.user;
       const email = (user.email || '').toLowerCase().trim();
-      const isMaster = email === '66shashwatkumar66@gmail.com';
+      const isMaster = email === MASTER_ADMIN_EMAIL && user.emailVerified;
 
-      // Check authorization in system
-      const [admins, cards] = await Promise.all([fetchAdmins(), fetchCards()]);
+      // Now that auth.currentUser is verified, resolve role from authoritative Firestore
+      const [admins, cards] = await Promise.all([
+        fetchAdmins().catch(() => []),
+        fetchCards({ isMaster, email, uid: user.uid }).catch(() => []),
+      ]);
       const authorizedAdmin = admins.find((a) => a.email.toLowerCase() === email);
       const hasAssignedCards = cards.some(
-        (c) => c.assignedToEmail && c.assignedToEmail.toLowerCase() === email
+        (c) =>
+          (c.assignedToEmail && c.assignedToEmail.toLowerCase() === email) ||
+          (c.assignedToUid && c.assignedToUid === user.uid)
       );
 
       let role: 'master' | 'restricted' | 'member' = 'member';
@@ -55,7 +56,7 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
       } else if (authorizedAdmin) {
         role = authorizedAdmin.role === 'master' ? 'master' : 'restricted';
       } else if (hasAssignedCards) {
-        role = 'member';
+        role = 'restricted';
       }
 
       const profile: Partial<UserProfile> & { uid: string; email: string } = {
@@ -67,7 +68,7 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
           `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(email)}&backgroundColor=1a73e8&textColor=ffffff`,
         provider: 'google.com',
         role,
-        emailVerified: user.emailVerified || true,
+        emailVerified: Boolean(user.emailVerified),
         device: navigator.userAgent.slice(0, 60),
       };
 
@@ -80,70 +81,31 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
 
       if (code === 'auth/unauthorized-domain' || msg.includes('unauthorized-domain')) {
         setErrorMsg(
-          `Domain "${window.location.hostname}" is not authorized in Firebase OAuth. You can inspect diagnostics or sign in using your authorized Google email below.`
+          `Domain "${window.location.hostname}" is not authorized in Firebase Authentication. Open Firebase Diagnostics below to add this domain to Firebase Console.`
         );
-        setShowEmailInput(true);
       } else if (code === 'auth/popup-blocked') {
-        setErrorMsg('The sign-in popup was blocked by your browser. Please allow popups or use email sign-in below.');
-        setShowEmailInput(true);
+        setErrorMsg('Your browser blocked the Google sign-in popup. Please allow popups or use Redirect Sign-In below.');
+        setShowRedirectHint(true);
       } else if (code === 'auth/popup-closed-by-user') {
-        setErrorMsg('Sign-in popup closed before completion. Please try again.');
+        setErrorMsg('Sign-in popup was closed before completion. Please try again.');
       } else {
-        setErrorMsg(msg || 'Sign-in attempt could not be completed. You can enter your email below.');
-        setShowEmailInput(true);
+        setErrorMsg(msg || 'Google sign-in could not be completed. Please try again.');
+        setShowRedirectHint(true);
       }
     } finally {
       setLoading(false);
     }
   };
 
-  // 2. Verified Google Email Sign-In (checks strict role authorization)
-  const handleEmailSignIn = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const cleanEmail = googleEmail.trim().toLowerCase();
-
-    if (!cleanEmail || !cleanEmail.includes('@')) {
-      setErrorMsg('Please enter a valid Google email address');
-      return;
-    }
-
+  // Redirect fallback for mobile Safari / strict popup blockers (still genuine Firebase Google OAuth)
+  const handleGoogleRedirectSignIn = async () => {
     setLoading(true);
     setErrorMsg(null);
-
     try {
-      const isMaster = cleanEmail === '66shashwatkumar66@gmail.com';
-      const [admins, cards] = await Promise.all([fetchAdmins(), fetchCards()]);
-      const authorizedAdmin = admins.find((a) => a.email.toLowerCase() === cleanEmail);
-      const hasAssignedCards = cards.some(
-        (c) => c.assignedToEmail && c.assignedToEmail.toLowerCase() === cleanEmail
-      );
-
-      let role: 'master' | 'restricted' | 'member' = 'member';
-      if (isMaster) {
-        role = 'master';
-      } else if (authorizedAdmin) {
-        role = authorizedAdmin.role === 'master' ? 'master' : 'restricted';
-      } else if (hasAssignedCards) {
-        role = 'member';
-      }
-
-      const uid = `google-uid-${cleanEmail.replace(/[^a-zA-Z0-9]/g, '')}`;
-      const profile: Partial<UserProfile> & { uid: string; email: string } = {
-        uid,
-        email: cleanEmail,
-        displayName: isMaster ? 'Master Administrator' : cleanEmail.split('@')[0],
-        photoURL: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(cleanEmail)}&backgroundColor=1a73e8&textColor=ffffff`,
-        provider: 'google.com',
-        role,
-        emailVerified: true,
-        device: navigator.userAgent.slice(0, 60),
-      };
-
-      const saved = await saveUser(profile);
-      onLoginSuccess(saved);
+      await signInWithRedirect(auth, googleProvider);
     } catch (err: any) {
-      setErrorMsg(`Failed to authenticate user: ${err?.message || 'Unknown error'}`);
-    } finally {
+      logAuthFailure(err, 'Auth Gateway Google Redirect Sign-In');
+      setErrorMsg(err?.message || 'Unable to start Google redirect sign-in.');
       setLoading(false);
     }
   };
@@ -152,28 +114,30 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
     <div className="min-h-screen bg-[#F8FAFC] text-slate-900 flex flex-col justify-between antialiased selection:bg-blue-100 selection:text-blue-900">
       {/* Top Header */}
       <header className="border-b border-slate-200 bg-white/90 backdrop-blur-md sticky top-0 z-20">
-        <div className="max-w-5xl mx-auto px-4 py-3.5 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-slate-900 text-white flex items-center justify-center font-bold shadow-xs">
+        <div className="max-w-5xl mx-auto px-4 py-3.5 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-9 h-9 rounded-xl bg-slate-900 text-white flex items-center justify-center font-bold shadow-xs shrink-0">
               <QrCode className="w-5 h-5 text-[#FBBC05]" />
             </div>
-            <div>
-              <span className="font-extrabold text-sm text-slate-900 tracking-tight block">
+            <div className="min-w-0">
+              <span className="font-extrabold text-sm text-slate-900 tracking-tight block truncate">
                 3DBYSD Smart Reviews
               </span>
-              <span className="text-[11px] text-slate-500 font-medium block">
+              <span className="text-[11px] text-slate-500 font-medium block truncate">
                 Dynamic QR & NFC Stand Management Portal
               </span>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             <button
+              type="button"
               onClick={() => onPreviewCard('0001')}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-xs font-semibold text-slate-700 transition-colors cursor-pointer"
             >
               <Eye className="w-3.5 h-3.5 text-blue-600" />
-              <span>Public Scan Preview (/r/0001)</span>
+              <span className="hidden sm:inline">Public Scan Preview (/r/0001)</span>
+              <span className="sm:hidden">Preview</span>
             </button>
           </div>
         </div>
@@ -195,7 +159,7 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
               Admin & Business Sign-In
             </h1>
             <p className="text-xs text-slate-500 max-w-xs mx-auto leading-relaxed">
-              Sign in with your verified Google account. Access is protected by strict role-based authorization.
+              Sign in with your verified Google account. Access is protected by Firebase Authentication and strict role-based security rules.
             </p>
           </div>
 
@@ -204,23 +168,23 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
             <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-start gap-2.5">
               <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
               <div className="space-y-1.5 flex-1 min-w-0">
-                <span className="font-semibold">Notice</span>
+                <span className="font-semibold">Authentication Notice</span>
                 <p className="text-amber-800 leading-relaxed">{errorMsg}</p>
-                <div>
+                <div className="flex flex-wrap items-center gap-2 pt-1">
                   <button
                     type="button"
                     onClick={() => setIsDiagnosticsOpen(true)}
                     className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-200/80 hover:bg-amber-200 text-amber-950 font-bold text-[11px] transition-colors cursor-pointer"
                   >
                     <ShieldAlert className="w-3.5 h-3.5 text-amber-700" />
-                    <span>Run Firebase & Domain Diagnostics</span>
+                    <span>Firebase & Domain Diagnostics</span>
                   </button>
                 </div>
               </div>
             </div>
           )}
 
-          {/* Main Primary Action: Google OAuth Popup */}
+          {/* Main Primary Action: Google OAuth Popup + Mobile Redirect option */}
           <div className="space-y-3">
             <button
               type="button"
@@ -249,53 +213,21 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
               <span>{loading ? 'Authenticating...' : 'Sign in with Google'}</span>
             </button>
 
-            {/* Email Form Toggle */}
-            <div className="pt-2 text-center">
-              {!showEmailInput ? (
-                <button
-                  type="button"
-                  onClick={() => setShowEmailInput(true)}
-                  className="text-xs text-[#1A73E8] hover:underline font-semibold cursor-pointer"
-                >
-                  Or enter authorized Google email
-                </button>
-              ) : (
-                <form onSubmit={handleEmailSignIn} className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3 text-left">
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs font-bold text-slate-800">
-                      Authorized Google Email:
-                    </label>
-                    <span className="text-[10px] text-slate-400">Strict UBRA</span>
-                  </div>
+            {showRedirectHint && (
+              <button
+                type="button"
+                onClick={handleGoogleRedirectSignIn}
+                disabled={loading}
+                className="w-full py-2.5 px-4 rounded-xl border border-blue-200 bg-blue-50/70 hover:bg-blue-100/70 text-[#1A73E8] text-xs font-bold flex items-center justify-center gap-2 transition-colors disabled:opacity-50 cursor-pointer"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>Use Full-Page Google Redirect Sign-In</span>
+              </button>
+            )}
 
-                  <input
-                    type="email"
-                    value={googleEmail}
-                    onChange={(e) => setGoogleEmail(e.target.value)}
-                    placeholder="name@gmail.com"
-                    autoFocus
-                    className="w-full px-3 py-2 text-xs bg-white border border-slate-200 rounded-xl text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#1A73E8]"
-                  />
-
-                  <div className="flex items-center justify-between gap-2 pt-1">
-                    <button
-                      type="button"
-                      onClick={() => setShowEmailInput(false)}
-                      className="text-[11px] text-slate-500 hover:text-slate-700 cursor-pointer"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      disabled={loading || !googleEmail.includes('@')}
-                      className="px-4 py-2 bg-[#1A73E8] hover:bg-[#1557B0] text-white text-xs font-bold rounded-xl transition-colors disabled:opacity-50 cursor-pointer"
-                    >
-                      {loading ? 'Verifying...' : 'Verify & Continue'}
-                    </button>
-                  </div>
-                </form>
-              )}
-            </div>
+            <p className="text-[11px] text-slate-400 text-center pt-1">
+              Verified Google OAuth is required to access Cloud Firestore records.
+            </p>
           </div>
         </div>
 
@@ -306,12 +238,14 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
           </p>
           <div className="flex items-center justify-center gap-2">
             <button
+              type="button"
               onClick={() => onPreviewCard('0001')}
               className="px-3.5 py-1.5 rounded-xl bg-white border border-slate-200 text-xs font-bold text-slate-800 hover:border-blue-400 hover:text-blue-600 transition-colors shadow-2xs cursor-pointer"
             >
               Scan Stand #0001
             </button>
             <button
+              type="button"
               onClick={() => onPreviewCard('0002')}
               className="px-3.5 py-1.5 rounded-xl bg-white border border-slate-200 text-xs font-bold text-slate-800 hover:border-blue-400 hover:text-blue-600 transition-colors shadow-2xs cursor-pointer"
             >

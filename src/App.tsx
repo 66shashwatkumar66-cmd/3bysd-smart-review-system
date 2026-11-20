@@ -2,7 +2,6 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { CardRecord, AdminUser, UserProfile } from './types';
 import {
   fetchCards,
-  fetchCardById,
   createBatchCards,
   assignCard,
   bulkUpdateCardsStatus,
@@ -12,6 +11,8 @@ import {
   updateAdmin,
   deleteAdmin,
   fetchUsers,
+  saveUser,
+  MASTER_ADMIN_EMAIL,
 } from './utils/api';
 import {
   extractCardId,
@@ -20,8 +21,8 @@ import {
   CustomerLoadState,
   getCachedCard,
 } from './utils/cardLookup';
-import { auth, onAuthStateChanged, signOut } from './firebase';
-import { AdminHeader } from './components/AdminHeader';
+import { auth, onAuthStateChanged, signOut, getRedirectResult } from './firebase';
+import { AdminHeader, AdminTabId } from './components/AdminHeader';
 import { CardsTable } from './components/CardsTable';
 import { BatchGeneratorModal } from './components/BatchGeneratorModal';
 import { AssignCardModal } from './components/AssignCardModal';
@@ -34,7 +35,7 @@ import { ReviewCustomizerView } from './components/ReviewCustomizerView';
 import { MasterAdminView } from './components/MasterAdminView';
 import { UsersManagementView } from './components/UsersManagementView';
 import { AdvertisementManagementView } from './components/AdvertisementManagementView';
-import { QrScanLogsView } from './components/QrScanLogsView';
+import { ScanLogsView } from './components/ScanLogsView';
 import { SlidingSidebar } from './components/SlidingSidebar';
 import { AuthGateway } from './components/AuthGateway';
 import { exportCardsToCsv } from './utils/csv';
@@ -48,17 +49,18 @@ import {
   ShieldCheck,
   RotateCcw,
   Radio,
-  Crown,
   AlertCircle,
   Building2,
   Sliders,
   LogOut,
   History,
+  X,
+  CheckCircle2,
 } from 'lucide-react';
 
 const DEFAULT_MASTER_ADMIN: AdminUser = {
   id: 'master-admin-01',
-  email: '66shashwatkumar66@gmail.com',
+  email: MASTER_ADMIN_EMAIL,
   name: 'Master Administrator',
   role: 'master',
   assignedCardIds: [],
@@ -75,19 +77,16 @@ const DEFAULT_MASTER_ADMIN: AdminUser = {
 export default function App() {
   const [cards, setCards] = useState<CardRecord[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
-  const [currentTab, setCurrentTab] = useState<'cards' | 'logs' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users' | 'ads'>('cards');
-  const [logStandFilter, setLogStandFilter] = useState<string | undefined>(undefined);
+  const [currentTab, setCurrentTab] = useState<AdminTabId>('cards');
+  const [scanLogsCardFilter, setScanLogsCardFilter] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
 
-  // Authenticated User State (Real Google Auth)
-  const [currentUser, setCurrentUser] = useState<UserProfile | null>(() => {
-    try {
-      const saved = localStorage.getItem('3dbysd_current_user');
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
-    }
-  });
+  // Inline notification & error banner (replaces window.alert)
+  const [appNotice, setAppNotice] = useState<{ type: 'error' | 'success' | 'info'; message: string } | null>(null);
+
+  // Authoritative Firebase Authentication state (single listener for the whole app)
+  const [authReady, setAuthReady] = useState<boolean>(false);
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [users, setUsers] = useState<UserProfile[]>([]);
 
   // Admin Management State
@@ -111,11 +110,25 @@ export default function App() {
   const [customerErrorMessage, setCustomerErrorMessage] = useState<string | null>(null);
 
   const activeLookupReqIdRef = useRef(0);
+  const savedLoginUidRef = useRef<string | null>(null);
 
-  const fetchCustomerCard = useCallback(async (targetId: string, recordScan: boolean = false) => {
+  // Modals state
+  const [isBatchModalOpen, setIsBatchModalOpen] = useState<boolean>(false);
+  const [cardToAssign, setCardToAssign] = useState<CardRecord | null>(null);
+  const [simulatorCardId, setSimulatorCardId] = useState<string | null>(null);
+
+  const showNotice = useCallback((type: 'error' | 'success' | 'info', message: string) => {
+    setAppNotice({ type, message });
+    if (type !== 'error') {
+      setTimeout(() => {
+        setAppNotice((prev) => (prev?.message === message ? null : prev));
+      }, 4500);
+    }
+  }, []);
+
+  const fetchCustomerCard = useCallback(async (targetId: string, recordScan: boolean = true) => {
     const reqId = ++activeLookupReqIdRef.current;
 
-    // Validate ID format immediately without unnecessary requests
     if (!isValidCardId(targetId)) {
       setCustomerLoadState('invalid_id');
       setCustomerCard(null);
@@ -123,7 +136,6 @@ export default function App() {
       return;
     }
 
-    // Warm cache check for instant rendering
     const cached = getCachedCard(targetId);
     if (cached) {
       setCustomerCard(cached);
@@ -136,7 +148,6 @@ export default function App() {
     try {
       const result = await lookupCard(targetId, { recordScan });
 
-      // Stale response guard: ignore if a newer request began
       if (activeLookupReqIdRef.current !== reqId) return;
 
       if (result.status === 'success' && result.card) {
@@ -152,7 +163,6 @@ export default function App() {
         setCustomerLoadState('invalid_id');
         setCustomerErrorMessage(result.errorMessage || null);
       } else {
-        // Recoverable error: keep cached version if available
         if (!cached) {
           setCustomerCard(null);
           setCustomerLoadState('error');
@@ -169,100 +179,181 @@ export default function App() {
     }
   }, []);
 
-  // Modals state
-  const [isBatchModalOpen, setIsBatchModalOpen] = useState<boolean>(false);
-  const [cardToAssign, setCardToAssign] = useState<CardRecord | null>(null);
-  const [simulatorCardId, setSimulatorCardId] = useState<string | null>(null);
+  // Load admin data scoped strictly to the authenticated Firebase user
+  const loadAdminWorkspaceData = useCallback(
+    async (user: UserProfile) => {
+      setLoading(true);
+      setAppNotice(null);
+      const cleanEmail = user.email.toLowerCase().trim();
+      const isMasterEmail = cleanEmail === MASTER_ADMIN_EMAIL && Boolean(user.emailVerified);
 
-  // Listen for Google Auth changes
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (firebaseUser && firebaseUser.email) {
-        const cleanEmail = firebaseUser.email.toLowerCase().trim();
-        const isMasterEmail = cleanEmail === '66shashwatkumar66@gmail.com';
-        const userProfile: UserProfile = {
-          uid: firebaseUser.uid,
+      try {
+        // 1. Load admins list (all admins for master, self doc for sub-admin)
+        const adminList = await fetchAdmins();
+        setAdmins(adminList);
+
+        const matchedAdmin = adminList.find((a) => a.email.toLowerCase() === cleanEmail);
+        const masterAdminObj =
+          adminList.find((a) => a.role === 'master' || a.email.toLowerCase() === MASTER_ADMIN_EMAIL) ||
+          DEFAULT_MASTER_ADMIN;
+
+        let resolvedActiveAdmin: AdminUser = matchedAdmin || masterAdminObj;
+        if (isMasterEmail) {
+          const impersonatedId = localStorage.getItem('3dbysd_impersonated_admin_id');
+          const imp = impersonatedId
+            ? adminList.find((a) => a.id === impersonatedId && a.role === 'restricted')
+            : null;
+          resolvedActiveAdmin = imp || masterAdminObj;
+        }
+        setActiveAdmin(resolvedActiveAdmin);
+
+        // 2. Load authoritative cards from Cloud Firestore using verified RBAC scope
+        const cardsList = await fetchCards({
+          isMaster: isMasterEmail,
           email: cleanEmail,
-          displayName:
-            firebaseUser.displayName || (isMasterEmail ? 'Master Administrator' : cleanEmail.split('@')[0]),
-          photoURL: firebaseUser.photoURL || undefined,
-          provider: 'google.com',
-          role: isMasterEmail ? 'master' : 'member',
-          emailVerified: firebaseUser.emailVerified || true,
-          lastLoginAt: new Date().toISOString(),
-          createdAt: new Date().toISOString(),
-          loginCount: 1,
-        };
-        setCurrentUser(userProfile);
-        localStorage.setItem('3dbysd_current_user', JSON.stringify(userProfile));
+          uid: user.uid,
+          assignedCardIds: matchedAdmin?.assignedCardIds || user.assignedCardIds,
+        });
+        setCards(cardsList);
+
+        // 3. Load users list (Master Admin only; avoids unnecessary permission-denied for sub-admins)
+        if (isMasterEmail) {
+          const usersList = await fetchUsers().catch(() => []);
+          setUsers(usersList);
+        } else {
+          setUsers([]);
+        }
+      } catch (err: any) {
+        console.error('[3DBYSD] Workspace load failed:', err);
+        showNotice(
+          'error',
+          err?.message || 'Unable to load records from Cloud Firestore. Please verify your connection and sign-in status.'
+        );
+      } finally {
+        setLoading(false);
+      }
+    },
+    [showNotice]
+  );
+
+  // Single authoritative Firebase Auth listener (handles popup, redirect, refresh, and sign-out)
+  useEffect(() => {
+    // Handle return from Google signInWithRedirect on mobile Safari
+    getRedirectResult(auth).catch((err) => {
+      console.warn('[3DBYSD] Redirect sign-in notice:', err?.code || err?.message);
+    });
+
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (!firebaseUser || !firebaseUser.email) {
+        savedLoginUidRef.current = null;
+        setCurrentUser(null);
+        setCards([]);
+        setAdmins([]);
+        setUsers([]);
+        setActiveAdmin(null);
+        setLoading(false);
+        localStorage.removeItem('3dbysd_current_user');
+        localStorage.removeItem('3dbysd_impersonated_admin_id');
+        setAuthReady(true);
+        return;
+      }
+
+      const cleanEmail = firebaseUser.email.toLowerCase().trim();
+      const isMasterEmail = cleanEmail === MASTER_ADMIN_EMAIL && Boolean(firebaseUser.emailVerified);
+
+      let profile: UserProfile = {
+        uid: firebaseUser.uid,
+        email: cleanEmail,
+        displayName:
+          firebaseUser.displayName || (isMasterEmail ? 'Master Administrator' : cleanEmail.split('@')[0]),
+        photoURL: firebaseUser.photoURL || undefined,
+        provider: 'google.com',
+        role: isMasterEmail ? 'master' : 'member',
+        emailVerified: Boolean(firebaseUser.emailVerified),
+        lastLoginAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        loginCount: 1,
+      };
+
+      // Persist login profile once per authenticated session
+      if (savedLoginUidRef.current !== firebaseUser.uid) {
+        savedLoginUidRef.current = firebaseUser.uid;
+        try {
+          const saved = await saveUser(profile);
+          if (saved) profile = saved;
+        } catch (err) {
+          console.warn('[3DBYSD] User profile sync notice:', err);
+        }
+      }
+
+      setCurrentUser(profile);
+      localStorage.setItem('3dbysd_current_user', JSON.stringify(profile));
+      setAuthReady(true);
+
+      // Only load admin workspace data if we are NOT on a public customer QR route
+      if (!extractCardId()) {
+        await loadAdminWorkspaceData(profile);
       }
     });
-    return () => unsubscribe();
-  }, []);
 
-  // Parse route from window.location and listen to popstate
+    return () => unsubscribe();
+  }, [loadAdminWorkspaceData]);
+
+  // Parse public customer QR/NFC routes and listen to popstate
   useEffect(() => {
     const checkPath = () => {
       const targetCardId = extractCardId();
-
       if (targetCardId) {
         setCustomerCardId(targetCardId);
-        fetchCustomerCard(targetCardId, false);
+        // Real customer scan route -> record immutable scan log & increment scansCount
+        fetchCustomerCard(targetCardId, true);
       } else {
         setCustomerCardId(null);
         setCustomerCard(null);
-        loadCards();
-        loadAdminsData();
-        loadUsersData();
       }
     };
 
     checkPath();
     window.addEventListener('popstate', checkPath);
-
     return () => {
       window.removeEventListener('popstate', checkPath);
     };
   }, [fetchCustomerCard]);
 
   const loadCards = async () => {
-    setLoading(true);
-    const data = await fetchCards();
-    setCards(data);
-    setLoading(false);
-  };
-
-  const loadUsersData = async () => {
-    try {
-      const list = await fetchUsers();
-      setUsers(list);
-    } catch (e) {
-      console.warn('Failed to fetch users:', e);
-    }
+    if (!currentUser) return;
+    await loadAdminWorkspaceData(currentUser);
   };
 
   const loadAdminsData = async () => {
-    const list = await fetchAdmins();
-    setAdmins(list);
-    const master =
-      list.find((a) => a.role === 'master' || a.email.toLowerCase() === '66shashwatkumar66@gmail.com') ||
-      DEFAULT_MASTER_ADMIN;
+    try {
+      const list = await fetchAdmins();
+      setAdmins(list);
+      const master =
+        list.find((a) => a.role === 'master' || a.email.toLowerCase() === MASTER_ADMIN_EMAIL) ||
+        DEFAULT_MASTER_ADMIN;
 
-    const impersonatedId = localStorage.getItem('3dbysd_impersonated_admin_id');
-    if (impersonatedId && currentUser?.email?.toLowerCase() === '66shashwatkumar66@gmail.com') {
-      const imp = list.find((a) => a.id === impersonatedId && a.role === 'restricted');
-      if (imp) {
-        setActiveAdmin(imp);
-        return;
+      const impersonatedId = localStorage.getItem('3dbysd_impersonated_admin_id');
+      if (impersonatedId && currentUser?.email?.toLowerCase() === MASTER_ADMIN_EMAIL) {
+        const imp = list.find((a) => a.id === impersonatedId && a.role === 'restricted');
+        if (imp) {
+          setActiveAdmin(imp);
+          return;
+        }
       }
+      setActiveAdmin(master);
+    } catch (err: any) {
+      showNotice('error', err?.message || 'Failed to refresh administrators.');
     }
-    setActiveAdmin(master);
   };
 
   const handleSelectActiveAdmin = (adm: AdminUser) => {
     setActiveAdmin(adm);
     if (adm.role === 'restricted') {
       localStorage.setItem('3dbysd_impersonated_admin_id', adm.id);
+      if (['admins', 'users', 'ads'].includes(currentTab)) {
+        setCurrentTab('cards');
+      }
     } else {
       localStorage.removeItem('3dbysd_impersonated_admin_id');
     }
@@ -270,7 +361,7 @@ export default function App() {
 
   const handleExitSubAdminMode = () => {
     const master =
-      admins.find((a) => a.role === 'master' || a.email.toLowerCase() === '66shashwatkumar66@gmail.com') ||
+      admins.find((a) => a.role === 'master' || a.email.toLowerCase() === MASTER_ADMIN_EMAIL) ||
       DEFAULT_MASTER_ADMIN;
     setActiveAdmin(master);
     localStorage.removeItem('3dbysd_impersonated_admin_id');
@@ -283,25 +374,40 @@ export default function App() {
     paddingDigits: number;
     prefix?: string;
   }) => {
-    const updated = await createBatchCards(params);
-    setCards(updated);
+    try {
+      const updated = await createBatchCards(params);
+      setCards(updated);
+      showNotice('success', `Generated ${params.count} new QR stand(s) in Cloud Firestore.`);
+    } catch (err: any) {
+      showNotice('error', err?.message || 'Batch card creation failed.');
+      throw err;
+    }
   };
 
   const handleAssignCard = async (id: string, updates: Partial<CardRecord>) => {
-    const updated = await assignCard(id, updates, effectiveActiveAdmin.id);
-    if (updated) {
-      setCards((prev) =>
-        prev.map((c) => (c.id.toLowerCase() === id.toLowerCase() ? updated : c))
-      );
-      if (customerCardId && customerCardId.toLowerCase() === id.toLowerCase()) {
-        setCustomerCard(updated);
+    try {
+      const updated = await assignCard(id, updates, effectiveActiveAdmin.id);
+      if (updated) {
+        setCards((prev) => prev.map((c) => (c.id.toLowerCase() === id.toLowerCase() ? updated : c)));
+        if (customerCardId && customerCardId.toLowerCase() === id.toLowerCase()) {
+          setCustomerCard(updated);
+        }
+        showNotice('success', `Saved changes to Stand #${id}.`);
       }
+    } catch (err: any) {
+      showNotice('error', err?.message || `Failed to save changes for Stand #${id}.`);
+      throw err;
     }
   };
 
   const handleDeleteCard = async (id: string) => {
-    await deleteCard(id);
-    setCards((prev) => prev.filter((c) => c.id.toLowerCase() !== id.toLowerCase()));
+    try {
+      await deleteCard(id);
+      setCards((prev) => prev.filter((c) => c.id.toLowerCase() !== id.toLowerCase()));
+      showNotice('success', `Deleted Stand #${id}.`);
+    } catch (err: any) {
+      showNotice('error', err?.message || `Failed to delete Stand #${id}.`);
+    }
   };
 
   const handleToggleAiReview = async (id: string, enabled: boolean) => {
@@ -309,44 +415,62 @@ export default function App() {
   };
 
   const handleBulkUpdateStatus = async (ids: string[], newStatus: 'available' | 'assigned') => {
-    await bulkUpdateCardsStatus(ids, newStatus, effectiveActiveAdmin.id);
-    setCards((prev) =>
-      prev.map((c) =>
-        ids.some((id) => id.toLowerCase() === c.id.toLowerCase())
-          ? {
-              ...c,
-              status: newStatus,
-              updatedAt: new Date().toISOString(),
-            }
-          : c
-      )
-    );
+    try {
+      await bulkUpdateCardsStatus(ids, newStatus, effectiveActiveAdmin.id);
+      setCards((prev) =>
+        prev.map((c) =>
+          ids.some((id) => id.toLowerCase() === c.id.toLowerCase())
+            ? { ...c, status: newStatus, updatedAt: new Date().toISOString() }
+            : c
+        )
+      );
+      showNotice('success', `Updated status to "${newStatus}" for ${ids.length} stand(s).`);
+    } catch (err: any) {
+      showNotice('error', err?.message || 'Bulk status update failed.');
+    }
   };
 
   const handleOpenCustomerPreview = (card: CardRecord) => {
     setSimulatorCardId(card.id);
   };
 
+  const handleOpenCardLogs = (cardId: string) => {
+    setScanLogsCardFilter(cardId);
+    setCurrentTab('logs');
+  };
+
   const handleSaveAdmin = async (adminData: Partial<AdminUser>) => {
-    if (adminData.id) {
-      const updated = await updateAdmin(adminData.id, adminData);
-      if (updated) {
-        setAdmins((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
-        if (activeAdmin && activeAdmin.id === updated.id) {
-          setActiveAdmin(updated);
+    try {
+      if (adminData.id) {
+        const updated = await updateAdmin(adminData.id, adminData);
+        if (updated) {
+          setAdmins((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
+          if (activeAdmin && activeAdmin.id === updated.id) {
+            setActiveAdmin(updated);
+          }
+          showNotice('success', `Updated administrator "${updated.name}".`);
+        }
+      } else {
+        const created = await createAdmin(adminData);
+        if (created) {
+          setAdmins((prev) => [...prev, created]);
+          showNotice('success', `Registered sub-admin "${created.name}".`);
         }
       }
-    } else {
-      const created = await createAdmin(adminData);
-      if (created) {
-        setAdmins((prev) => [...prev, created]);
-      }
+    } catch (err: any) {
+      showNotice('error', err?.message || 'Failed to save administrator.');
+      throw err;
     }
   };
 
   const handleDeleteAdmin = async (adminId: string) => {
-    await deleteAdmin(adminId);
-    setAdmins((prev) => prev.filter((a) => a.id !== adminId));
+    try {
+      await deleteAdmin(adminId);
+      setAdmins((prev) => prev.filter((a) => a.id !== adminId));
+      showNotice('success', 'Administrator removed.');
+    } catch (err: any) {
+      showNotice('error', err?.message || 'Failed to remove administrator.');
+    }
   };
 
   const handleRetryCustomerLookup = () => {
@@ -357,7 +481,23 @@ export default function App() {
     }
   };
 
-  // If viewing customer URL directly (e.g. /r/0001)
+  const handleSignOut = async () => {
+    try {
+      await signOut(auth);
+      savedLoginUidRef.current = null;
+      setCurrentUser(null);
+      setCards([]);
+      setAdmins([]);
+      setUsers([]);
+      setActiveAdmin(null);
+      localStorage.removeItem('3dbysd_current_user');
+      localStorage.removeItem('3dbysd_impersonated_admin_id');
+    } catch (e: any) {
+      showNotice('error', e?.message || 'Sign out failed.');
+    }
+  };
+
+  // Public customer QR/NFC route (e.g. /r/0001) — never waits on admin auth
   if (customerCardId) {
     return (
       <CustomerReviewView
@@ -368,13 +508,27 @@ export default function App() {
         errorMessage={customerErrorMessage}
         onRetry={handleRetryCustomerLookup}
         onBackToAdmin={() => {
-          // Reset pathname and view admin
           window.history.pushState({}, '', '/');
           setCustomerCardId(null);
           setCustomerCard(null);
-          loadCards();
+          if (currentUser) {
+            loadAdminWorkspaceData(currentUser);
+          }
         }}
       />
+    );
+  }
+
+  // Wait for Firebase Auth session hydration before querying Firestore or showing AuthGateway
+  if (!authReady) {
+    return (
+      <div className="min-h-screen bg-[#F8FAFC] flex flex-col items-center justify-center p-6 text-slate-900">
+        <div className="bg-white rounded-3xl p-8 border border-slate-200 shadow-sm text-center space-y-3 max-w-xs w-full">
+          <div className="w-8 h-8 border-2 border-[#1A73E8] border-t-transparent rounded-full animate-spin mx-auto" />
+          <div className="text-sm font-bold text-slate-900">Verifying Session</div>
+          <p className="text-xs text-slate-500">Connecting to Firebase Authentication & Cloud Firestore...</p>
+        </div>
+      </div>
     );
   }
 
@@ -384,28 +538,20 @@ export default function App() {
       <AuthGateway
         onLoginSuccess={(user) => {
           setCurrentUser(user);
-          loadCards();
-          loadUsersData();
+          loadAdminWorkspaceData(user);
         }}
         onPreviewCard={(id) => {
           setCustomerCardId(id);
+          fetchCustomerCard(id, false);
         }}
       />
     );
   }
 
-  const handleSignOut = async () => {
-    try {
-      await signOut(auth);
-      setCurrentUser(null);
-      localStorage.removeItem('3dbysd_current_user');
-    } catch (e) {
-      console.warn('Sign out failed:', e);
-    }
-  };
-
-  // Master Admin check: STRICTLY ONLY for the email 66shashwatkumar66@gmail.com
-  const isMasterUser = Boolean(currentUser.email.toLowerCase() === '66shashwatkumar66@gmail.com');
+  // Master Admin check: STRICTLY verified email matching MASTER_ADMIN_EMAIL
+  const isMasterUser = Boolean(
+    currentUser.emailVerified && currentUser.email.toLowerCase() === MASTER_ADMIN_EMAIL
+  );
 
   // Check if authorized as a sub-admin by Master Admin
   const authorizedAdmin = admins.find(
@@ -424,12 +570,8 @@ export default function App() {
     );
   });
 
-  // Strict Role-Based Access Control (UBRA):
-  // If the user is NOT Master Admin (66shashwatkumar66@gmail.com),
-  // NOT authorized by Master Admin in admins list,
-  // and has NO allocated cards:
-  // Render clean "Access Pending Authorization" gate!
-  if (!isMasterUser && !authorizedAdmin && userAllocatedCards.length === 0) {
+  // Strict Role-Based Access Control (UBRA) — wait until initial load finishes before locking out
+  if (!loading && !isMasterUser && !authorizedAdmin && userAllocatedCards.length === 0) {
     return (
       <div className="min-h-screen bg-[#F8FAFC] text-slate-900 flex flex-col justify-between antialiased">
         <header className="border-b border-slate-200 bg-white/90 backdrop-blur-md px-4 py-3.5">
@@ -441,6 +583,7 @@ export default function App() {
               <span className="font-extrabold text-sm text-slate-900">3DBYSD Smart Reviews</span>
             </div>
             <button
+              type="button"
               onClick={handleSignOut}
               className="text-xs font-semibold text-slate-600 hover:text-red-600 flex items-center gap-1 cursor-pointer"
             >
@@ -457,16 +600,14 @@ export default function App() {
             </div>
 
             <div className="space-y-1.5">
-              <h2 className="text-lg font-extrabold text-slate-900">
-                Access Pending Authorization
-              </h2>
+              <h2 className="text-lg font-extrabold text-slate-900">Access Pending Authorization</h2>
               <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100 text-slate-700 text-xs font-mono font-medium">
                 <span>{currentUser.email}</span>
               </div>
             </div>
 
             <p className="text-xs text-slate-600 leading-relaxed">
-              This management portal is protected by <strong>Strict Role-Based Access Control (UBRA)</strong>.
+              This management portal is protected by <strong>Strict Role-Based Access Control</strong>.
               Your Google account is not yet authorized as an administrator, and no QR/NFC stands have been allocated to your email.
             </p>
 
@@ -482,6 +623,7 @@ export default function App() {
 
             <div className="pt-2 flex flex-col gap-2">
               <button
+                type="button"
                 onClick={handleSignOut}
                 className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition-colors flex items-center justify-center gap-2 cursor-pointer"
               >
@@ -499,35 +641,43 @@ export default function App() {
     );
   }
 
-  // Active admin fallback
   const effectiveActiveAdmin: AdminUser =
     activeAdmin ||
-    (authorizedAdmin
-      ? authorizedAdmin
-      : DEFAULT_MASTER_ADMIN);
+    authorizedAdmin ||
+    (isMasterUser
+      ? DEFAULT_MASTER_ADMIN
+      : {
+          id: currentUser.uid,
+          email: currentUser.email,
+          name: currentUser.displayName,
+          role: 'restricted',
+          assignedCardIds: userAllocatedCards.map((c) => c.id),
+          permissions: {
+            canEditCards: true,
+            canToggleAi: true,
+            canExportCsv: false,
+            canCreateCards: false,
+          },
+          createdAt: currentUser.createdAt,
+          updatedAt: currentUser.lastLoginAt,
+        });
 
-  const masterAdmin =
-    admins.find((a) => a.role === 'master' || a.email.toLowerCase() === '66shashwatkumar66@gmail.com') ||
-    DEFAULT_MASTER_ADMIN;
-
-  // Check if Master Admin is currently testing or impersonating Sub-Admin mode
   const isInSubAdminMode = Boolean(isMasterUser && effectiveActiveAdmin.role === 'restricted');
-
-  // Strict Role-Based Access Control (UBRA):
-  // When in Sub-Admin mode, user experiences the restricted sub-admin view and limited card set
   const isMaster = isMasterUser && !isInSubAdminMode;
 
   const displayedCards = isMaster
     ? cards
     : cards.filter((c) => {
-        const userEmail = currentUser.email.toLowerCase();
+        const targetEmail = (
+          isInSubAdminMode ? effectiveActiveAdmin.email : currentUser.email
+        ).toLowerCase();
         const userUid = currentUser.uid;
         const userAssigned = currentUser.assignedCardIds || [];
         const adminAssigned = effectiveActiveAdmin?.assignedCardIds || [];
         return (
-          (c.assignedToEmail && c.assignedToEmail.toLowerCase() === userEmail) ||
-          (c.assignedToUid && c.assignedToUid === userUid) ||
-          userAssigned.includes(c.id) ||
+          (c.assignedToEmail && c.assignedToEmail.toLowerCase() === targetEmail) ||
+          (!isInSubAdminMode && c.assignedToUid && c.assignedToUid === userUid) ||
+          (!isInSubAdminMode && userAssigned.includes(c.id)) ||
           (effectiveActiveAdmin?.role === 'restricted' && adminAssigned.includes(c.id))
         );
       });
@@ -544,6 +694,7 @@ export default function App() {
           if (tab === 'simulator') {
             setSimulatorCardId(displayedCards[0]?.id || cards[0]?.id || '0001');
           } else {
+            if (tab !== 'logs') setScanLogsCardFilter(null);
             setCurrentTab(tab);
           }
         }}
@@ -560,9 +711,39 @@ export default function App() {
         onSignOut={handleSignOut}
       />
 
-      {/* Main Admin Workspace Viewport - Optimized container for PC and mobile */}
-      <main className="flex-1 max-w-5xl lg:max-w-6xl w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 space-y-5 max-w-full overflow-x-hidden min-w-0">
-        {/* Restricted Admin Notice Banner if logged in as sub-admin or in Sub-Admin Mode */}
+      {/* Main Admin Workspace Viewport */}
+      <main className="flex-1 max-w-5xl lg:max-w-6xl w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 space-y-5 overflow-x-hidden min-w-0">
+        {/* Inline Error / Success Notification Banner */}
+        {appNotice && (
+          <div
+            className={`p-3.5 rounded-2xl border text-xs flex items-center justify-between gap-3 shadow-2xs ${
+              appNotice.type === 'error'
+                ? 'bg-rose-50 border-rose-200 text-rose-900'
+                : appNotice.type === 'success'
+                  ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                  : 'bg-blue-50 border-blue-200 text-blue-900'
+            }`}
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              {appNotice.type === 'error' ? (
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+              ) : (
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              )}
+              <span className="font-semibold">{appNotice.message}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setAppNotice(null)}
+              className="p-1 rounded-lg hover:bg-black/5 cursor-pointer shrink-0"
+              aria-label="Dismiss notification"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
+        {/* Restricted Admin Notice Banner if Master Admin is testing Sub-Admin mode */}
         {isInSubAdminMode && (
           <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-xs">
             <div className="flex items-center gap-2.5 min-w-0">
@@ -573,11 +754,11 @@ export default function App() {
                 <div className="font-bold text-amber-950 flex items-center gap-2 flex-wrap">
                   <span>Sub-Admin Mode: {effectiveActiveAdmin.name}</span>
                   <span className="font-mono text-[10px] bg-amber-200 text-amber-900 px-2 py-0.2 rounded-full font-bold">
-                    {effectiveActiveAdmin.assignedCardIds.length} Cards
+                    {displayedCards.length} Cards
                   </span>
                 </div>
                 <p className="text-amber-800 text-[11px] mt-0.5 truncate">
-                  Testing restricted sub-admin view. Authorized cards: [{effectiveActiveAdmin.assignedCardIds.map((id) => `#${id}`).join(', ')}]
+                  Viewing restricted sub-admin scope for {effectiveActiveAdmin.email}
                 </p>
               </div>
             </div>
@@ -623,8 +804,9 @@ export default function App() {
             ))}
 
             <button
+              type="button"
               onClick={() => setSimulatorCardId(displayedCards[0]?.id || '0001')}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-[#1A73E8] hover:bg-[#1557B0] text-white text-xs font-bold transition-all shadow-sm shadow-blue-500/25 active:scale-95 shrink-0"
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-[#1A73E8] hover:bg-[#1557B0] text-white text-xs font-bold transition-all shadow-sm shadow-blue-500/25 active:scale-95 shrink-0 cursor-pointer"
             >
               <Smartphone className="w-3.5 h-3.5" />
               <span>Phone Preview</span>
@@ -633,42 +815,37 @@ export default function App() {
         </div>
 
         {/* Summary Stats Overview Widget */}
-        <AdminStatsWidget
-          cards={displayedCards}
-          onPreviewCard={handleOpenCustomerPreview}
-          onViewLogs={() => {
-            setLogStandFilter('all');
-            setCurrentTab('logs');
-          }}
-        />
-
-        {/* Tab: QR Scan Logs & Telemetry */}
-        {currentTab === 'logs' && (
-          <QrScanLogsView
-            activeAdmin={effectiveActiveAdmin}
-            cards={displayedCards}
-            onPreviewCard={handleOpenCustomerPreview}
-            initialCardFilter={logStandFilter}
-          />
-        )}
+        <AdminStatsWidget cards={displayedCards} onPreviewCard={handleOpenCustomerPreview} />
 
         {/* Tab 1: Cards Inventory */}
         {currentTab === 'cards' && (
           <div className="space-y-4">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <h1 className="text-lg font-bold text-slate-900">
-                  {isMaster ? 'Card Inventory & Assignments' : `My Assigned Cards (${displayedCards.length})`}
+                  {isMaster ? `Card Inventory & Assignments (${displayedCards.length})` : `My Assigned Cards (${displayedCards.length})`}
                 </h1>
                 <p className="text-xs text-slate-500">
                   {isMaster
                     ? 'Manage physical card IDs, connect Google Review profiles, and configure AI settings'
-                    : `Managing authorized cards: ${effectiveActiveAdmin.assignedCardIds.map((id) => `#${id}`).join(', ')}`}
+                    : `Managing ${displayedCards.length} authorized QR stand(s) for ${effectiveActiveAdmin.email}`}
                 </p>
               </div>
 
               <div className="flex items-center gap-2 flex-wrap">
-                {/* Keywords Customizer quick access */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setScanLogsCardFilter(null);
+                    setCurrentTab('logs');
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-xl shadow-2xs transition-colors cursor-pointer"
+                  title="View QR Scan Logs & Historical Activity"
+                >
+                  <History className="w-3.5 h-3.5 text-[#1A73E8]" />
+                  <span>QR Scan Logs</span>
+                </button>
+
                 <button
                   type="button"
                   onClick={() => setCurrentTab('customizer')}
@@ -679,14 +856,13 @@ export default function App() {
                   <span>Review Customizer</span>
                 </button>
 
-                {/* NFC Generator & Flasher quick access */}
                 <button
                   type="button"
                   onClick={() => setCurrentTab('nfc')}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-xl shadow-2xs transition-colors cursor-pointer ring-1 ring-purple-300/60"
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-xl shadow-2xs transition-colors cursor-pointer"
                   title="Open NFC Chip URL Generator & Hardware Flasher"
                 >
-                  <Radio className="w-3.5 h-3.5 text-purple-600 animate-pulse" />
+                  <Radio className="w-3.5 h-3.5 text-purple-600" />
                   <span>NFC Flasher</span>
                 </button>
 
@@ -716,7 +892,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Empty state for client user when no cards have been allocated by Master Admin */}
             {!loading && displayedCards.length === 0 && !isMaster && (
               <div className="p-8 bg-white rounded-2xl border border-slate-200 text-center space-y-3 shadow-xs">
                 <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto border border-amber-200">
@@ -724,7 +899,7 @@ export default function App() {
                 </div>
                 <h3 className="text-base font-bold text-slate-900">No QR Review Stands Assigned Yet</h3>
                 <p className="text-xs text-slate-600 max-w-md mx-auto leading-relaxed">
-                  Welcome, <strong>{currentUser.displayName}</strong>! Content is strictly isolated by user account. Only the Master Administrator can create new QR batches and allocate them to businesses. Please ask the administrator to allocate cards to your Google email: <strong>{currentUser.email}</strong>.
+                  Welcome, <strong>{currentUser.displayName}</strong>! Only the Master Administrator can create new QR batches and allocate them to businesses. Ask the administrator to allocate cards to <strong>{currentUser.email}</strong>.
                 </p>
               </div>
             )}
@@ -732,13 +907,17 @@ export default function App() {
             {loading ? (
               <div className="p-12 text-center bg-white rounded-xl border border-slate-200">
                 <div className="inline-block w-6 h-6 border-2 border-slate-900 border-t-transparent rounded-full animate-spin mb-2" />
-                <p className="text-xs text-slate-500">Loading cards...</p>
+                <p className="text-xs text-slate-500">Loading live cards from Cloud Firestore...</p>
               </div>
             ) : (
               <CardsTable
                 cards={displayedCards}
                 onAssignCard={(card) => setCardToAssign(card)}
-                onDeleteCard={isMaster ? handleDeleteCard : () => alert('Only Master Admin can delete cards.')}
+                onDeleteCard={
+                  isMaster
+                    ? handleDeleteCard
+                    : () => showNotice('error', 'Only Master Admin can delete QR cards.')
+                }
                 onPreviewCard={handleOpenCustomerPreview}
                 onOpenBatchModal={() => setIsBatchModalOpen(true)}
                 onToggleAiReview={
@@ -749,14 +928,23 @@ export default function App() {
                 onBulkUpdateStatus={handleBulkUpdateStatus}
                 onOpenNfcGenerator={() => setCurrentTab('nfc')}
                 onOpenCustomizer={() => setCurrentTab('customizer')}
+                onViewLogs={handleOpenCardLogs}
                 activeAdmin={effectiveActiveAdmin}
-                onViewLogs={(cardId) => {
-                  setLogStandFilter(cardId);
-                  setCurrentTab('logs');
-                }}
               />
             )}
           </div>
+        )}
+
+        {/* Tab: QR Scan Logs & Historical Recovery View */}
+        {currentTab === 'logs' && (
+          <ScanLogsView
+            cards={displayedCards}
+            activeAdmin={effectiveActiveAdmin}
+            isMaster={isMaster}
+            initialCardFilter={scanLogsCardFilter}
+            onClearInitialCardFilter={() => setScanLogsCardFilter(null)}
+            onPreviewCard={handleOpenCustomerPreview}
+          />
         )}
 
         {/* Tab: Review Page Customizer */}
@@ -769,10 +957,10 @@ export default function App() {
           />
         )}
 
-        {/* Tab 2: Print Sheets */}
+        {/* Tab: Print Sheets */}
         {currentTab === 'print' && <PrintSheetView cards={displayedCards} />}
 
-        {/* Tab 3: NFC URL Generator */}
+        {/* Tab: NFC URL Generator */}
         {currentTab === 'nfc' && (
           <NfcGeneratorView
             cards={displayedCards}
@@ -791,28 +979,28 @@ export default function App() {
           />
         )}
 
-        {/* Tab 4: Master Admin Management */}
+        {/* Tab: Master Admin Management */}
         {currentTab === 'admins' && isMaster && (
           <MasterAdminView
             cards={cards}
             admins={admins}
             activeAdmin={effectiveActiveAdmin}
-            onSelectActiveAdmin={(adm) => setActiveAdmin(adm)}
+            onSelectActiveAdmin={handleSelectActiveAdmin}
             onSaveAdmin={handleSaveAdmin}
             onDeleteAdmin={handleDeleteAdmin}
             onRefreshCards={loadCards}
           />
         )}
 
-        {/* Tab 5: Google Verified Users & Logins */}
-        {currentTab === 'users' && (
+        {/* Tab: Google Verified Users & Logins (Master Admin Only) */}
+        {currentTab === 'users' && isMaster && (
           <UsersManagementView
             activeAdmin={effectiveActiveAdmin}
             onRefreshAdmins={loadAdminsData}
           />
         )}
 
-        {/* Tab 6: Master Admin Advertisement Management */}
+        {/* Tab: Master Admin Advertisement Management */}
         {currentTab === 'ads' && isMaster && (
           <AdvertisementManagementView activeAdmin={effectiveActiveAdmin} />
         )}
@@ -867,6 +1055,7 @@ export default function App() {
           if (tab === 'simulator') {
             setSimulatorCardId(displayedCards[0]?.id || cards[0]?.id || '0001');
           } else {
+            if (tab !== 'logs') setScanLogsCardFilter(null);
             setCurrentTab(tab);
           }
         }}
@@ -878,6 +1067,7 @@ export default function App() {
         onSelectActiveAdmin={handleSelectActiveAdmin}
         onExitSubAdminMode={handleExitSubAdminMode}
         currentUser={currentUser}
+        onSignOut={handleSignOut}
         onOpenBatchModal={() => setIsBatchModalOpen(true)}
         onExportCsv={() => exportCardsToCsv(displayedCards)}
       />

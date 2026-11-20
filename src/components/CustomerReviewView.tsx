@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useId, useRef, useMemo } from 'react';
 import { CardRecord, ReviewLanguage, ReviewTone, Advertisement } from '../types';
 import { generateAiReview } from '../utils/api';
-import { generateSmartFallbackReview } from '../services/reviewGenerator';
 import { fetchAds, recordAdImpression, recordAdClick, isSafeUrl } from '../utils/adsApi';
 import {
   Star,
@@ -171,6 +170,18 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
   const [copied, setCopied] = useState<boolean>(false);
   const [redirected, setRedirected] = useState<boolean>(false);
 
+  // Concurrency & race-condition control for AI review generation
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const requestIdRef = useRef<number>(0);
+
+  useEffect(() => {
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
+  }, []);
+
   // Advertisements state
   const [ads, setAds] = useState<Advertisement[]>([]);
   const impressionsTrackedRef = useRef<Set<string>>(new Set());
@@ -234,12 +245,18 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
 
   useEffect(() => {
     if (prevCardKeyRef.current !== null && prevCardKeyRef.current !== currentCardKey) {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+      requestIdRef.current += 1;
       setSelectedTags([]);
       setRating(5);
       setCustomNotes('');
       setRecentDrafts([]);
       setGeneratedReview('');
       setHasGenerated(false);
+      setIsGenerating(false);
       setGenerationError(null);
       setTone(null);
       setLanguage(null);
@@ -285,74 +302,71 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
     // Do not generate if required options (language and tone) are not selected
     if (!activeTone || !activeLang) return;
 
-    // If AI Assistant Mode is OFF or card subscription is not accessible in production, do not generate reviews
-    if (!effectiveAiReviewEnabled || (!isSimulator && !subCheck.accessible)) return;
-    // Prevent duplicate concurrent requests
-    if (isGenerating) return;
+    // If AI Assistant Mode is OFF, card is disabled, or subscription is not accessible in production, do not generate reviews
+    if (
+      !effectiveAiReviewEnabled ||
+      (!isSimulator && card?.status === 'disabled') ||
+      (!isSimulator && !subCheck.accessible)
+    ) {
+      return;
+    }
+
+    // Cancel any previous in-flight generation request so only the latest option selection wins
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    const currentRequestId = ++requestIdRef.current;
 
     setIsGenerating(true);
     setCopied(false);
     setGenerationError(null);
 
     try {
-      const res = await generateAiReview({
-        businessName: effectiveBusinessName,
-        category: effectiveCategory,
-        businessDescription: effectiveBusinessDescription || undefined,
-        rating: activeRating,
-        tags: activeTags,
-        notes: customNotes.trim() || undefined,
-        language: activeLang,
-        tone: activeTone,
-        recentDrafts,
-        cardId: card?.id || cardId,
-        aiReviewEnabled: effectiveAiReviewEnabled,
-      });
+      const res = await generateAiReview(
+        {
+          businessName: effectiveBusinessName,
+          category: effectiveCategory,
+          businessDescription: effectiveBusinessDescription || undefined,
+          rating: activeRating,
+          tags: activeTags,
+          notes: customNotes.trim() || undefined,
+          language: activeLang,
+          tone: activeTone,
+          recentDrafts,
+          cardId: card?.id || cardId,
+          aiReviewEnabled: effectiveAiReviewEnabled,
+        },
+        controller.signal
+      );
+
+      // Ignore outdated response if a newer request has started
+      if (currentRequestId !== requestIdRef.current) return;
 
       if (res.success && res.review) {
         setGeneratedReview(res.review);
         setHasGenerated(true);
-        setRecentDrafts((prev) => [res.review!, ...prev.filter((d) => d !== res.review)].slice(0, 4));
+        setRecentDrafts((prev) => [res.review!, ...prev.filter((d) => d !== res.review)].slice(0, 6));
         setGenerationError(null);
       } else {
-        if (res.message && (res.message.includes('disabled') || res.message.includes('Forbidden'))) {
-          setGenerationError(res.message);
-          return;
-        }
-        // Fallback to category-aware and keyword-aware generator
-        const fallback = generateSmartFallbackReview(
-          effectiveBusinessName,
-          effectiveCategory,
-          effectiveBusinessDescription,
-          activeRating,
-          activeTags,
-          customNotes.trim(),
-          activeLang,
-          activeTone,
-          recentDrafts
+        setGenerationError(
+          res.error ||
+            res.message ||
+            'Unable to generate your review right now. Please tap Try Again.'
         );
-        setGeneratedReview(fallback);
-        setHasGenerated(true);
-        setRecentDrafts((prev) => [fallback, ...prev.filter((d) => d !== fallback)].slice(0, 4));
       }
     } catch (err: any) {
-      console.warn('Network generate notice, using local generator:', err);
-      const fallback = generateSmartFallbackReview(
-        effectiveBusinessName,
-        effectiveCategory,
-        effectiveBusinessDescription,
-        activeRating,
-        activeTags,
-        customNotes.trim(),
-        activeLang,
-        activeTone,
-        recentDrafts
+      if (err?.name === 'AbortError' || currentRequestId !== requestIdRef.current) {
+        return;
+      }
+      setGenerationError(
+        err?.message || 'Unable to connect to the review service. Please check your connection and try again.'
       );
-      setGeneratedReview(fallback);
-      setHasGenerated(true);
-      setRecentDrafts((prev) => [fallback, ...prev.filter((d) => d !== fallback)].slice(0, 4));
     } finally {
-      setIsGenerating(false);
+      if (currentRequestId === requestIdRef.current) {
+        setIsGenerating(false);
+      }
     }
   };
 
@@ -549,6 +563,42 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
             </h1>
             <p className="text-xs text-slate-500 mt-1">
               Could not retrieve business details for Stand #{cardId}. Please verify the QR code or link.
+            </p>
+          </div>
+          {onBackToAdmin ? (
+            <button
+              onClick={onBackToAdmin}
+              className="px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              Back to Dashboard
+            </button>
+          ) : (
+            <a
+              href="/"
+              className="inline-block px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              Return to Home
+            </a>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // State 4.5: Disabled QR Card (Explicitly deactivated by Master Admin)
+  if (!isSimulator && card && card.status === 'disabled') {
+    return (
+      <div className="min-h-screen bg-[#FDFCFB] flex flex-col justify-center items-center p-6 text-slate-900 antialiased">
+        <div className="max-w-sm w-full bg-white rounded-3xl p-8 border border-slate-200/90 shadow-sm text-center space-y-4">
+          <div className="w-14 h-14 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center mx-auto border border-rose-200">
+            <AlertCircle className="w-7 h-7 text-rose-600" />
+          </div>
+          <div>
+            <h1 className="text-base sm:text-lg font-extrabold text-slate-900 leading-snug">
+              This QR stand is currently disabled.
+            </h1>
+            <p className="text-xs text-slate-500 mt-2">
+              Please contact the business for assistance with Stand #{cardId}.
             </p>
           </div>
           {onBackToAdmin ? (

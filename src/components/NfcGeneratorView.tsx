@@ -1,5 +1,5 @@
 import React, { useState, useId } from 'react';
-import { CardRecord } from '../types';
+import { CardRecord, AdminUser } from '../types';
 import { assignCard, createBatchCards } from '../utils/api';
 import {
   Radio,
@@ -20,12 +20,18 @@ import { getCardScanUrl } from '../utils/url';
 
 interface NfcGeneratorViewProps {
   cards: CardRecord[];
+  activeAdmin?: AdminUser;
+  isMaster?: boolean;
+  callerEmail?: string;
   onCardUpdated: (card: CardRecord) => void;
   onPreviewCard: (card: CardRecord) => void;
 }
 
 export const NfcGeneratorView: React.FC<NfcGeneratorViewProps> = ({
   cards,
+  activeAdmin,
+  isMaster,
+  callerEmail,
   onCardUpdated,
   onPreviewCard,
 }) => {
@@ -35,16 +41,24 @@ export const NfcGeneratorView: React.FC<NfcGeneratorViewProps> = ({
   const cardSelectId = useId();
   const notesId = useId();
 
-  // Find next available unassigned card, or next sequential ID
-  const availableCards = cards.filter((c) => c.status === 'available');
-  const defaultSelectedId = availableCards[0]?.id || '';
+  const effectiveIsMaster = isMaster ?? (!activeAdmin || activeAdmin.role === 'master');
+  const canCreateCards = effectiveIsMaster;
+  const canToggleAi = effectiveIsMaster || (activeAdmin?.permissions?.canToggleAi ?? true);
+  const resolvedCallerEmail = callerEmail || activeAdmin?.email;
+
+  // Master can assign stock or create; Sub-Admin can ONLY update already-assigned cards
+  const availableCards = effectiveIsMaster ? cards.filter((c) => c.status === 'available') : [];
+  const selectableCards = availableCards.length > 0 ? availableCards : cards;
+  const defaultSelectedId = selectableCards[0]?.id || '';
 
   const [businessName, setBusinessName] = useState('');
   const [googleReviewUrl, setGoogleReviewUrl] = useState('');
   const [category, setCategory] = useState('');
   const [notes, setNotes] = useState('NFC Tag Stand');
   const [selectedCardId, setSelectedCardId] = useState<string>(defaultSelectedId);
-  const [autoCreateNew, setAutoCreateNew] = useState<boolean>(availableCards.length === 0);
+  const [autoCreateNew, setAutoCreateNew] = useState<boolean>(
+    canCreateCards && availableCards.length === 0
+  );
   const [aiReviewEnabled, setAiReviewEnabled] = useState<boolean>(true);
 
   const [generatedCard, setGeneratedCard] = useState<CardRecord | null>(null);
@@ -79,27 +93,42 @@ export const NfcGeneratorView: React.FC<NfcGeneratorViewProps> = ({
     try {
       let targetId = selectedCardId;
 
-      // If user chose to create a new card or no available card was picked
-      if (autoCreateNew || !targetId) {
+      // If authorized user chose to create a new card
+      if ((autoCreateNew && canCreateCards) || (!targetId && canCreateCards)) {
         const nextNum = highestExisting + 1;
-        const newBatch = await createBatchCards({
-          count: 1,
-          startNumber: nextNum,
-          paddingDigits: 4,
-        });
+        const newBatch = await createBatchCards(
+          {
+            count: 1,
+            startNumber: nextNum,
+            paddingDigits: 4,
+          },
+          { id: activeAdmin?.id, email: resolvedCallerEmail }
+        );
         const created = newBatch.find((c) => c.id.includes(String(nextNum).padStart(4, '0')));
         targetId = created ? created.id : String(nextNum).padStart(4, '0');
       }
 
+      if (!targetId) {
+        setError('No authorized card selected or available for your account.');
+        setIsSubmitting(false);
+        return;
+      }
+
       // Assign the business details to the card
-      const updated = await assignCard(targetId, {
-        businessName: businessName.trim(),
-        googleReviewUrl: googleReviewUrl.trim(),
-        category: category.trim() || 'Local Business',
-        notes: notes.trim(),
-        status: 'assigned',
-        aiReviewEnabled: aiReviewEnabled,
-      });
+      const updated = await assignCard(
+        targetId,
+        {
+          businessName: businessName.trim(),
+          googleReviewUrl: googleReviewUrl.trim(),
+          category: category.trim() || 'Local Business',
+          notes: notes.trim(),
+          status: 'assigned',
+          ...(canToggleAi ? { aiReviewEnabled } : {}),
+        },
+        activeAdmin?.id,
+        resolvedCallerEmail,
+        effectiveIsMaster
+      );
 
       if (updated) {
         setGeneratedCard(updated);
@@ -146,9 +175,29 @@ export const NfcGeneratorView: React.FC<NfcGeneratorViewProps> = ({
     }
   };
 
+  React.useEffect(() => {
+    if (!selectableCards.some((c) => c.id === selectedCardId)) {
+      setSelectedCardId(selectableCards[0]?.id || '');
+    }
+  }, [selectableCards, selectedCardId]);
+
   const currentNfcUrl = generatedCard
     ? getCardScanUrl(generatedCard.id)
     : '';
+
+  if (!effectiveIsMaster && cards.length === 0) {
+    return (
+      <div className="p-8 bg-white rounded-2xl border border-slate-200 text-center space-y-3 shadow-xs">
+        <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto border border-amber-200">
+          <Radio className="w-6 h-6" />
+        </div>
+        <h3 className="text-base font-bold text-slate-900">No QR Cards Assigned</h3>
+        <p className="text-xs text-slate-600 max-w-md mx-auto leading-relaxed">
+          No QR cards have been assigned to your account yet. Contact the Master Admin.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 w-full max-w-full min-w-0">
@@ -248,35 +297,41 @@ export const NfcGeneratorView: React.FC<NfcGeneratorViewProps> = ({
                 Card ID & Permanent URL Assignment
               </label>
 
-              <div className="flex items-center gap-4 text-xs">
+              <div className="flex items-center gap-4 text-xs flex-wrap">
                 <label className="flex items-center gap-1.5 cursor-pointer">
                   <input
                     type="radio"
                     name="cardAllocation"
-                    checked={!autoCreateNew && availableCards.length > 0}
+                    checked={!autoCreateNew && selectableCards.length > 0}
                     onChange={() => setAutoCreateNew(false)}
-                    disabled={availableCards.length === 0}
+                    disabled={selectableCards.length === 0}
                     className="text-[#1A73E8]"
                   />
-                  <span>Assign to existing stock card</span>
+                  <span>
+                    {availableCards.length > 0
+                      ? 'Assign to existing stock card'
+                      : 'Update existing assigned card'}
+                  </span>
                 </label>
 
-                <label className="flex items-center gap-1.5 cursor-pointer">
-                  <input
-                    type="radio"
-                    name="cardAllocation"
-                    checked={autoCreateNew || availableCards.length === 0}
-                    onChange={() => setAutoCreateNew(true)}
-                    className="text-[#1A73E8]"
-                  />
-                  <span>Create new sequential card (#{String(highestExisting + 1).padStart(4, '0')})</span>
-                </label>
+                {canCreateCards && (
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="cardAllocation"
+                      checked={autoCreateNew || selectableCards.length === 0}
+                      onChange={() => setAutoCreateNew(true)}
+                      className="text-[#1A73E8]"
+                    />
+                    <span>Create new sequential card (#{String(highestExisting + 1).padStart(4, '0')})</span>
+                  </label>
+                )}
               </div>
 
-              {!autoCreateNew && availableCards.length > 0 && (
+              {(!autoCreateNew || !canCreateCards) && selectableCards.length > 0 && (
                 <div className="pt-1">
                   <label htmlFor={cardSelectId} className="block text-[11px] font-semibold text-slate-600 mb-1">
-                    Select Available Card ID:
+                    {effectiveIsMaster && availableCards.length > 0 ? 'Select Available Card ID:' : 'Select Authorized Card ID:'}
                   </label>
                   <select
                     id={cardSelectId}
@@ -284,9 +339,9 @@ export const NfcGeneratorView: React.FC<NfcGeneratorViewProps> = ({
                     onChange={(e) => setSelectedCardId(e.target.value)}
                     className="w-full px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-lg text-slate-900 font-mono"
                   >
-                    {availableCards.map((c) => (
+                    {selectableCards.map((c) => (
                       <option key={c.id} value={c.id}>
-                        Card #{c.id} ({c.notes || 'Unassigned stock'})
+                        Card #{c.id} ({c.businessName || c.notes || (effectiveIsMaster ? 'Unassigned stock' : 'Assigned Card')})
                       </option>
                     ))}
                   </select>
@@ -337,16 +392,19 @@ export const NfcGeneratorView: React.FC<NfcGeneratorViewProps> = ({
                       {aiReviewEnabled
                         ? 'Customer drafts review with Gemini before Google'
                         : 'Direct redirect straight to Google Review page'}
+                      {!canToggleAi && ' (Locked by Master Admin)'}
                     </p>
                   </div>
                 </div>
 
                 <button
                   type="button"
-                  onClick={() => setAiReviewEnabled(!aiReviewEnabled)}
-                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                    aiReviewEnabled ? 'bg-[#1A73E8]' : 'bg-slate-300'
-                  }`}
+                  disabled={!canToggleAi}
+                  onClick={() => canToggleAi && setAiReviewEnabled(!aiReviewEnabled)}
+                  title={!canToggleAi ? 'Locked by Master Admin' : 'Toggle AI Review Assistant'}
+                  className={`relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                    !canToggleAi ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
+                  } ${aiReviewEnabled ? 'bg-[#1A73E8]' : 'bg-slate-300'}`}
                   role="switch"
                   aria-checked={aiReviewEnabled}
                 >

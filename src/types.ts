@@ -9,6 +9,7 @@ export interface CardRecord {
   notes: string;
   aiReviewEnabled?: boolean; // Controls whether AI assistant is active (default true) or direct redirect
   scansCount: number;
+  lastScannedAt?: string;
   assignedToEmail?: string; // Assigned user email for RBAC ownership
   assignedToUid?: string;   // Assigned user Google UID
   assignedToName?: string;  // Assigned user display name
@@ -16,7 +17,7 @@ export interface CardRecord {
   reviewTone?: 'enthusiastic' | 'friendly' | 'professional' | 'concise'; // Tone for AI review generation
   promptStarter?: string; // Optional custom guidance for AI review generator
   customHeadline?: string; // Optional custom headline on customer review page
-  logoUrl?: string; // Optional business logo URL (Firebase/Supabase/server uploaded)
+  logoUrl?: string; // Optional business logo URL (Firebase/server uploaded)
   businessDescription?: string; // Business description and product offerings
   whatsapp?: string; // Optional business WhatsApp phone number or wa.me URL
   instagram?: string; // Optional business Instagram profile handle or URL
@@ -25,6 +26,25 @@ export interface CardRecord {
   subscriptionStatus?: SubscriptionStatus; // Computed / stored status
   createdAt: string;
   updatedAt: string;
+}
+
+export type ScanSource = 'qr' | 'nfc' | 'direct';
+export type ScanOutcome = 'allowed' | 'expired' | 'upcoming' | 'disabled' | 'unassigned';
+
+export interface ScanLogRecord {
+  id: string;
+  cardId: string;
+  businessName: string;
+  category: string;
+  assignedToEmail: string;
+  assignedToUid: string;
+  source: ScanSource;
+  outcome: ScanOutcome;
+  subscriptionStatus: SubscriptionStatus;
+  route: string;
+  path?: string;
+  userAgent: string;
+  scannedAt: string;
 }
 
 export interface AdminPermissions {
@@ -106,22 +126,10 @@ export interface UserProfile {
   loginCount: number;
   device?: string;
   assignedCardIds?: string[];
+  accessRevoked?: boolean;
+  revokedAt?: string;
+  requestStatus?: 'pending' | 'approved' | 'rejected';
+  requestedAt?: string;
+  requestUpdatedAt?: string;
+  requestNote?: string;
 }
-
-export type ScanSource = 'qr' | 'nfc' | 'direct' | 'simulator';
-
-export interface QRScanLog {
-  id: string;
-  cardId: string;
-  businessName: string;
-  category?: string;
-  timestamp: string;
-  scannedAt: string;
-  device?: string;
-  browser?: string;
-  ip?: string;
-  referrer?: string;
-  source: ScanSource;
-  subscriptionStatusAtScan?: string;
-}
-

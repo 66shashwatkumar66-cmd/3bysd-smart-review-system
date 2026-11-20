@@ -174,8 +174,12 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
   onSaveCardKeywords,
   onPreviewCard,
 }) => {
-  // Select which card to customize
-  const [selectedCardId, setSelectedCardId] = useState<string>(cards[0]?.id || '0001');
+  const isMaster = !activeAdmin || activeAdmin.role === 'master';
+  const canEditCards = isMaster || (activeAdmin?.permissions?.canEditCards ?? true);
+  const canToggleAi = isMaster || (activeAdmin?.permissions?.canToggleAi ?? true);
+
+  // Select which card to customize (never fall back to #0001 when unassigned)
+  const [selectedCardId, setSelectedCardId] = useState<string>(cards[0]?.id || '');
   const selectedCard = cards.find((c) => c.id === selectedCardId) || cards[0];
 
   const [keywords, setKeywords] = useState<string[]>(() => {
@@ -202,7 +206,13 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
   const [saveError, setSaveError] = useState<string>('');
   const [applyToAll, setApplyToAll] = useState<boolean>(false);
 
-  // Sync state when card selection changes
+  useEffect(() => {
+    if (!cards.some((c) => c.id === selectedCardId)) {
+      setSelectedCardId(cards[0]?.id || '');
+    }
+  }, [cards, selectedCardId]);
+
+  // Sync state when card selection changes or cards load
   useEffect(() => {
     if (selectedCard) {
       setKeywords(
@@ -221,7 +231,7 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
       setSaveSuccess(false);
       setSaveError('');
     }
-  }, [selectedCardId]);
+  }, [selectedCardId, selectedCard?.id]);
 
   const handleAddKeyword = () => {
     const trimmed = newKeywordInput.trim();
@@ -311,6 +321,10 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
 
   const handleSave = async () => {
     if (!selectedCard) return;
+    if (!canEditCards) {
+      setSaveError('Your Sub-Admin account does not have permission to edit card customizations.');
+      return;
+    }
     setIsSaving(true);
     setSaveSuccess(false);
     setSaveError('');
@@ -334,23 +348,27 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
         }
       }
 
-      const updates: Partial<CardRecord> = {
-        customKeywords: keywords,
-        reviewTone,
-        promptStarter: promptStarter.trim(),
-        customHeadline: customHeadline.trim(),
-        logoUrl: logoUrl.trim() || undefined,
-        aiReviewEnabled,
-        whatsapp: whatsapp.trim() || undefined,
-        instagram: instagram.trim() || undefined,
+      const buildUpdatesForCard = (targetCard: CardRecord): Partial<CardRecord> => {
+        const initialAiEnabled = targetCard.aiReviewEnabled !== false;
+        const shouldSendAiToggle = isMaster || (canToggleAi && aiReviewEnabled !== initialAiEnabled);
+        return {
+          customKeywords: keywords,
+          reviewTone,
+          promptStarter: promptStarter.trim(),
+          customHeadline: customHeadline.trim(),
+          logoUrl: logoUrl.trim() || undefined,
+          ...(shouldSendAiToggle ? { aiReviewEnabled } : {}),
+          whatsapp: whatsapp.trim() || undefined,
+          instagram: instagram.trim() || undefined,
+        };
       };
 
       if (applyToAll) {
         for (const c of cards) {
-          await onSaveCardKeywords(c.id, updates);
+          await onSaveCardKeywords(c.id, buildUpdatesForCard(c));
         }
       } else {
-        await onSaveCardKeywords(selectedCard.id, updates);
+        await onSaveCardKeywords(selectedCard.id, buildUpdatesForCard(selectedCard));
       }
 
       setSaveSuccess(true);
@@ -363,19 +381,23 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
     }
   };
 
+  if (cards.length === 0 || !selectedCard) {
+    return (
+      <div className="p-8 bg-white rounded-2xl border border-slate-200 text-center space-y-3 shadow-xs">
+        <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto border border-amber-200">
+          <Sliders className="w-6 h-6" />
+        </div>
+        <h3 className="text-base font-bold text-slate-900">No QR Cards Assigned</h3>
+        <p className="text-xs text-slate-600 max-w-md mx-auto leading-relaxed">
+          No QR cards have been assigned to your account yet. Contact the Master Admin.
+        </p>
+      </div>
+    );
+  }
+
   // Preview card with live changes applied in real time
   const previewCard: CardRecord = {
-    ...(selectedCard || {
-      id: '0001',
-      status: 'assigned',
-      businessName: 'Your Business Name',
-      category: 'Local Business',
-      googleReviewUrl: 'https://search.google.com/local/writereview',
-      notes: '',
-      scansCount: 0,
-      createdAt: '',
-      updatedAt: '',
-    }),
+    ...selectedCard,
     customKeywords: keywords,
     reviewTone,
     promptStarter,
@@ -421,7 +443,7 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
 
           <button
             onClick={handleSave}
-            disabled={isSaving}
+            disabled={isSaving || !canEditCards}
             className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#1A73E8] hover:bg-[#1557B0] text-white text-xs font-bold transition-all shadow-xs active:scale-95 disabled:opacity-50 cursor-pointer"
           >
             {saveSuccess ? (
@@ -618,6 +640,7 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
                     {aiReviewEnabled
                       ? 'ON: Customers see the full AI review assistant, ratings, tags, custom notes, language & tone customizer, and generated drafts.'
                       : 'OFF: Disables the AI-assisted workflow. Customers see normal star ratings and a direct button to write their review directly on Google.'}
+                    {!canToggleAi && ' (Locked by Master Admin)'}
                   </p>
                 </div>
               </div>
@@ -625,13 +648,15 @@ export const ReviewCustomizerView: React.FC<ReviewCustomizerViewProps> = ({
               {/* Toggle Switch */}
               <button
                 type="button"
-                onClick={() => setAiReviewEnabled(!aiReviewEnabled)}
+                disabled={!canToggleAi}
+                onClick={() => canToggleAi && setAiReviewEnabled(!aiReviewEnabled)}
                 role="switch"
                 aria-checked={aiReviewEnabled}
                 aria-label="Toggle AI Assistant Mode"
-                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                  aiReviewEnabled ? 'bg-[#1A73E8]' : 'bg-slate-300'
-                }`}
+                title={!canToggleAi ? 'Locked by Master Admin' : 'Toggle AI Assistant Mode'}
+                className={`relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                  !canToggleAi ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
+                } ${aiReviewEnabled ? 'bg-[#1A73E8]' : 'bg-slate-300'}`}
               >
                 <span
                   className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${

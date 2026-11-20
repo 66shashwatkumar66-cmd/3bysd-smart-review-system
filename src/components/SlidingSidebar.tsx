@@ -10,14 +10,10 @@ import {
   Plus,
   FileSpreadsheet,
   QrCode,
-  Lock,
   RotateCcw,
   LogIn,
   LogOut,
   CheckCircle,
-  ExternalLink,
-  Sparkles,
-  ChevronRight,
   Database,
   Cpu,
   Sliders,
@@ -25,15 +21,15 @@ import {
   History,
 } from 'lucide-react';
 import { AdminUser, UserProfile } from '../types';
-import { auth, signOut, onAuthStateChanged, User } from '../firebase';
 import { GoogleAuthModal } from './GoogleAuthModal';
-import { saveUser } from '../utils/api';
+import { AdminTabId } from './AdminHeader';
+import { MASTER_ADMIN_EMAIL } from '../utils/api';
 
 interface SlidingSidebarProps {
   isOpen: boolean;
   onClose: () => void;
-  currentTab: 'cards' | 'logs' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users' | 'ads';
-  onSelectTab: (tab: 'cards' | 'logs' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users' | 'ads') => void;
+  currentTab: AdminTabId;
+  onSelectTab: (tab: AdminTabId) => void;
   totalCards: number;
   assignedCount: number;
   availableCount: number;
@@ -44,6 +40,7 @@ interface SlidingSidebarProps {
   onOpenBatchModal: () => void;
   onExportCsv?: () => void;
   currentUser?: UserProfile | null;
+  onSignOut?: () => void;
 }
 
 export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
@@ -52,7 +49,6 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
   currentTab,
   onSelectTab,
   totalCards,
-  assignedCount,
   availableCount,
   activeAdmin,
   admins,
@@ -60,61 +56,18 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
   onExitSubAdminMode,
   onOpenBatchModal,
   onExportCsv,
-  currentUser: propCurrentUser,
+  currentUser,
+  onSignOut,
 }) => {
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isGoogleModalOpen, setIsGoogleModalOpen] = useState<boolean>(false);
-  const [verifiedGoogleProfile, setVerifiedGoogleProfile] = useState<UserProfile | null>(() => {
-    try {
-      const saved = localStorage.getItem('3dbysd_current_user');
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
-    }
-  });
-
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      setCurrentUser(user);
-      if (user && user.email) {
-        try {
-          const profile = await saveUser({
-            uid: user.uid,
-            email: user.email,
-            displayName: user.displayName || user.email.split('@')[0],
-            photoURL: user.photoURL || undefined,
-            provider: 'google.com',
-            emailVerified: user.emailVerified,
-            role: user.email.toLowerCase() === '66shashwatkumar66@gmail.com' ? 'master' : 'member',
-          });
-          setVerifiedGoogleProfile(profile);
-          localStorage.setItem('3dbysd_current_user', JSON.stringify(profile));
-        } catch {
-          // ignore
-        }
-      }
-    });
-    return () => unsubscribe();
-  }, []);
-
-  const handleSignOut = async () => {
-    try {
-      await signOut(auth);
-      setVerifiedGoogleProfile(null);
-      localStorage.removeItem('3dbysd_current_user');
-    } catch (err: any) {
-      console.warn('Sign-out failed:', err?.message);
-    }
-  };
 
   const handleGoogleSuccess = (user: UserProfile) => {
-    setVerifiedGoogleProfile(user);
-    localStorage.setItem('3dbysd_current_user', JSON.stringify(user));
-    if (user.role === 'master' || user.email === '66shashwatkumar66@gmail.com') {
+    if (user.role === 'master' || user.email.toLowerCase() === MASTER_ADMIN_EMAIL) {
       const master = admins.find((a) => a.role === 'master') || admins[0];
       if (master) onSelectActiveAdmin(master);
     }
   };
+
   // Close on Escape key press
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -139,9 +92,9 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
   }, [isOpen]);
 
   const masterAdmin =
-    admins.find((a) => a.role === 'master' || a.email.toLowerCase() === '66shashwatkumar66@gmail.com') || {
+    admins.find((a) => a.role === 'master' || a.email.toLowerCase() === MASTER_ADMIN_EMAIL) || {
       id: 'master-admin-01',
-      email: '66shashwatkumar66@gmail.com',
+      email: MASTER_ADMIN_EMAIL,
       name: 'Master Administrator',
       role: 'master' as const,
       assignedCardIds: [],
@@ -156,65 +109,60 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
     };
 
   const isMaster = activeAdmin.role === 'master';
-  const effectiveEmail = (
-    propCurrentUser?.email ||
-    currentUser?.email ||
-    verifiedGoogleProfile?.email ||
-    ''
-  ).toLowerCase();
-  const isMasterUser = effectiveEmail === '66shashwatkumar66@gmail.com';
+  const effectiveEmail = (currentUser?.email || '').toLowerCase();
+  const isMasterUser = effectiveEmail === MASTER_ADMIN_EMAIL;
   const isInSubAdminMode = isMasterUser && activeAdmin.role === 'restricted';
 
-  const navItems = [
+  const navItems: Array<{
+    id: AdminTabId;
+    label: string;
+    description: string;
+    icon: React.FC<{ className?: string }>;
+    badge?: string;
+    badgeColor?: string;
+  }> = [
     {
-      id: 'cards' as const,
+      id: 'cards',
       label: 'Cards Inventory',
       description: 'Manage dynamic QR stands & assignments',
       icon: Layers,
-      color: '#1A73E8',
       badge: totalCards.toString(),
       badgeColor: 'bg-blue-100 text-blue-700',
     },
     {
-      id: 'logs' as const,
+      id: 'logs',
       label: 'QR Scan Logs',
-      description: 'Historical scan records & telemetry',
+      description: 'Historical scan totals & live scan events',
       icon: History,
-      color: '#0D9488',
-      badge: 'Live',
-      badgeColor: 'bg-emerald-100 text-emerald-800',
+      badge: 'History',
+      badgeColor: 'bg-emerald-100 text-emerald-700',
     },
     {
-      id: 'customizer' as const,
+      id: 'customizer',
       label: 'Review Page Customizer',
       description: 'Customize keywords & review tags',
       icon: Sliders,
-      color: '#8B5CF6',
     },
     {
-      id: 'print' as const,
+      id: 'print',
       label: 'Print Sheets',
       description: 'High-res printable sheets & cards',
       icon: Printer,
-      color: '#FBBC05',
       badge: `${availableCount} Ready`,
       badgeColor: 'bg-amber-100 text-amber-800',
     },
     {
-      id: 'nfc' as const,
+      id: 'nfc',
       label: 'NFC URL Generator',
       description: 'NDEF chip URLs & encoding links',
       icon: Radio,
-      color: '#9333EA',
     },
     {
-      id: 'simulator' as const,
+      id: 'simulator',
       label: 'Mobile Simulator',
       description: 'Test live customer scan experience',
       icon: Smartphone,
-      color: '#34A853',
     },
-    // Strictly isolate management views (Users, Master Admin & Ads) to Master Admin only
     ...(isMaster
       ? [
           {
@@ -222,21 +170,18 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
             label: 'Advertisements',
             description: 'Manage sponsor ads on review stands',
             icon: Megaphone,
-            color: '#EA4335',
           },
           {
             id: 'users' as const,
             label: 'Users & Logins',
             description: 'Google verified logins & registry',
             icon: Users,
-            color: '#4285F4',
           },
           {
             id: 'admins' as const,
             label: 'Master Admin Control',
-            description: 'Sub-admins & role permissions',
+            description: 'Sub-admins, permissions & Firestore',
             icon: ShieldCheck,
-            color: '#7C3AED',
             badge: `${admins.length} Admins`,
             badgeColor: 'bg-purple-100 text-purple-700',
           },
@@ -262,7 +207,6 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
         }`}
         aria-label="Navigation Sidebar"
       >
-        {/* Google 4-Color Accent Line */}
         <div className="h-1 w-full bg-gradient-to-r from-[#4285F4] via-[#EA4335] via-[#FBBC05] to-[#34A853]" />
 
         {/* Sidebar Header */}
@@ -273,26 +217,17 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
             </div>
             <div>
               <div className="flex items-center gap-1.5">
-                <span className="text-base font-extrabold text-slate-900 tracking-tight">
-                  3DBYSD
-                </span>
+                <span className="text-base font-extrabold text-slate-900 tracking-tight">3DBYSD</span>
                 <span className="text-sm font-semibold text-slate-700">Reviews</span>
-                <div className="flex items-center gap-0.5 ml-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#4285F4]" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#EA4335]" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#FBBC05]" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-[#34A853]" />
-                </div>
               </div>
-              <div className="text-[10px] font-medium text-slate-500">
-                Navigation & Control Center
-              </div>
+              <div className="text-[10px] font-medium text-slate-500">Navigation & Control Center</div>
             </div>
           </div>
 
           <button
+            type="button"
             onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 transition-colors"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 transition-colors cursor-pointer"
             title="Close menu (Esc)"
           >
             <X className="w-5 h-5" />
@@ -304,14 +239,13 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
           {/* Active Admin Profile Card */}
           <div className="p-3 rounded-xl bg-gradient-to-br from-slate-50 to-blue-50/40 border border-slate-200/80 space-y-2.5">
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="relative">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="relative shrink-0">
                   <img
                     src={
                       currentUser?.photoURL ||
-                      verifiedGoogleProfile?.photoURL ||
                       `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(
-                        currentUser?.email || verifiedGoogleProfile?.email || activeAdmin.email
+                        currentUser?.email || activeAdmin.email
                       )}&backgroundColor=1a73e8&textColor=ffffff`
                     }
                     alt={activeAdmin.name}
@@ -321,16 +255,15 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
                   <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-[#34A853] ring-1 ring-white" />
                 </div>
                 <div className="min-w-0">
-                  <div className="text-xs font-bold text-slate-900 truncate flex items-center gap-1">
-                    <span>{currentUser?.displayName || verifiedGoogleProfile?.displayName || activeAdmin.name}</span>
+                  <div className="text-xs font-bold text-slate-900 truncate">
+                    {currentUser?.displayName || activeAdmin.name}
                   </div>
                   <div className="text-[10px] text-slate-500 truncate font-mono">
-                    {currentUser?.email || verifiedGoogleProfile?.email || activeAdmin.email}
+                    {currentUser?.email || activeAdmin.email}
                   </div>
                 </div>
               </div>
 
-              {/* Role Badge */}
               <span
                 className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full whitespace-nowrap ${
                   isMaster
@@ -338,11 +271,10 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
                     : 'bg-amber-100 text-amber-800 border border-amber-200'
                 }`}
               >
-                {isMaster ? '👑 Master' : '🛡️ Sub-Admin'}
+                {isMaster ? 'Master' : 'Sub-Admin'}
               </span>
             </div>
 
-            {/* Quick Admin Switcher: Exit Sub-Admin Mode if in Sub-Admin Mode */}
             {isInSubAdminMode && (
               <button
                 type="button"
@@ -361,20 +293,24 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
               </button>
             )}
 
-            {/* Google Login / Logout Action */}
             <div className="pt-2 border-t border-slate-200/60 flex items-center justify-between text-[11px]">
-              {currentUser || verifiedGoogleProfile ? (
+              {currentUser ? (
                 <button
-                  onClick={handleSignOut}
-                  className="flex items-center gap-1.5 text-slate-500 hover:text-red-600 transition-colors"
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    if (onSignOut) onSignOut();
+                  }}
+                  className="flex items-center gap-1.5 text-slate-500 hover:text-red-600 transition-colors cursor-pointer"
                 >
                   <LogOut className="w-3.5 h-3.5" />
                   <span>Sign out</span>
                 </button>
               ) : (
                 <button
+                  type="button"
                   onClick={() => setIsGoogleModalOpen(true)}
-                  className="flex items-center gap-1.5 text-[#1A73E8] font-semibold hover:underline"
+                  className="flex items-center gap-1.5 text-[#1A73E8] font-semibold hover:underline cursor-pointer"
                 >
                   <LogIn className="w-3.5 h-3.5" />
                   <span>Connect Google Account</span>
@@ -399,11 +335,12 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
               return (
                 <button
                   key={item.id}
+                  type="button"
                   onClick={() => {
                     onSelectTab(item.id);
                     onClose();
                   }}
-                  className={`w-full flex items-center justify-between p-2.5 rounded-xl transition-all text-left ${
+                  className={`w-full flex items-center justify-between p-2.5 rounded-xl transition-all text-left cursor-pointer ${
                     isActive
                       ? 'bg-blue-50/80 text-[#1A73E8] font-bold border border-blue-200/80 shadow-2xs'
                       : 'text-slate-700 hover:bg-slate-100 hover:text-slate-900 border border-transparent'
@@ -418,12 +355,8 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
                       <Icon className="w-4 h-4" />
                     </div>
                     <div className="min-w-0">
-                      <div className="text-xs font-semibold truncate leading-tight">
-                        {item.label}
-                      </div>
-                      <div className="text-[10px] text-slate-400 truncate">
-                        {item.description}
-                      </div>
+                      <div className="text-xs font-semibold truncate leading-tight">{item.label}</div>
+                      <div className="text-[10px] text-slate-400 truncate">{item.description}</div>
                     </div>
                   </div>
 
@@ -449,6 +382,7 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
 
             {isMaster && (
               <button
+                type="button"
                 onClick={() => {
                   onClose();
                   onOpenBatchModal();
@@ -462,11 +396,12 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
 
             {onExportCsv && (isMaster || activeAdmin.permissions?.canExportCsv) && (
               <button
+                type="button"
                 onClick={() => {
                   onClose();
                   onExportCsv();
                 }}
-                className="w-full flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold transition-all shadow-2xs"
+                className="w-full flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold transition-all shadow-2xs cursor-pointer"
               >
                 <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
                 <span>Export Inventory CSV</span>
@@ -475,7 +410,7 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
           </div>
         </div>
 
-        {/* Sidebar Footer with System Diagnostics */}
+        {/* Sidebar Footer */}
         <div className="p-3 bg-slate-50 border-t border-slate-200 text-[11px] text-slate-500 space-y-1.5">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-1.5 text-slate-600 font-medium">
@@ -490,25 +425,20 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-1.5 text-slate-600 font-medium">
               <Database className="w-3 h-3 text-[#34A853]" />
-              <span>Firestore & Cloud</span>
+              <span>Cloud Firestore</span>
             </div>
             <span className="text-[10px] font-bold text-blue-700 bg-blue-100 px-1.5 py-0.2 rounded">
-              Synced
+              Live
             </span>
-          </div>
-
-          <div className="text-[10px] text-slate-400 pt-1 text-center font-mono">
-            3DBYSD v2.6 · No Horizontal Overflow
           </div>
         </div>
       </aside>
 
-      {/* Google Authentication Modal inside Sidebar */}
       <GoogleAuthModal
         isOpen={isGoogleModalOpen}
         onClose={() => setIsGoogleModalOpen(false)}
         onSuccess={handleGoogleSuccess}
-        defaultEmail={activeAdmin.email || '66shashwatkumar66@gmail.com'}
+        defaultEmail={activeAdmin.email || MASTER_ADMIN_EMAIL}
       />
     </>
   );

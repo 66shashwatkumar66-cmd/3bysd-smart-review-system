@@ -378,17 +378,28 @@ export const FirebaseCloudPanel: React.FC<FirebaseCloudPanelProps> = ({ cards, o
               </h3>
               <span className="text-[11px] text-slate-500 font-mono">Cloud Firestore Native</span>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-xs font-mono">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3 text-xs font-mono">
               <div className="p-3 bg-white rounded-lg border border-slate-200">
                 <div className="font-bold text-blue-700 mb-1">collection('cards')</div>
                 <div className="text-[11px] text-slate-600 space-y-0.5">
                   <div>id: string (e.g. "0001")</div>
-                  <div>businessName: string</div>
+                  <div>businessName, category</div>
                   <div>googleReviewUrl: string</div>
                   <div>status: 'available'|'assigned'|'disabled'</div>
-                  <div>scansCount: number</div>
-                  <div>aiReviewEnabled: boolean</div>
-                  <div>category, notes, logoUrl</div>
+                  <div>scansCount, lastScannedAt</div>
+                  <div>subscriptionStart/EndDate</div>
+                  <div>assignedToEmail, assignedToUid</div>
+                </div>
+              </div>
+              <div className="p-3 bg-white rounded-lg border border-slate-200">
+                <div className="font-bold text-indigo-700 mb-1">collection('scan_logs')</div>
+                <div className="text-[11px] text-slate-600 space-y-0.5">
+                  <div>id: string (immutable)</div>
+                  <div>cardId, businessName</div>
+                  <div>scannedAt: ISO timestamp</div>
+                  <div>source: 'qr'|'nfc'|'direct'</div>
+                  <div>outcome: 'allowed'|'expired'|...</div>
+                  <div>assignedToEmail, assignedToUid</div>
                 </div>
               </div>
               <div className="p-3 bg-white rounded-lg border border-slate-200">
@@ -406,7 +417,7 @@ export const FirebaseCloudPanel: React.FC<FirebaseCloudPanelProps> = ({ cards, o
                 <div className="text-[11px] text-slate-600 space-y-0.5">
                   <div>id: string</div>
                   <div>headline, targetUrl</div>
-                  <div>placement: 'review_flow'|'banner'</div>
+                  <div>placement: below_draft|footer|...</div>
                   <div>status: 'active' | 'paused'</div>
                   <div>priority, impressions, clicks</div>
                 </div>
@@ -417,7 +428,7 @@ export const FirebaseCloudPanel: React.FC<FirebaseCloudPanelProps> = ({ cards, o
                   <div>uid: string</div>
                   <div>email: string</div>
                   <div>displayName: string</div>
-                  <div>role: 'master' | 'restricted'</div>
+                  <div>role: 'master'|'restricted'|'member'</div>
                   <div>lastLoginAt: string</div>
                 </div>
               </div>
@@ -425,13 +436,13 @@ export const FirebaseCloudPanel: React.FC<FirebaseCloudPanelProps> = ({ cards, o
           </div>
         )}
 
-        {/* Supabase Retirement Confirmation Note */}
+        {/* Firestore Architecture Confirmation Note */}
         <div className="p-4 rounded-xl bg-blue-50/60 border border-blue-100 flex items-start gap-3 text-xs text-blue-900">
           <ShieldCheck className="w-5 h-5 text-blue-600 shrink-0 mt-0.5" />
           <div className="space-y-1">
-            <div className="font-bold text-blue-950">Migration & Architecture Completed</div>
+            <div className="font-bold text-blue-950">Authoritative Cloud Firestore Active</div>
             <p className="text-blue-800 leading-relaxed">
-              Supabase has been cleanly decommissioned. Google Cloud Firestore is the authoritative database for all 15 card records, customer review workflows, and RBAC security rules. All previous data has been backed up under <code className="px-1.5 py-0.5 bg-blue-100/70 rounded font-mono text-[11px]">/data/migration_backup/</code>.
+              Google Cloud Firestore is the authoritative database for all <strong>{health?.connected ? health.cardsCount : cards.length}</strong> live QR card records, immutable <code className="px-1 py-0.5 bg-blue-100/70 rounded font-mono text-[11px]">scan_logs</code>, advertisements, and verified RBAC security rules.
             </p>
           </div>
         </div>
