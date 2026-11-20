@@ -1,5 +1,5 @@
 import React, { useState, useId } from 'react';
-import { CardRecord, AdminUser, AdminPermissions } from '../types';
+import { CardRecord, AdminUser, AdminPermissions, UserProfile } from '../types';
 import {
   Shield,
   ShieldCheck,
@@ -21,6 +21,8 @@ import {
   AlertCircle,
   HelpCircle,
   Eye,
+  Clock,
+  XCircle,
 } from 'lucide-react';
 import { FirebaseCloudPanel } from './FirebaseCloudPanel';
 import { formatApiError } from '../utils/api';
@@ -33,6 +35,9 @@ interface MasterAdminViewProps {
   onSaveAdmin: (adminData: Partial<AdminUser>) => Promise<void>;
   onDeleteAdmin: (adminId: string) => Promise<void>;
   onRefreshCards?: () => Promise<void>;
+  adminRequests?: UserProfile[];
+  onApproveRequest?: (user: UserProfile) => Promise<void>;
+  onRejectRequest?: (user: UserProfile) => Promise<void>;
 }
 
 export const isMasterTestCardId = (id: string): boolean => /^0*([1-9]|10)$/.test(id.trim());
@@ -45,6 +50,9 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
   onSaveAdmin,
   onDeleteAdmin,
   onRefreshCards,
+  adminRequests = [],
+  onApproveRequest,
+  onRejectRequest,
 }) => {
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [editingAdmin, setEditingAdmin] = useState<AdminUser | null>(null);
@@ -67,6 +75,8 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
   const [adminToDelete, setAdminToDelete] = useState<AdminUser | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [actionFeedback, setActionFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [requestTab, setRequestTab] = useState<'pending' | 'approved' | 'rejected'>('pending');
+  const [processingRequestUid, setProcessingRequestUid] = useState<string | null>(null);
 
   const openCreateModal = () => {
     setEditingAdmin(null);
@@ -200,8 +210,57 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
     );
   });
 
+  const handleApproveRequestClick = async (reqUser: UserProfile) => {
+    if (!onApproveRequest || processingRequestUid) return;
+    setProcessingRequestUid(reqUser.uid || reqUser.email);
+    setActionFeedback(null);
+    try {
+      await onApproveRequest(reqUser);
+      setActionFeedback({
+        type: 'success',
+        text: `Approved "${reqUser.displayName || reqUser.email}" (${reqUser.email}) as Sub-Admin. You can now assign specific QR cards to their account.`,
+      });
+    } catch (err: any) {
+      setActionFeedback({
+        type: 'error',
+        text: formatApiError(err, `Failed to approve request for ${reqUser.email}.`),
+      });
+    } finally {
+      setProcessingRequestUid(null);
+    }
+  };
+
+  const handleRejectRequestClick = async (reqUser: UserProfile) => {
+    if (!onRejectRequest || processingRequestUid) return;
+    setProcessingRequestUid(reqUser.uid || reqUser.email);
+    setActionFeedback(null);
+    try {
+      await onRejectRequest(reqUser);
+      setActionFeedback({
+        type: 'success',
+        text: `Rejected Sub-Admin request for "${reqUser.displayName || reqUser.email}" (${reqUser.email}). Their access remains blocked.`,
+      });
+    } catch (err: any) {
+      setActionFeedback({
+        type: 'error',
+        text: formatApiError(err, `Failed to reject request for ${reqUser.email}.`),
+      });
+    } finally {
+      setProcessingRequestUid(null);
+    }
+  };
+
   const masterAdminCount = admins.filter((a) => a.role === 'master').length;
   const restrictedAdminCount = admins.filter((a) => a.role === 'restricted').length;
+  const pendingRequests = adminRequests.filter((r) => r.requestStatus === 'pending');
+  const approvedRequests = adminRequests.filter((r) => r.requestStatus === 'approved');
+  const rejectedRequests = adminRequests.filter((r) => r.requestStatus === 'rejected');
+  const visibleRequests =
+    requestTab === 'pending'
+      ? pendingRequests
+      : requestTab === 'approved'
+      ? approvedRequests
+      : rejectedRequests;
 
   return (
     <div className="space-y-6 w-full max-w-full min-w-0">
@@ -262,6 +321,180 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
           >
             <X className="w-3.5 h-3.5" />
           </button>
+        </div>
+      )}
+
+      {/* Pending Sub-Admin Access Requests Panel (Master Admin Only) */}
+      {activeAdmin.role === 'master' && (onApproveRequest || onRejectRequest) && (
+        <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-5 shadow-xs space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-amber-50 border border-amber-200 text-amber-600 flex items-center justify-center shrink-0">
+                <Clock className="w-4.5 h-4.5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-sm font-bold text-slate-900">Sub-Admin Access Requests</h2>
+                  {pendingRequests.length > 0 && (
+                    <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200 text-[10px] font-extrabold">
+                      {pendingRequests.length} Pending
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  Review Google users requesting Sub-Admin access. Approving grants Sub-Admin login with 0 cards until you assign specific stands.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl self-start sm:self-auto">
+              {(
+                [
+                  { id: 'pending', label: 'Pending', count: pendingRequests.length },
+                  { id: 'approved', label: 'Approved', count: approvedRequests.length },
+                  { id: 'rejected', label: 'Rejected', count: rejectedRequests.length },
+                ] as const
+              ).map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setRequestTab(t.id)}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                    requestTab === t.id
+                      ? 'bg-white text-slate-900 shadow-2xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <span>{t.label}</span>
+                  <span
+                    className={`text-[10px] px-1.5 py-0.2 rounded-full ${
+                      requestTab === t.id
+                        ? t.id === 'pending' && t.count > 0
+                          ? 'bg-amber-100 text-amber-800'
+                          : 'bg-slate-100 text-slate-700'
+                        : 'bg-slate-200/70 text-slate-600'
+                    }`}
+                  >
+                    {t.count}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {visibleRequests.length === 0 ? (
+            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200/80 text-center text-xs text-slate-500">
+              {requestTab === 'pending'
+                ? 'No pending Sub-Admin access requests right now.'
+                : requestTab === 'approved'
+                ? 'No approved Sub-Admin requests recorded yet.'
+                : 'No rejected Sub-Admin requests.'}
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl overflow-hidden">
+              {visibleRequests.map((reqUser) => {
+                const reqKey = reqUser.uid || reqUser.email;
+                const isBusy = processingRequestUid === reqKey;
+                const matchedAdmin = admins.find(
+                  (a) => a.email.toLowerCase().trim() === reqUser.email.toLowerCase().trim()
+                );
+                const requestedDate = reqUser.requestedAt || reqUser.createdAt;
+                return (
+                  <div
+                    key={reqKey}
+                    className="p-3.5 bg-white hover:bg-slate-50/70 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  >
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-xs font-bold text-slate-900 truncate">
+                          {reqUser.displayName || reqUser.email.split('@')[0]}
+                        </span>
+                        <span className="text-[11px] font-mono text-slate-600 truncate">
+                          {reqUser.email}
+                        </span>
+                        <span
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                            reqUser.requestStatus === 'pending'
+                              ? 'bg-amber-50 text-amber-800 border-amber-200'
+                              : reqUser.requestStatus === 'approved'
+                              ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                              : 'bg-red-50 text-red-700 border-red-200'
+                          }`}
+                        >
+                          {reqUser.requestStatus === 'pending' && <Clock className="w-2.5 h-2.5" />}
+                          {reqUser.requestStatus === 'approved' && <CheckCircle2 className="w-2.5 h-2.5" />}
+                          {reqUser.requestStatus === 'rejected' && <XCircle className="w-2.5 h-2.5" />}
+                          <span className="capitalize">{reqUser.requestStatus}</span>
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-slate-500 flex items-center gap-3 flex-wrap">
+                        {requestedDate && (
+                          <span>
+                            Requested: {new Date(requestedDate).toLocaleString()}
+                          </span>
+                        )}
+                        {reqUser.requestNote && (
+                          <span className="text-slate-600 italic truncate max-w-md">
+                            "{reqUser.requestNote}"
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      {reqUser.requestStatus === 'pending' && (
+                        <>
+                          <button
+                            type="button"
+                            disabled={Boolean(processingRequestUid)}
+                            onClick={() => handleApproveRequestClick(reqUser)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-colors disabled:opacity-50 cursor-pointer"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            <span>{isBusy ? 'Saving...' : 'Approve'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={Boolean(processingRequestUid)}
+                            onClick={() => handleRejectRequestClick(reqUser)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white hover:bg-red-50 text-red-700 border border-red-200 text-xs font-bold transition-colors disabled:opacity-50 cursor-pointer"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                            <span>Reject</span>
+                          </button>
+                        </>
+                      )}
+
+                      {reqUser.requestStatus === 'approved' && matchedAdmin && (
+                        <button
+                          type="button"
+                          onClick={() => openEditModal(matchedAdmin)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100 text-[#1A73E8] border border-blue-200 text-xs font-bold transition-colors cursor-pointer"
+                        >
+                          <Layers className="w-3.5 h-3.5" />
+                          <span>
+                            Assign Cards ({matchedAdmin.assignedCardIds?.length || 0})
+                          </span>
+                        </button>
+                      )}
+
+                      {reqUser.requestStatus === 'rejected' && (
+                        <button
+                          type="button"
+                          disabled={Boolean(processingRequestUid)}
+                          onClick={() => handleApproveRequestClick(reqUser)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition-colors disabled:opacity-50 cursor-pointer"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          <span>{isBusy ? 'Saving...' : 'Approve Now'}</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 

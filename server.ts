@@ -160,6 +160,11 @@ export interface UserProfile {
   assignedCardIds?: string[];
   accessRevoked?: boolean;
   revokedAt?: string;
+  requestStatus?: 'pending' | 'approved' | 'rejected';
+  requestedAt?: string;
+  requestUpdatedAt?: string;
+  requestReviewedBy?: string;
+  requestNote?: string;
 }
 
 function ensureUsersFile(): void {
@@ -1015,6 +1020,34 @@ app.put(['/api/cards/:id/assign', '/api/cards/:id'], (req: Request, res: Respons
       subscriptionEndDate: effectiveEnd,
     });
 
+    const incomingAssignedEmailNorm =
+      !isRestrictedCaller && assignedToEmail !== undefined
+        ? (assignedToEmail ? String(assignedToEmail).trim().toLowerCase() : undefined)
+        : undefined;
+    const assignedEmailChanged =
+      !isRestrictedCaller &&
+      assignedToEmail !== undefined &&
+      (incomingAssignedEmailNorm || '') !== prevAssignedEmail;
+
+    let resolvedNextAssignedUid = cards[index].assignedToUid;
+    if (!isRestrictedCaller) {
+      if (assignedToUid !== undefined) {
+        resolvedNextAssignedUid = assignedToUid ? String(assignedToUid).trim() : undefined;
+      } else if (assignedEmailChanged) {
+        if (incomingAssignedEmailNorm) {
+          const matchedNewAdmin = readAdmins().find(
+            (a) => a.email.toLowerCase().trim() === incomingAssignedEmailNorm
+          );
+          const matchedNewUser = !matchedNewAdmin
+            ? readUsers().find((u) => u.email.toLowerCase().trim() === incomingAssignedEmailNorm)
+            : undefined;
+          resolvedNextAssignedUid = matchedNewAdmin?.id || matchedNewUser?.uid || undefined;
+        } else {
+          resolvedNextAssignedUid = undefined;
+        }
+      }
+    }
+
     cards[index] = {
       ...cards[index],
       businessName: businessName !== undefined ? String(businessName).trim() : cards[index].businessName,
@@ -1030,14 +1063,12 @@ app.put(['/api/cards/:id/assign', '/api/cards/:id'], (req: Request, res: Respons
           ? status
           : (cards[index].status || (cards[index].businessName && cards[index].googleReviewUrl ? 'assigned' : 'available')),
       assignedToEmail: !isRestrictedCaller && assignedToEmail !== undefined
-        ? (assignedToEmail ? String(assignedToEmail).trim() : undefined)
+        ? incomingAssignedEmailNorm
         : cards[index].assignedToEmail,
-      assignedToUid: !isRestrictedCaller && assignedToUid !== undefined
-        ? (assignedToUid ? String(assignedToUid).trim() : undefined)
-        : cards[index].assignedToUid,
+      assignedToUid: resolvedNextAssignedUid,
       assignedToName: !isRestrictedCaller && assignedToName !== undefined
         ? (assignedToName ? String(assignedToName).trim() : undefined)
-        : cards[index].assignedToName,
+        : (assignedEmailChanged && !incomingAssignedEmailNorm ? undefined : cards[index].assignedToName),
       customKeywords:
         req.body.customKeywords !== undefined
           ? (Array.isArray(req.body.customKeywords) ? req.body.customKeywords.map((k: string) => String(k).trim()).filter(Boolean) : [])
@@ -1338,6 +1369,10 @@ app.get('/api/auth/session-status', (req: Request, res: Response) => {
           authorized: false,
           revoked: true,
           role: 'member',
+          requestStatus: matchedUser?.requestStatus,
+          requestedAt: matchedUser?.requestedAt,
+          requestUpdatedAt: matchedUser?.requestUpdatedAt,
+          requestNote: matchedUser?.requestNote,
           message: 'Your administrator access has been revoked by the Master Admin.',
         });
       }
@@ -1349,6 +1384,10 @@ app.get('/api/auth/session-status', (req: Request, res: Response) => {
         admin: matchedAdmin,
         assignedCardIds: matchedAdmin.assignedCardIds || [],
         hasAssignedCards: (matchedAdmin.assignedCardIds || []).length > 0,
+        requestStatus: matchedUser?.requestStatus || 'approved',
+        requestedAt: matchedUser?.requestedAt,
+        requestUpdatedAt: matchedUser?.requestUpdatedAt,
+        requestNote: matchedUser?.requestNote,
       });
     }
 
@@ -1358,6 +1397,10 @@ app.get('/api/auth/session-status', (req: Request, res: Response) => {
         authorized: false,
         revoked: true,
         role: 'member',
+        requestStatus: matchedUser?.requestStatus,
+        requestedAt: matchedUser?.requestedAt,
+        requestUpdatedAt: matchedUser?.requestUpdatedAt,
+        requestNote: matchedUser?.requestNote,
         message: 'Your administrator access has been revoked by the Master Admin.',
       });
     }
@@ -1390,6 +1433,10 @@ app.get('/api/auth/session-status', (req: Request, res: Response) => {
         admin: healedAdmin,
         assignedCardIds: healedAdmin.assignedCardIds || [],
         hasAssignedCards: (healedAdmin.assignedCardIds || []).length > 0,
+        requestStatus: matchedUser.requestStatus || 'approved',
+        requestedAt: matchedUser.requestedAt,
+        requestUpdatedAt: matchedUser.requestUpdatedAt,
+        requestNote: matchedUser.requestNote,
       });
     }
 
@@ -1409,6 +1456,10 @@ app.get('/api/auth/session-status', (req: Request, res: Response) => {
       role: matchedUser?.role || 'member',
       assignedCardIds: directAssignedIds,
       hasAssignedCards: directAssignedIds.length > 0,
+      requestStatus: matchedUser?.requestStatus,
+      requestedAt: matchedUser?.requestedAt,
+      requestUpdatedAt: matchedUser?.requestUpdatedAt,
+      requestNote: matchedUser?.requestNote,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message || 'Session status check failed' });
@@ -1470,22 +1521,64 @@ app.post('/api/admins', (req: Request, res: Response) => {
       updatedAt: now,
     };
 
+    // Enforce exclusive card reassignment: strip assigned cards from any other restricted sub-admin
+    const assignedLowerSet = new Set(dedupedCardIds.map((cid) => cid.toLowerCase()));
+    if (resolvedRole === 'restricted' && assignedLowerSet.size > 0) {
+      for (let ai = 0; ai < admins.length; ai++) {
+        if (admins[ai].role === 'restricted' && Array.isArray(admins[ai].assignedCardIds)) {
+          const filtered = admins[ai].assignedCardIds.filter((cid) => !assignedLowerSet.has(cid.toLowerCase()));
+          if (filtered.length !== admins[ai].assignedCardIds.length) {
+            admins[ai] = { ...admins[ai], assignedCardIds: filtered, updatedAt: now };
+          }
+        }
+      }
+      const cards = readCards();
+      let cardsDirty = false;
+      for (let ci = 0; ci < cards.length; ci++) {
+        if (assignedLowerSet.has(cards[ci].id.toLowerCase())) {
+          cards[ci] = {
+            ...cards[ci],
+            assignedToEmail: cleanEmail,
+            assignedToUid: newAdmin.id,
+            assignedToName: newAdmin.name,
+            updatedAt: now,
+          };
+          cardsDirty = true;
+        }
+      }
+      if (cardsDirty) {
+        writeCards(cards);
+      }
+    }
+
     admins.push(newAdmin);
     writeAdmins(admins);
 
-    // Clear any prior revocation across all matching user profiles when re-registered by Master Admin
+    // Clear any prior revocation across matching user profiles & strip reassigned cards from other users
     const users = readUsers();
     let usersModified = false;
     for (let ui = 0; ui < users.length; ui++) {
-      if (users[ui].email.toLowerCase().trim() === cleanEmail || users[ui].uid === newAdmin.id) {
+      const uEmail = users[ui].email.toLowerCase().trim();
+      if (uEmail === cleanEmail || users[ui].uid === newAdmin.id) {
         users[ui] = {
           ...users[ui],
           role: newAdmin.role,
           assignedCardIds: newAdmin.assignedCardIds,
           accessRevoked: false,
           revokedAt: undefined,
+          ...(users[ui].requestStatus ? { requestStatus: 'approved', requestUpdatedAt: now } : {}),
         };
         usersModified = true;
+      } else if (
+        resolvedRole === 'restricted' &&
+        assignedLowerSet.size > 0 &&
+        Array.isArray(users[ui].assignedCardIds)
+      ) {
+        const filtered = users[ui].assignedCardIds!.filter((cid) => !assignedLowerSet.has(cid.toLowerCase()));
+        if (filtered.length !== users[ui].assignedCardIds!.length) {
+          users[ui] = { ...users[ui], assignedCardIds: filtered };
+          usersModified = true;
+        }
       }
     }
     if (usersModified) {
@@ -1596,6 +1689,7 @@ app.put('/api/admins/:id', (req: Request, res: Response) => {
 
     const mergedPermissions = permissions !== undefined ? { ...prevAdmin.permissions, ...permissions } : prevAdmin.permissions;
 
+    const updateNow = new Date().toISOString();
     admins[idx] = {
       ...prevAdmin,
       name: name !== undefined && String(name).trim() ? String(name).trim() : prevAdmin.name,
@@ -1606,25 +1700,58 @@ app.put('/api/admins/:id', (req: Request, res: Response) => {
         ...mergedPermissions,
         canCreateCards: nextRole === 'master',
       },
-      updatedAt: new Date().toISOString(),
+      updatedAt: updateNow,
     };
+
+    const nextAssignedLower = new Set((admins[idx].assignedCardIds || []).map((cid) => cid.toLowerCase()));
+
+    // Enforce exclusive card reassignment: strip cards newly assigned to this sub-admin from any other restricted sub-admin
+    if (nextRole === 'restricted' && nextAssignedLower.size > 0) {
+      for (let ai = 0; ai < admins.length; ai++) {
+        if (ai === idx) continue;
+        if (admins[ai].role === 'restricted' && Array.isArray(admins[ai].assignedCardIds)) {
+          const filtered = admins[ai].assignedCardIds.filter((cid) => !nextAssignedLower.has(cid.toLowerCase()));
+          if (filtered.length !== admins[ai].assignedCardIds.length) {
+            admins[ai] = {
+              ...admins[ai],
+              assignedCardIds: filtered,
+              updatedAt: updateNow,
+            };
+          }
+        }
+      }
+    }
 
     writeAdmins(admins);
 
-    // Clear stale card.assignedToEmail / assignedToUid for cards removed from this sub-admin
-    const nextAssignedLower = new Set((admins[idx].assignedCardIds || []).map((cid) => cid.toLowerCase()));
+    // Sync card ownership: clear removed cards AND stamp newly assigned cards exclusively to this sub-admin
     const removedAny =
       nextRole === 'master' ||
       Array.from(prevAssignedLower).some((cid) => !nextAssignedLower.has(cid)) ||
       assignedCardIds !== undefined;
 
-    if (removedAny) {
+    if (removedAny || (nextRole === 'restricted' && nextAssignedLower.size > 0)) {
       const cards = readCards();
       let cardsDirty = false;
       for (let ci = 0; ci < cards.length; ci++) {
         const card = cards[ci];
         const cidLower = card.id.toLowerCase();
-        if (!nextAssignedLower.has(cidLower)) {
+        if (nextRole === 'restricted' && nextAssignedLower.has(cidLower)) {
+          if (
+            (card.assignedToEmail || '').trim().toLowerCase() !== nextEmail ||
+            (card.assignedToUid || '').trim() !== admins[idx].id ||
+            (card.assignedToName || '').trim() !== admins[idx].name
+          ) {
+            cards[ci] = {
+              ...card,
+              assignedToEmail: nextEmail,
+              assignedToUid: admins[idx].id,
+              assignedToName: admins[idx].name,
+              updatedAt: updateNow,
+            };
+            cardsDirty = true;
+          }
+        } else if (!nextAssignedLower.has(cidLower)) {
           const emailOwned =
             Boolean(card.assignedToEmail) &&
             (card.assignedToEmail!.trim().toLowerCase() === prevAdminEmail ||
@@ -1636,7 +1763,7 @@ app.put('/api/admins/:id', (req: Request, res: Response) => {
               assignedToEmail: undefined,
               assignedToUid: undefined,
               assignedToName: undefined,
-              updatedAt: new Date().toISOString(),
+              updatedAt: updateNow,
             };
             cardsDirty = true;
           }
@@ -1647,7 +1774,7 @@ app.put('/api/admins/:id', (req: Request, res: Response) => {
       }
     }
 
-    // Keep user role and assignedCardIds synced if user exists
+    // Keep user role and assignedCardIds synced (and strip reassigned cards from any other user)
     const users = readUsers();
     let usersDirty = false;
     for (let ui = 0; ui < users.length; ui++) {
@@ -1659,6 +1786,7 @@ app.put('/api/admins/:id', (req: Request, res: Response) => {
           assignedCardIds: admins[idx].assignedCardIds,
           accessRevoked: false,
           revokedAt: undefined,
+          ...(users[ui].requestStatus ? { requestStatus: 'approved', requestUpdatedAt: updateNow } : {}),
         };
         usersDirty = true;
       } else if (uEmail === prevAdminEmail && prevAdminEmail !== nextEmail) {
@@ -1668,6 +1796,16 @@ app.put('/api/admins/:id', (req: Request, res: Response) => {
           assignedCardIds: [],
         };
         usersDirty = true;
+      } else if (
+        nextRole === 'restricted' &&
+        nextAssignedLower.size > 0 &&
+        Array.isArray(users[ui].assignedCardIds)
+      ) {
+        const filtered = users[ui].assignedCardIds!.filter((cid) => !nextAssignedLower.has(cid.toLowerCase()));
+        if (filtered.length !== users[ui].assignedCardIds!.length) {
+          users[ui] = { ...users[ui], assignedCardIds: filtered };
+          usersDirty = true;
+        }
       }
     }
     if (usersDirty) {
@@ -1772,7 +1910,21 @@ app.get('/api/users', (_req: Request, res: Response) => {
 // REST API: Save or Update User Profile on Google Login/Verification
 app.post('/api/users', (req: Request, res: Response) => {
   try {
-    const { uid, email, displayName, photoURL, provider, role, emailVerified, device } = req.body;
+    const {
+      uid,
+      email,
+      displayName,
+      photoURL,
+      provider,
+      role,
+      emailVerified,
+      device,
+      requestStatus,
+      requestedAt,
+      requestUpdatedAt,
+      requestReviewedBy,
+      requestNote,
+    } = req.body;
     if (!email || !uid) {
       return res.status(400).json({ success: false, message: 'Email and UID are required' });
     }
@@ -1818,6 +1970,22 @@ app.post('/api/users', (req: Request, res: Response) => {
       computedRole = 'member';
     }
 
+    // Determine authoritative requestStatus (non-master callers can ONLY submit 'pending', never self-approve)
+    const existingReqStatus = idx !== -1 ? users[idx].requestStatus : undefined;
+    let resolvedRequestStatus: 'pending' | 'approved' | 'rejected' | undefined = existingReqStatus;
+    if (callerIsMaster && (requestStatus === 'pending' || requestStatus === 'approved' || requestStatus === 'rejected')) {
+      resolvedRequestStatus = requestStatus;
+    } else if (computedRole === 'restricted' || computedRole === 'master') {
+      if (existingReqStatus) resolvedRequestStatus = 'approved';
+    } else if (requestStatus === 'pending' && !anyRevokedForUser) {
+      resolvedRequestStatus = 'pending';
+    }
+
+    const sanitizedNote =
+      typeof requestNote === 'string' && requestNote.trim()
+        ? requestNote.trim().slice(0, 300)
+        : (idx !== -1 ? users[idx].requestNote : undefined);
+
     let updatedUser: UserProfile;
     if (idx !== -1) {
       updatedUser = {
@@ -1834,6 +2002,11 @@ app.post('/api/users', (req: Request, res: Response) => {
         device: device || users[idx].device || 'Web Browser',
         assignedCardIds: matchedAdmin ? matchedAdmin.assignedCardIds : (computedRole === 'member' ? [] : (users[idx].assignedCardIds || [])),
         accessRevoked: callerIsMaster && role ? false : (matchedAdmin ? false : users[idx].accessRevoked),
+        ...(resolvedRequestStatus ? { requestStatus: resolvedRequestStatus } : {}),
+        ...(resolvedRequestStatus ? { requestedAt: users[idx].requestedAt || requestedAt || now } : {}),
+        ...(resolvedRequestStatus ? { requestUpdatedAt: requestUpdatedAt || now } : {}),
+        ...(callerIsMaster && requestReviewedBy ? { requestReviewedBy: String(requestReviewedBy).trim() } : {}),
+        ...(sanitizedNote ? { requestNote: sanitizedNote } : {}),
       };
       users[idx] = updatedUser;
     } else {
@@ -1853,6 +2026,11 @@ app.post('/api/users', (req: Request, res: Response) => {
         device: device || 'Web Browser',
         assignedCardIds: matchedAdmin ? matchedAdmin.assignedCardIds : [],
         accessRevoked: false,
+        ...(resolvedRequestStatus ? { requestStatus: resolvedRequestStatus } : {}),
+        ...(resolvedRequestStatus ? { requestedAt: requestedAt || now } : {}),
+        ...(resolvedRequestStatus ? { requestUpdatedAt: requestUpdatedAt || now } : {}),
+        ...(callerIsMaster && requestReviewedBy ? { requestReviewedBy: String(requestReviewedBy).trim() } : {}),
+        ...(sanitizedNote ? { requestNote: sanitizedNote } : {}),
       };
       users.push(updatedUser);
     }
@@ -1926,6 +2104,427 @@ app.delete('/api/users/:uid', (req: Request, res: Response) => {
     res.json({ success: true, message: 'User removed successfully' });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message || 'Failed to delete user' });
+  }
+});
+
+// ================= Pending Sub-Admin Access Requests API =================
+
+// REST API: List Sub-Admin access requests (Master Admin Only)
+app.get('/api/admin-requests', (req: Request, res: Response) => {
+  try {
+    if (!isMasterAdminStrict(req)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Forbidden: Only Master Admin can view Sub-Admin access requests.',
+      });
+    }
+    const users = readUsers();
+    const requests = users
+      .filter((u) => Boolean(u.requestStatus) && u.email.toLowerCase().trim() !== PRIMARY_MASTER_EMAIL)
+      .sort((a, b) => {
+        const ta = new Date(a.requestedAt || a.createdAt || 0).getTime();
+        const tb = new Date(b.requestedAt || b.createdAt || 0).getTime();
+        return tb - ta;
+      });
+    res.json({ success: true, requests });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message || 'Failed to fetch admin requests' });
+  }
+});
+
+// REST API: Submit or re-submit a Sub-Admin access request (Authenticated User)
+app.post('/api/admin-requests', (req: Request, res: Response) => {
+  try {
+    const { uid, email, displayName, photoURL, note } = req.body;
+    const cleanEmail = String(email || '').trim().toLowerCase();
+    const cleanUid = String(uid || '').trim();
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail) || !cleanUid) {
+      return res.status(400).json({ success: false, message: 'Valid Google email and UID are required.' });
+    }
+    if (cleanEmail === PRIMARY_MASTER_EMAIL) {
+      return res.status(400).json({ success: false, message: 'Master Admin account already has full access.' });
+    }
+
+    const users = readUsers();
+    const admins = readAdmins();
+    const existingAdmin = admins.find((a) => a.email.toLowerCase().trim() === cleanEmail || a.id === cleanUid);
+    const existingIdx = users.findIndex((u) => u.uid === cleanUid || u.email.toLowerCase().trim() === cleanEmail);
+    const anyRevoked = users.some(
+      (u) => (u.uid === cleanUid || u.email.toLowerCase().trim() === cleanEmail) && Boolean(u.accessRevoked)
+    );
+
+    if (anyRevoked && !existingAdmin) {
+      return res.status(403).json({
+        success: false,
+        revoked: true,
+        message: 'Your administrator access was revoked by the Master Admin and cannot request self-reinstatement.',
+      });
+    }
+
+    const now = new Date().toISOString();
+    const cleanNote = typeof note === 'string' && note.trim() ? note.trim().slice(0, 300) : undefined;
+
+    if (existingAdmin) {
+      // Already an approved admin
+      let syncedUser: UserProfile;
+      if (existingIdx !== -1) {
+        syncedUser = {
+          ...users[existingIdx],
+          uid: cleanUid,
+          email: cleanEmail,
+          displayName: displayName ? String(displayName).trim() : users[existingIdx].displayName,
+          role: existingAdmin.role,
+          assignedCardIds: existingAdmin.assignedCardIds || [],
+          accessRevoked: false,
+          requestStatus: 'approved',
+          requestUpdatedAt: now,
+        };
+        users[existingIdx] = syncedUser;
+      } else {
+        syncedUser = {
+          uid: cleanUid,
+          email: cleanEmail,
+          displayName: displayName ? String(displayName).trim() : existingAdmin.name || cleanEmail.split('@')[0],
+          photoURL: photoURL || undefined,
+          provider: 'google.com',
+          role: existingAdmin.role,
+          emailVerified: true,
+          lastLoginAt: now,
+          createdAt: now,
+          loginCount: 1,
+          assignedCardIds: existingAdmin.assignedCardIds || [],
+          accessRevoked: false,
+          requestStatus: 'approved',
+          requestedAt: now,
+          requestUpdatedAt: now,
+        };
+        users.push(syncedUser);
+      }
+      writeUsers(users);
+      return res.json({ success: true, user: syncedUser, alreadyAuthorized: true });
+    }
+
+    let savedUser: UserProfile;
+    if (existingIdx !== -1) {
+      savedUser = {
+        ...users[existingIdx],
+        uid: cleanUid || users[existingIdx].uid,
+        email: cleanEmail,
+        displayName: displayName ? String(displayName).trim() : users[existingIdx].displayName,
+        photoURL: photoURL || users[existingIdx].photoURL,
+        role: 'member',
+        assignedCardIds: [],
+        accessRevoked: false,
+        requestStatus: 'pending',
+        requestedAt: users[existingIdx].requestStatus === 'pending' && users[existingIdx].requestedAt ? users[existingIdx].requestedAt : now,
+        requestUpdatedAt: now,
+        ...(cleanNote !== undefined ? { requestNote: cleanNote } : {}),
+      };
+      users[existingIdx] = savedUser;
+    } else {
+      savedUser = {
+        uid: cleanUid,
+        email: cleanEmail,
+        displayName: displayName ? String(displayName).trim() : cleanEmail.split('@')[0],
+        photoURL:
+          photoURL ||
+          `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(cleanEmail)}&backgroundColor=1a73e8&textColor=ffffff`,
+        provider: 'google.com',
+        role: 'member',
+        emailVerified: true,
+        lastLoginAt: now,
+        createdAt: now,
+        loginCount: 1,
+        assignedCardIds: [],
+        accessRevoked: false,
+        requestStatus: 'pending',
+        requestedAt: now,
+        requestUpdatedAt: now,
+        ...(cleanNote !== undefined ? { requestNote: cleanNote } : {}),
+      };
+      users.push(savedUser);
+    }
+
+    writeUsers(users);
+    res.json({ success: true, user: savedUser });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message || 'Failed to submit access request' });
+  }
+});
+
+// REST API: Approve a Pending Sub-Admin Access Request (Master Admin Only)
+app.post('/api/admin-requests/:id/approve', (req: Request, res: Response) => {
+  try {
+    if (!isMasterAdminStrict(req)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Forbidden: Only Master Admin can approve Sub-Admin requests.',
+      });
+    }
+
+    const cleanTarget = decodeURIComponent(String(req.params.id || '')).trim();
+    const cleanTargetLower = cleanTarget.toLowerCase();
+    const { email, displayName, assignedCardIds } = req.body || {};
+
+    const users = readUsers();
+    const admins = readAdmins();
+
+    const matchedUsers = users.filter(
+      (u) =>
+        u.uid === cleanTarget ||
+        u.email.toLowerCase().trim() === cleanTargetLower ||
+        (email && u.email.toLowerCase().trim() === String(email).trim().toLowerCase())
+    );
+    const primaryUser = matchedUsers[0];
+    const targetEmail = (
+      primaryUser?.email ||
+      (email ? String(email) : cleanTargetLower.includes('@') ? cleanTargetLower : '')
+    )
+      .trim()
+      .toLowerCase();
+
+    if (!targetEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(targetEmail)) {
+      return res.status(404).json({ success: false, message: 'Pending request user not found.' });
+    }
+    if (targetEmail === PRIMARY_MASTER_EMAIL) {
+      return res.status(400).json({ success: false, message: 'Cannot modify primary Master Admin.' });
+    }
+
+    const now = new Date().toISOString();
+    const reviewer = String(req.headers['x-admin-email'] || PRIMARY_MASTER_EMAIL).trim().toLowerCase();
+    const resolvedName =
+      (displayName && String(displayName).trim()) ||
+      primaryUser?.displayName ||
+      targetEmail.split('@')[0];
+    const resolvedUid = primaryUser?.uid || `google-preauth-${targetEmail.replace(/[^a-z0-9]/g, '-')}`;
+
+    const existingAdminIdx = admins.findIndex(
+      (a) => a.email.toLowerCase().trim() === targetEmail || a.id === resolvedUid
+    );
+    const requestedCardIds = Array.isArray(assignedCardIds)
+      ? Array.from(new Set(assignedCardIds.map((cid: any) => String(cid).trim()).filter(Boolean)))
+      : existingAdminIdx !== -1
+      ? admins[existingAdminIdx].assignedCardIds || []
+      : primaryUser?.assignedCardIds || [];
+
+    // Exclusive reassignment if cards were specified during approval
+    const cardLowerSet = new Set(requestedCardIds.map((cid) => cid.toLowerCase()));
+    if (cardLowerSet.size > 0) {
+      for (let ai = 0; ai < admins.length; ai++) {
+        if (ai === existingAdminIdx) continue;
+        if (admins[ai].role === 'restricted' && Array.isArray(admins[ai].assignedCardIds)) {
+          const filtered = admins[ai].assignedCardIds.filter((cid) => !cardLowerSet.has(cid.toLowerCase()));
+          if (filtered.length !== admins[ai].assignedCardIds.length) {
+            admins[ai] = { ...admins[ai], assignedCardIds: filtered, updatedAt: now };
+          }
+        }
+      }
+      const cards = readCards();
+      let cardsDirty = false;
+      for (let ci = 0; ci < cards.length; ci++) {
+        if (cardLowerSet.has(cards[ci].id.toLowerCase())) {
+          cards[ci] = {
+            ...cards[ci],
+            assignedToEmail: targetEmail,
+            assignedToUid: existingAdminIdx !== -1 ? admins[existingAdminIdx].id : resolvedUid,
+            assignedToName: resolvedName,
+            updatedAt: now,
+          };
+          cardsDirty = true;
+        }
+      }
+      if (cardsDirty) writeCards(cards);
+    }
+
+    let approvedAdmin: AdminUser;
+    if (existingAdminIdx !== -1) {
+      approvedAdmin = {
+        ...admins[existingAdminIdx],
+        email: targetEmail,
+        name: resolvedName,
+        role: 'restricted',
+        assignedCardIds: requestedCardIds,
+        updatedAt: now,
+      };
+      admins[existingAdminIdx] = approvedAdmin;
+    } else {
+      approvedAdmin = {
+        id: resolvedUid,
+        email: targetEmail,
+        name: resolvedName,
+        role: 'restricted',
+        assignedCardIds: requestedCardIds,
+        permissions: {
+          canEditCards: true,
+          canToggleAi: true,
+          canExportCsv: false,
+          canCreateCards: false,
+        },
+        createdAt: now,
+        updatedAt: now,
+      };
+      admins.push(approvedAdmin);
+    }
+    writeAdmins(admins);
+
+    let updatedUser: UserProfile | null = null;
+    for (let ui = 0; ui < users.length; ui++) {
+      const uEmail = users[ui].email.toLowerCase().trim();
+      if (uEmail === targetEmail || users[ui].uid === resolvedUid) {
+        users[ui] = {
+          ...users[ui],
+          email: targetEmail,
+          displayName: resolvedName,
+          role: 'restricted',
+          assignedCardIds: requestedCardIds,
+          accessRevoked: false,
+          revokedAt: undefined,
+          requestStatus: 'approved',
+          requestedAt: users[ui].requestedAt || now,
+          requestUpdatedAt: now,
+          requestReviewedBy: reviewer,
+        };
+        if (!updatedUser) updatedUser = users[ui];
+      } else if (cardLowerSet.size > 0 && Array.isArray(users[ui].assignedCardIds)) {
+        const filtered = users[ui].assignedCardIds!.filter((cid) => !cardLowerSet.has(cid.toLowerCase()));
+        if (filtered.length !== users[ui].assignedCardIds!.length) {
+          users[ui] = { ...users[ui], assignedCardIds: filtered };
+        }
+      }
+    }
+    if (!updatedUser) {
+      updatedUser = {
+        uid: resolvedUid,
+        email: targetEmail,
+        displayName: resolvedName,
+        photoURL: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(targetEmail)}&backgroundColor=1a73e8&textColor=ffffff`,
+        provider: 'google.com',
+        role: 'restricted',
+        emailVerified: true,
+        lastLoginAt: now,
+        createdAt: now,
+        loginCount: 0,
+        assignedCardIds: requestedCardIds,
+        accessRevoked: false,
+        requestStatus: 'approved',
+        requestedAt: now,
+        requestUpdatedAt: now,
+        requestReviewedBy: reviewer,
+      };
+      users.push(updatedUser);
+    }
+    writeUsers(users);
+
+    res.json({
+      success: true,
+      admin: approvedAdmin,
+      user: updatedUser,
+      message: `Approved ${resolvedName} (${targetEmail}) as a Sub-Admin.`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message || 'Failed to approve Sub-Admin request' });
+  }
+});
+
+// REST API: Reject a Pending Sub-Admin Access Request (Master Admin Only)
+app.post('/api/admin-requests/:id/reject', (req: Request, res: Response) => {
+  try {
+    if (!isMasterAdminStrict(req)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Forbidden: Only Master Admin can reject Sub-Admin requests.',
+      });
+    }
+
+    const cleanTarget = decodeURIComponent(String(req.params.id || '')).trim();
+    const cleanTargetLower = cleanTarget.toLowerCase();
+    const { email, displayName } = req.body || {};
+
+    const users = readUsers();
+    const admins = readAdmins();
+
+    const matchedUsers = users.filter(
+      (u) =>
+        u.uid === cleanTarget ||
+        u.email.toLowerCase().trim() === cleanTargetLower ||
+        (email && u.email.toLowerCase().trim() === String(email).trim().toLowerCase())
+    );
+    const primaryUser = matchedUsers[0];
+    const targetEmail = (
+      primaryUser?.email ||
+      (email ? String(email) : cleanTargetLower.includes('@') ? cleanTargetLower : '')
+    )
+      .trim()
+      .toLowerCase();
+
+    if (!targetEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(targetEmail)) {
+      return res.status(404).json({ success: false, message: 'Pending request user not found.' });
+    }
+    if (targetEmail === PRIMARY_MASTER_EMAIL) {
+      return res.status(400).json({ success: false, message: 'Cannot reject primary Master Admin.' });
+    }
+
+    const now = new Date().toISOString();
+    const reviewer = String(req.headers['x-admin-email'] || PRIMARY_MASTER_EMAIL).trim().toLowerCase();
+    const resolvedName =
+      (displayName && String(displayName).trim()) ||
+      primaryUser?.displayName ||
+      targetEmail.split('@')[0];
+    const resolvedUid = primaryUser?.uid || cleanTarget;
+
+    // Remove any non-master entry in admins.json for this email
+    const filteredAdmins = admins.filter(
+      (a) => a.email.toLowerCase().trim() !== targetEmail && a.id !== resolvedUid
+    );
+    if (filteredAdmins.length !== admins.length) {
+      writeAdmins(filteredAdmins);
+    }
+
+    let updatedUser: UserProfile | null = null;
+    for (let ui = 0; ui < users.length; ui++) {
+      const uEmail = users[ui].email.toLowerCase().trim();
+      if (uEmail === targetEmail || users[ui].uid === resolvedUid) {
+        users[ui] = {
+          ...users[ui],
+          role: 'member',
+          assignedCardIds: [],
+          requestStatus: 'rejected',
+          requestedAt: users[ui].requestedAt || now,
+          requestUpdatedAt: now,
+          requestReviewedBy: reviewer,
+        };
+        if (!updatedUser) updatedUser = users[ui];
+      }
+    }
+    if (!updatedUser) {
+      updatedUser = {
+        uid: resolvedUid,
+        email: targetEmail,
+        displayName: resolvedName,
+        provider: 'google.com',
+        role: 'member',
+        emailVerified: true,
+        lastLoginAt: now,
+        createdAt: now,
+        loginCount: 0,
+        assignedCardIds: [],
+        accessRevoked: false,
+        requestStatus: 'rejected',
+        requestedAt: now,
+        requestUpdatedAt: now,
+        requestReviewedBy: reviewer,
+      };
+      users.push(updatedUser);
+    }
+    writeUsers(users);
+
+    res.json({
+      success: true,
+      user: updatedUser,
+      message: `Rejected Sub-Admin access request for ${resolvedName} (${targetEmail}).`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message || 'Failed to reject Sub-Admin request' });
   }
 });
 

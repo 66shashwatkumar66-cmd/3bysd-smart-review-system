@@ -50,8 +50,8 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
       const email = (user.email || '').toLowerCase().trim();
       const isMaster = email === '66shashwatkumar66@gmail.com';
 
-      // Authoritative revocation & authorization check
-      const authStatus = await checkSessionAuthorization(email, user.uid);
+      // Authoritative revocation & authorization check (bypass client cache)
+      const authStatus = await checkSessionAuthorization(email, user.uid, { fresh: true });
       if (!isMaster && authStatus.revoked) {
         await signOut(auth).catch(() => {});
         setErrorMsg(
@@ -74,6 +74,10 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
         role = authStatus.role;
       }
 
+      const now = new Date().toISOString();
+      const shouldAutoCreatePendingRequest =
+        !isMaster && role === 'member' && !authStatus.revoked && !authStatus.requestStatus;
+
       const profile: Partial<UserProfile> & { uid: string; email: string } = {
         uid: user.uid,
         email,
@@ -86,6 +90,15 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
         emailVerified: user.emailVerified || true,
         device: navigator.userAgent.slice(0, 60),
         assignedCardIds: authorizedAdmin?.assignedCardIds || [],
+        ...(shouldAutoCreatePendingRequest
+          ? { requestStatus: 'pending' as const, requestedAt: now, requestUpdatedAt: now }
+          : authStatus.requestStatus
+          ? {
+              requestStatus: authStatus.requestStatus,
+              requestedAt: authStatus.requestedAt,
+              requestUpdatedAt: authStatus.requestUpdatedAt,
+            }
+          : {}),
       };
 
       const saved = await saveUser(profile);
@@ -129,7 +142,7 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
 
     try {
       const isMaster = cleanEmail === '66shashwatkumar66@gmail.com';
-      const authStatus = await checkSessionAuthorization(cleanEmail);
+      const authStatus = await checkSessionAuthorization(cleanEmail, undefined, { fresh: true });
       if (!isMaster && authStatus.revoked) {
         setErrorMsg(
           authStatus.message || 'Access Denied: Your administrator access has been revoked by the Master Admin.'
@@ -150,6 +163,10 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
         role = authStatus.role;
       }
 
+      const now = new Date().toISOString();
+      const shouldAutoCreatePendingRequest =
+        !isMaster && role === 'member' && !authStatus.revoked && !authStatus.requestStatus;
+
       const uid = `google-uid-${cleanEmail.replace(/[^a-zA-Z0-9]/g, '')}`;
       const profile: Partial<UserProfile> & { uid: string; email: string } = {
         uid,
@@ -161,6 +178,15 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
         emailVerified: true,
         device: navigator.userAgent.slice(0, 60),
         assignedCardIds: authorizedAdmin?.assignedCardIds || [],
+        ...(shouldAutoCreatePendingRequest
+          ? { requestStatus: 'pending' as const, requestedAt: now, requestUpdatedAt: now }
+          : authStatus.requestStatus
+          ? {
+              requestStatus: authStatus.requestStatus,
+              requestedAt: authStatus.requestedAt,
+              requestUpdatedAt: authStatus.requestUpdatedAt,
+            }
+          : {}),
       };
 
       const saved = await saveUser(profile);

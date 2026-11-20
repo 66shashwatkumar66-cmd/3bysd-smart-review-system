@@ -94,6 +94,8 @@ export interface Advertisement {
   updatedAt: string;
 }
 
+export type AdminRequestStatus = 'pending' | 'approved' | 'rejected';
+
 export interface UserProfile {
   uid: string;
   email: string;
@@ -109,6 +111,11 @@ export interface UserProfile {
   assignedCardIds?: string[];
   accessRevoked?: boolean;
   revokedAt?: string;
+  requestStatus?: AdminRequestStatus;
+  requestedAt?: string;
+  requestUpdatedAt?: string;
+  requestReviewedBy?: string;
+  requestNote?: string;
 }
 
 export type ScanSource = 'qr' | 'nfc' | 'direct' | 'simulator';

@@ -193,6 +193,33 @@
         "loginCount": {
           "type": "integer",
           "description": "Number of times user logged in"
+        },
+        "requestStatus": {
+          "type": "string",
+          "enum": ["pending", "approved", "rejected"],
+          "description": "Status of a user's Sub-Admin access request"
+        },
+        "requestedAt": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 64,
+          "description": "Timestamp when the user requested admin access"
+        },
+        "requestUpdatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 64,
+          "description": "Timestamp when the access request status was last updated"
+        },
+        "requestReviewedBy": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "Email of the Master Admin who reviewed the request"
+        },
+        "requestNote": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Optional note submitted by the user requesting admin access"
         }
       },
       "required": ["uid", "email"]

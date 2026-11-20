@@ -14,6 +14,12 @@ import {
   fetchUsers,
   checkSessionAuthorization,
   clearSessionCaches,
+  submitAdminAccessRequest,
+  fetchAdminRequests,
+  approveAdminRequest,
+  rejectAdminRequest,
+  formatApiError,
+  SessionAuthResult,
 } from './utils/api';
 import {
   extractCardId,
@@ -22,7 +28,8 @@ import {
   CustomerLoadState,
   getCachedCard,
 } from './utils/cardLookup';
-import { auth, onAuthStateChanged, signOut } from './firebase';
+import { auth, db, onAuthStateChanged, signOut } from './firebase';
+import { collection, doc, onSnapshot, query, where } from 'firebase/firestore';
 import { AdminHeader } from './components/AdminHeader';
 import { CardsTable } from './components/CardsTable';
 import { BatchGeneratorModal } from './components/BatchGeneratorModal';
@@ -98,18 +105,17 @@ export default function App() {
   const [activeAdmin, setActiveAdmin] = useState<AdminUser | null>(null);
   const [authRevokedNotice, setAuthRevokedNotice] = useState<string | null>(null);
   const [authReady, setAuthReady] = useState<boolean>(false);
+  const [firebaseAuthActive, setFirebaseAuthActive] = useState<boolean>(false);
   const [adminsSynced, setAdminsSynced] = useState<boolean>(false);
   const [checkingAuthStatus, setCheckingAuthStatus] = useState<boolean>(false);
   const [authStatusFeedback, setAuthStatusFeedback] = useState<string | null>(null);
+  const [adminRequests, setAdminRequests] = useState<UserProfile[]>([]);
+  const [requestNoteInput, setRequestNoteInput] = useState<string>('');
+  const [submittingRequest, setSubmittingRequest] = useState<boolean>(false);
+  const [requestSubmitFeedback, setRequestSubmitFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const inFlightRefreshRef = useRef<Promise<void> | null>(null);
   const lastRefreshAtRef = useRef<number>(0);
-  const [sessionAuth, setSessionAuth] = useState<{
-    authorized: boolean;
-    revoked: boolean;
-    role: 'master' | 'restricted' | 'member';
-    admin?: AdminUser;
-    message?: string;
-  } | null>(null);
+  const [sessionAuth, setSessionAuth] = useState<SessionAuthResult | null>(null);
 
   // Customer route state (e.g. /r/0001)
   const initialTargetId = typeof window !== 'undefined' ? extractCardId() : null;
@@ -196,10 +202,11 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       try {
         if (firebaseUser && firebaseUser.email) {
+          setFirebaseAuthActive(true);
           const cleanEmail = firebaseUser.email.toLowerCase().trim();
           const isMasterEmail = cleanEmail === '66shashwatkumar66@gmail.com';
           try {
-            const authStatus = await checkSessionAuthorization(cleanEmail, firebaseUser.uid);
+            const authStatus = await checkSessionAuthorization(cleanEmail, firebaseUser.uid, { fresh: true });
             setSessionAuth(authStatus);
             if (!isMasterEmail && authStatus.revoked) {
               await signOut(auth).catch(() => {});
@@ -227,6 +234,10 @@ export default function App() {
               createdAt: new Date().toISOString(),
               loginCount: 1,
               assignedCardIds: preservedCards,
+              ...(authStatus.requestStatus ? { requestStatus: authStatus.requestStatus } : {}),
+              ...(authStatus.requestedAt ? { requestedAt: authStatus.requestedAt } : {}),
+              ...(authStatus.requestUpdatedAt ? { requestUpdatedAt: authStatus.requestUpdatedAt } : {}),
+              ...(authStatus.requestNote ? { requestNote: authStatus.requestNote } : {}),
             };
             setCurrentUser(userProfile);
             localStorage.setItem('3dbysd_current_user', JSON.stringify(userProfile));
@@ -260,6 +271,8 @@ export default function App() {
             setCurrentUser(userProfile);
             localStorage.setItem('3dbysd_current_user', JSON.stringify(userProfile));
           }
+        } else {
+          setFirebaseAuthActive(false);
         }
       } finally {
         setAuthReady(true);
@@ -344,16 +357,27 @@ export default function App() {
     }
   };
 
+  const loadAdminRequestsData = async (caller?: { id?: string; email?: string }) => {
+    try {
+      const reqs = await fetchAdminRequests(caller);
+      setAdminRequests(reqs);
+    } catch (e) {
+      console.warn('Failed to fetch admin requests:', e);
+    }
+  };
+
   const refreshAuthorization = useCallback(
     async (options?: {
       force?: boolean;
       userOverride?: UserProfile | null;
       quiet?: boolean;
       showFeedback?: boolean;
+      fresh?: boolean;
     }) => {
       const force = options?.force ?? false;
       const quiet = options?.quiet ?? true;
       const showFeedback = options?.showFeedback ?? false;
+      const fresh = options?.fresh ?? force;
       const targetUser = options?.userOverride !== undefined ? options.userOverride : currentUser;
       if (!targetUser?.email) return;
 
@@ -378,7 +402,7 @@ export default function App() {
         const cleanEmail = targetUser.email.toLowerCase().trim();
         const isMasterEmail = cleanEmail === '66shashwatkumar66@gmail.com';
         try {
-          const status = await checkSessionAuthorization(cleanEmail, targetUser.uid);
+          const status = await checkSessionAuthorization(cleanEmail, targetUser.uid, { fresh });
           setSessionAuth(status);
           if (!isMasterEmail && status.revoked) {
             await signOut(auth).catch(() => {});
@@ -386,6 +410,7 @@ export default function App() {
             setCards([]);
             setAdmins([]);
             setUsers([]);
+            setAdminRequests([]);
             setActiveAdmin(null);
             setCurrentUser(null);
             setAuthRevokedNotice(
@@ -399,13 +424,18 @@ export default function App() {
           const roleChanged = targetUser.role !== resolvedRole;
           const cardsChanged =
             JSON.stringify(targetUser.assignedCardIds || []) !== JSON.stringify(resolvedCardIds);
+          const reqStatusChanged = targetUser.requestStatus !== status.requestStatus;
 
           let syncedUser = targetUser;
-          if (roleChanged || cardsChanged) {
+          if (roleChanged || cardsChanged || reqStatusChanged) {
             syncedUser = {
               ...targetUser,
               role: resolvedRole,
               assignedCardIds: resolvedCardIds,
+              ...(status.requestStatus ? { requestStatus: status.requestStatus } : {}),
+              ...(status.requestedAt ? { requestedAt: status.requestedAt } : {}),
+              ...(status.requestUpdatedAt ? { requestUpdatedAt: status.requestUpdatedAt } : {}),
+              ...(status.requestNote ? { requestNote: status.requestNote } : {}),
             };
             setCurrentUser(syncedUser);
             localStorage.setItem('3dbysd_current_user', JSON.stringify(syncedUser));
@@ -414,13 +444,16 @@ export default function App() {
           const [{ resolvedAdmin }] = await Promise.all([
             loadAdminsData(syncedUser),
             loadUsersData(),
+            isMasterEmail ? loadAdminRequestsData({ id: syncedUser.uid, email: cleanEmail }) : Promise.resolve(),
           ]);
           const authoritativeAdmin = resolvedAdmin || status.admin || null;
           await loadCards(syncedUser, authoritativeAdmin);
 
           if (showFeedback && !isMasterEmail && !status.authorized && !authoritativeAdmin) {
             setAuthStatusFeedback(
-              'Still pending Master Admin approval. If you were just verified, try again in a few seconds.'
+              status.requestStatus === 'rejected'
+                ? 'Your previous Sub-Admin access request was rejected by the Master Admin. You can submit a new request or contact the Master Admin.'
+                : 'Still pending Master Admin approval. If you were just approved, updates sync automatically or try again in a few seconds.'
             );
           } else if (showFeedback) {
             setAuthStatusFeedback(null);
@@ -486,6 +519,82 @@ export default function App() {
       document.removeEventListener('visibilitychange', handleVisibilityRefresh);
     };
   }, [customerCardId, currentUser?.email, currentUser?.uid, authReady, refreshAuthorization]);
+
+  // Real-time Firestore synchronization:
+  // - Non-master users listen to their own /admins/{email} and /users/{uid} docs for live approval, revocation, and card reassignment
+  // - Master Admin listens to /users with requestStatus so incoming Sub-Admin requests appear immediately
+  useEffect(() => {
+    if (customerCardId || !authReady || !firebaseAuthActive || !auth.currentUser || !currentUser?.email) {
+      return;
+    }
+    const cleanEmail = currentUser.email.toLowerCase().trim();
+    const isPrimary = cleanEmail === '66shashwatkumar66@gmail.com';
+
+    if (isPrimary) {
+      const reqQuery = query(
+        collection(db, 'users'),
+        where('requestStatus', 'in', ['pending', 'approved', 'rejected'])
+      );
+      const unsubReqs = onSnapshot(
+        reqQuery,
+        (snap) => {
+          const map = new Map<string, UserProfile>();
+          snap.forEach((d) => {
+            const u = d.data() as UserProfile;
+            if (u && u.email && u.email.toLowerCase().trim() !== '66shashwatkumar66@gmail.com') {
+              const emailKey = u.email.toLowerCase().trim();
+              const prev = map.get(emailKey);
+              const uTime = new Date(u.requestUpdatedAt || u.requestedAt || u.lastLoginAt || 0).getTime();
+              const pTime = prev ? new Date(prev.requestUpdatedAt || prev.requestedAt || prev.lastLoginAt || 0).getTime() : -1;
+              if (!prev || uTime >= pTime) {
+                map.set(emailKey, { ...u, uid: d.id, email: emailKey });
+              }
+            }
+          });
+          setAdminRequests(
+            Array.from(map.values()).sort((a, b) => {
+              const ta = new Date(a.requestedAt || a.createdAt || 0).getTime();
+              const tb = new Date(b.requestedAt || b.createdAt || 0).getTime();
+              return tb - ta;
+            })
+          );
+        },
+        () => {
+          // non-fatal listener notice
+        }
+      );
+      return () => unsubReqs();
+    }
+
+    let firstAdminSnap = true;
+    let firstUserSnap = true;
+    const unsubAdmin = onSnapshot(
+      doc(db, 'admins', cleanEmail),
+      () => {
+        if (firstAdminSnap) {
+          firstAdminSnap = false;
+          return;
+        }
+        refreshAuthorization({ force: true, quiet: true, fresh: true });
+      },
+      () => {}
+    );
+    const unsubUser = onSnapshot(
+      doc(db, 'users', auth.currentUser.uid),
+      () => {
+        if (firstUserSnap) {
+          firstUserSnap = false;
+          return;
+        }
+        refreshAuthorization({ force: true, quiet: true, fresh: true });
+      },
+      () => {}
+    );
+    return () => {
+      unsubAdmin();
+      unsubUser();
+    };
+  }, [customerCardId, authReady, firebaseAuthActive, currentUser?.email, currentUser?.uid, refreshAuthorization]);
 
   // Guard Master-only tabs against Sub-Admin or simulated Sub-Admin navigation
   useEffect(() => {
@@ -599,11 +708,21 @@ export default function App() {
       if (updated) {
         const nextEmailLower = updated.email.toLowerCase().trim();
         const prevEmailLower = (existingHint?.email || updated.email).toLowerCase().trim();
+        const nextSet = new Set((updated.assignedCardIds || []).map((cid) => cid.toLowerCase()));
         setAdmins((prev) => {
           const exists = prev.some((a) => a.id === updated.id);
-          return exists
+          const list = exists
             ? prev.map((a) => (a.id === updated.id ? updated : a))
             : [...prev.filter((a) => a.email.toLowerCase().trim() !== nextEmailLower), updated];
+          // Reflect exclusive card reassignment immediately in local state
+          if (updated.role === 'restricted' && nextSet.size > 0) {
+            return list.map((a) =>
+              a.id !== updated.id && a.role === 'restricted'
+                ? { ...a, assignedCardIds: (a.assignedCardIds || []).filter((cid) => !nextSet.has(cid.toLowerCase())) }
+                : a
+            );
+          }
+          return list;
         });
         if (activeAdmin && activeAdmin.id === updated.id) {
           setActiveAdmin(updated);
@@ -627,12 +746,26 @@ export default function App() {
                 assignedCardIds: [],
               };
             }
+            if (updated.role === 'restricted' && nextSet.size > 0 && Array.isArray(u.assignedCardIds)) {
+              return {
+                ...u,
+                assignedCardIds: u.assignedCardIds.filter((cid) => !nextSet.has(cid.toLowerCase())),
+              };
+            }
             return u;
           })
         );
-        const nextSet = new Set((updated.assignedCardIds || []).map((cid) => cid.toLowerCase()));
         setCards((prev) =>
           prev.map((c) => {
+            if (updated.role === 'restricted' && nextSet.has(c.id.toLowerCase())) {
+              return {
+                ...c,
+                assignedToEmail: nextEmailLower,
+                assignedToUid: updated.id,
+                assignedToName: updated.name,
+                updatedAt: updated.updatedAt,
+              };
+            }
             if (!nextSet.has(c.id.toLowerCase())) {
               const cEmail = (c.assignedToEmail || '').trim().toLowerCase();
               const cUid = (c.assignedToUid || '').trim();
@@ -654,7 +787,19 @@ export default function App() {
       const created = await createAdmin(adminData, caller);
       if (created) {
         const createdEmailLower = created.email.toLowerCase().trim();
-        setAdmins((prev) => [...prev.filter((a) => a.email.toLowerCase().trim() !== createdEmailLower), created]);
+        const createdSet = new Set((created.assignedCardIds || []).map((cid) => cid.toLowerCase()));
+        setAdmins((prev) => {
+          const base = prev.filter((a) => a.email.toLowerCase().trim() !== createdEmailLower);
+          const stripped =
+            created.role === 'restricted' && createdSet.size > 0
+              ? base.map((a) =>
+                  a.role === 'restricted'
+                    ? { ...a, assignedCardIds: (a.assignedCardIds || []).filter((cid) => !createdSet.has(cid.toLowerCase())) }
+                    : a
+                )
+              : base;
+          return [...stripped, created];
+        });
         setUsers((prev) =>
           prev.map((u) =>
             u.email.toLowerCase().trim() === createdEmailLower
@@ -671,7 +816,11 @@ export default function App() {
       }
     }
     lastRefreshAtRef.current = 0;
-    await Promise.all([loadAdminsData(currentUser), loadUsersData()]);
+    await Promise.all([
+      loadAdminsData(currentUser),
+      loadUsersData(),
+      loadAdminRequestsData({ id: effectiveActiveAdmin.id, email: currentUser?.email }),
+    ]);
   };
 
   const handleDeleteAdmin = async (adminId: string) => {
@@ -687,7 +836,93 @@ export default function App() {
       localStorage.removeItem('3dbysd_impersonated_admin_id');
     }
     lastRefreshAtRef.current = 0;
-    await Promise.all([loadAdminsData(currentUser), loadUsersData()]);
+    await Promise.all([
+      loadAdminsData(currentUser),
+      loadUsersData(),
+      loadAdminRequestsData({ id: effectiveActiveAdmin.id, email: currentUser?.email }),
+    ]);
+  };
+
+  const handleApproveAdminRequest = async (reqUser: UserProfile) => {
+    const caller = { id: effectiveActiveAdmin.id, email: currentUser?.email };
+    await approveAdminRequest(reqUser, caller);
+    lastRefreshAtRef.current = 0;
+    await Promise.all([
+      loadAdminsData(currentUser),
+      loadUsersData(),
+      loadAdminRequestsData(caller),
+    ]);
+  };
+
+  const handleRejectAdminRequest = async (reqUser: UserProfile) => {
+    const caller = { id: effectiveActiveAdmin.id, email: currentUser?.email };
+    await rejectAdminRequest(reqUser, caller);
+    lastRefreshAtRef.current = 0;
+    await Promise.all([
+      loadAdminsData(currentUser),
+      loadUsersData(),
+      loadAdminRequestsData(caller),
+    ]);
+  };
+
+  const handleSubmitAccessRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentUser || submittingRequest) return;
+    setSubmittingRequest(true);
+    setRequestSubmitFeedback(null);
+    try {
+      const saved = await submitAdminAccessRequest({
+        uid: currentUser.uid,
+        email: currentUser.email,
+        displayName: currentUser.displayName,
+        photoURL: currentUser.photoURL,
+        note: requestNoteInput,
+      });
+      setCurrentUser((prev) => {
+        const next = prev
+          ? {
+              ...prev,
+              requestStatus: saved.requestStatus,
+              requestedAt: saved.requestedAt,
+              requestUpdatedAt: saved.requestUpdatedAt,
+              requestNote: saved.requestNote,
+            }
+          : prev;
+        if (next) localStorage.setItem('3dbysd_current_user', JSON.stringify(next));
+        return next;
+      });
+      setSessionAuth((prev) =>
+        prev
+          ? {
+              ...prev,
+              requestStatus: saved.requestStatus,
+              requestedAt: saved.requestedAt,
+              requestUpdatedAt: saved.requestUpdatedAt,
+              requestNote: saved.requestNote,
+            }
+          : {
+              authorized: false,
+              revoked: false,
+              role: 'member',
+              requestStatus: saved.requestStatus,
+              requestedAt: saved.requestedAt,
+              requestUpdatedAt: saved.requestUpdatedAt,
+              requestNote: saved.requestNote,
+            }
+      );
+      setRequestNoteInput('');
+      setRequestSubmitFeedback({
+        type: 'success',
+        text: 'Your Sub-Admin access request has been saved and sent to the Master Administrator for approval.',
+      });
+    } catch (err: any) {
+      setRequestSubmitFeedback({
+        type: 'error',
+        text: formatApiError(err, 'Failed to submit Sub-Admin access request.'),
+      });
+    } finally {
+      setSubmittingRequest(false);
+    }
   };
 
   const handleRetryCustomerLookup = () => {
@@ -817,6 +1052,11 @@ export default function App() {
   // Block revoked accounts OR unauthorized Viewers with 0 allocated cards.
   // Verified Sub-Admins (0 or more assigned cards) enter the dashboard cleanly.
   if (!isMasterUser && (isRevokedUser || (!authorizedAdmin && !isAuthorizedUserRole && userAllocatedCards.length === 0))) {
+    const effectiveRequestStatus =
+      sessionAuth?.requestStatus || currentUserProfile?.requestStatus || currentUser.requestStatus;
+    const effectiveRequestedAt =
+      sessionAuth?.requestedAt || currentUserProfile?.requestedAt || currentUser.requestedAt;
+
     return (
       <div className="min-h-screen bg-[#F8FAFC] text-slate-900 flex flex-col justify-between antialiased">
         <header className="border-b border-slate-200 bg-white/90 backdrop-blur-md px-4 py-3.5">
@@ -837,22 +1077,38 @@ export default function App() {
           </div>
         </header>
 
-        <main className="max-w-md w-full mx-auto px-4 py-12 flex flex-col justify-center space-y-5 flex-1">
+        <main className="max-w-md w-full mx-auto px-4 py-10 flex flex-col justify-center space-y-5 flex-1">
           <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200 shadow-xl text-center space-y-4">
             <div className={`w-14 h-14 rounded-2xl flex items-center justify-center mx-auto border ${
-              isRevokedUser
+              isRevokedUser || effectiveRequestStatus === 'rejected'
                 ? 'bg-red-50 text-red-600 border-red-200'
                 : 'bg-amber-50 text-amber-600 border-amber-200'
             }`}>
-              <Lock className={`w-7 h-7 ${isRevokedUser ? 'text-red-600' : 'text-amber-600'}`} />
+              <Lock className={`w-7 h-7 ${isRevokedUser || effectiveRequestStatus === 'rejected' ? 'text-red-600' : 'text-amber-600'}`} />
             </div>
 
             <div className="space-y-1.5">
               <h2 className="text-lg font-extrabold text-slate-900">
-                {isRevokedUser ? 'Administrator Access Revoked' : 'Access Pending Authorization'}
+                {isRevokedUser
+                  ? 'Administrator Access Revoked'
+                  : effectiveRequestStatus === 'rejected'
+                  ? 'Access Request Rejected'
+                  : 'Access Pending Authorization'}
               </h2>
-              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100 text-slate-700 text-xs font-mono font-medium">
-                <span>{currentUser.email}</span>
+              <div className="flex items-center justify-center gap-2 flex-wrap">
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100 text-slate-700 text-xs font-mono font-medium">
+                  <span>{currentUser.email}</span>
+                </div>
+                {!isRevokedUser && effectiveRequestStatus === 'pending' && (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-50 border border-amber-200 text-amber-800 text-[11px] font-bold">
+                    Pending Approval
+                  </span>
+                )}
+                {!isRevokedUser && effectiveRequestStatus === 'rejected' && (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-red-50 border border-red-200 text-red-700 text-[11px] font-bold">
+                    Rejected
+                  </span>
+                )}
               </div>
             </div>
 
@@ -860,6 +1116,16 @@ export default function App() {
               {isRevokedUser ? (
                 <>
                   Your administrator access has been revoked by the <strong>Master Administrator</strong>. You no longer have access to the admin portal or protected management resources.
+                </>
+              ) : effectiveRequestStatus === 'pending' ? (
+                <>
+                  Your Google account has submitted a <strong>Sub-Admin access request</strong>
+                  {effectiveRequestedAt ? ` on ${new Date(effectiveRequestedAt).toLocaleString()}` : ''}.
+                  Once the <strong>Master Administrator</strong> approves your request, this page will unlock automatically.
+                </>
+              ) : effectiveRequestStatus === 'rejected' ? (
+                <>
+                  Your previous Sub-Admin access request was rejected by the <strong>Master Administrator</strong>. You can contact the Master Admin or submit a new request below.
                 </>
               ) : (
                 <>
@@ -869,15 +1135,56 @@ export default function App() {
               )}
             </p>
 
-            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl text-left text-xs text-slate-600 space-y-1.5">
-              <div className="font-bold text-slate-800 flex items-center gap-1.5">
-                <ShieldCheck className="w-4 h-4 text-[#1A73E8]" />
-                <span>How to gain access:</span>
+            {!isRevokedUser && (
+              <form
+                onSubmit={handleSubmitAccessRequest}
+                className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl text-left text-xs text-slate-600 space-y-2.5"
+              >
+                <div className="font-bold text-slate-800 flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-[#1A73E8]" />
+                  <span>
+                    {effectiveRequestStatus === 'pending'
+                      ? 'Update Request Note (Optional)'
+                      : effectiveRequestStatus === 'rejected'
+                      ? 'Re-submit Sub-Admin Access Request'
+                      : 'Request Sub-Admin Access'}
+                  </span>
+                </div>
+                <input
+                  type="text"
+                  value={requestNoteInput}
+                  onChange={(e) => setRequestNoteInput(e.target.value)}
+                  maxLength={250}
+                  placeholder="Optional note (e.g. your business or stand location)"
+                  className="w-full px-3 py-2 text-xs bg-white border border-slate-200 rounded-xl text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#1A73E8]"
+                />
+                <button
+                  type="submit"
+                  disabled={submittingRequest}
+                  className="w-full py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-colors disabled:opacity-50 cursor-pointer"
+                >
+                  {submittingRequest
+                    ? 'Submitting Request...'
+                    : effectiveRequestStatus === 'pending'
+                    ? 'Update Access Request'
+                    : effectiveRequestStatus === 'rejected'
+                    ? 'Re-submit Admin Access Request'
+                    : 'Request Admin Access'}
+                </button>
+              </form>
+            )}
+
+            {requestSubmitFeedback && (
+              <div
+                className={`p-2.5 rounded-xl text-[11px] font-medium border ${
+                  requestSubmitFeedback.type === 'success'
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                    : 'bg-red-50 border-red-200 text-red-800'
+                }`}
+              >
+                {requestSubmitFeedback.text}
               </div>
-              <p className="text-[11px] leading-relaxed">
-                Please contact the <strong>Master Administrator</strong> to authorize your email as an administrator or allocate 3D stand QR codes to your account.
-              </p>
-            </div>
+            )}
 
             {authStatusFeedback && (
               <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-800 font-medium">
@@ -885,12 +1192,12 @@ export default function App() {
               </div>
             )}
 
-            <div className="pt-2 flex flex-col gap-2">
+            <div className="pt-1 flex flex-col gap-2">
               {!isRevokedUser && (
                 <button
                   type="button"
                   disabled={checkingAuthStatus}
-                  onClick={() => refreshAuthorization({ force: true, quiet: true, showFeedback: true })}
+                  onClick={() => refreshAuthorization({ force: true, quiet: true, showFeedback: true, fresh: true })}
                   className="w-full py-2.5 px-4 rounded-xl bg-[#1A73E8] hover:bg-[#1557B0] text-white text-xs font-bold transition-colors flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${checkingAuthStatus ? 'animate-spin' : ''}`} />
@@ -1026,6 +1333,25 @@ export default function App() {
 
       {/* Main Admin Workspace Viewport - Optimized container for PC and mobile */}
       <main className="flex-1 max-w-5xl lg:max-w-6xl w-full mx-auto px-3 sm:px-6 py-4 sm:py-6 space-y-5 max-w-full overflow-x-hidden min-w-0">
+        {/* Firebase Session Sync Notice (when Master Admin signed in via local fallback without live Google OAuth token) */}
+        {authReady && isMaster && !firebaseAuthActive && (
+          <div className="p-3.5 bg-blue-50 border border-blue-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-2xs">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <AlertCircle className="w-4 h-4 text-[#1A73E8] shrink-0" />
+              <span className="text-blue-950 font-medium">
+                Firebase Google Auth session is not active on this browser. Sign out and use <strong>Sign in with Google</strong> to enable live Firestore cloud sync across devices.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={handleSignOut}
+              className="px-3 py-1.5 rounded-xl bg-[#1A73E8] hover:bg-[#1557B0] text-white text-xs font-bold shrink-0 self-start sm:self-auto cursor-pointer"
+            >
+              Sign in with Google
+            </button>
+          </div>
+        )}
+
         {/* Restricted Admin Notice Banner if logged in as sub-admin or in Sub-Admin Mode */}
         {isInSubAdminMode && (
           <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-xs">
@@ -1275,6 +1601,9 @@ export default function App() {
             onSaveAdmin={handleSaveAdmin}
             onDeleteAdmin={handleDeleteAdmin}
             onRefreshCards={loadCards}
+            adminRequests={adminRequests}
+            onApproveRequest={handleApproveAdminRequest}
+            onRejectRequest={handleRejectAdminRequest}
           />
         )}
 

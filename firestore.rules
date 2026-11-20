@@ -160,7 +160,12 @@ service cloud.firestore {
         data.email.size() > 0 &&
         data.email.size() <= 256 &&
         (!('role' in data) || (data.role is string && (data.role == 'master' || data.role == 'restricted' || data.role == 'member'))) &&
-        (!('accessRevoked' in data) || data.accessRevoked is bool);
+        (!('accessRevoked' in data) || data.accessRevoked is bool) &&
+        (!('requestStatus' in data) || data.requestStatus == null || (data.requestStatus is string && (data.requestStatus == 'pending' || data.requestStatus == 'approved' || data.requestStatus == 'rejected'))) &&
+        (!('requestedAt' in data) || data.requestedAt == null || (data.requestedAt is string && data.requestedAt.size() <= 64)) &&
+        (!('requestUpdatedAt' in data) || data.requestUpdatedAt == null || (data.requestUpdatedAt is string && data.requestUpdatedAt.size() <= 64)) &&
+        (!('requestReviewedBy' in data) || data.requestReviewedBy == null || (data.requestReviewedBy is string && data.requestReviewedBy.size() <= 256)) &&
+        (!('requestNote' in data) || data.requestNote == null || (data.requestNote is string && data.requestNote.size() <= 300));
     }
 
     function isValidAd(data) {
@@ -312,6 +317,25 @@ service cloud.firestore {
         (
           request.auth.uid == userId &&
           incoming().get('accessRevoked', false) == false &&
+          !('requestReviewedBy' in incoming()) &&
+          (
+            !('requestStatus' in incoming()) ||
+            incoming().requestStatus == null ||
+            incoming().requestStatus == 'pending' ||
+            (
+              incoming().requestStatus == 'approved' &&
+              hasVerifiedEmail() &&
+              exists(/databases/$(database)/documents/admins/$(authEmailLower()))
+            )
+          ) &&
+          (
+            incoming().get('assignedCardIds', []) == [] ||
+            (
+              hasVerifiedEmail() &&
+              exists(/databases/$(database)/documents/admins/$(authEmailLower())) &&
+              incoming().get('assignedCardIds', []) == get(/databases/$(database)/documents/admins/$(authEmailLower())).data.get('assignedCardIds', [])
+            )
+          ) &&
           (
             incoming().get('role', 'member') == 'member' ||
             (
@@ -327,6 +351,27 @@ service cloud.firestore {
         (
           request.auth.uid == userId &&
           incoming().get('accessRevoked', false) == existing().get('accessRevoked', false) &&
+          incoming().get('requestReviewedBy', '') == existing().get('requestReviewedBy', '') &&
+          (
+            incoming().get('assignedCardIds', []) == existing().get('assignedCardIds', []) ||
+            (
+              existing().get('accessRevoked', false) == false &&
+              hasVerifiedEmail() &&
+              exists(/databases/$(database)/documents/admins/$(authEmailLower())) &&
+              incoming().get('assignedCardIds', []) == get(/databases/$(database)/documents/admins/$(authEmailLower())).data.get('assignedCardIds', [])
+            )
+          ) &&
+          (
+            !('requestStatus' in incoming()) ||
+            incoming().get('requestStatus', '') == existing().get('requestStatus', '') ||
+            (existing().get('accessRevoked', false) == false && incoming().requestStatus == 'pending') ||
+            (
+              existing().get('accessRevoked', false) == false &&
+              incoming().requestStatus == 'approved' &&
+              hasVerifiedEmail() &&
+              exists(/databases/$(database)/documents/admins/$(authEmailLower()))
+            )
+          ) &&
           (
             incoming().get('role', 'member') == existing().get('role', 'member') ||
             (
