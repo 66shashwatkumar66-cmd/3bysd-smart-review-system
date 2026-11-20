@@ -33,6 +33,30 @@ export function clearSessionCaches(): void {
   }
 }
 
+export function formatApiError(err: unknown, fallback: string = 'An unexpected error occurred.'): string {
+  const raw = err instanceof Error ? err.message : typeof err === 'string' ? err : '';
+  const trimmed = raw.trim();
+  if (!trimmed) return fallback;
+
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed.error === 'string') {
+        const op = parsed.operationType ? String(parsed.operationType) : 'write';
+        const path = parsed.path ? ` on ${parsed.path}` : '';
+        if (parsed.error.toLowerCase().includes('permission-denied') || parsed.error.toLowerCase().includes('insufficient permissions')) {
+          return `Firestore permission denied during ${op}${path}. Verify you are signed in with Google as Master Admin.`;
+        }
+        return `Database ${op} error${path}: ${parsed.error}`;
+      }
+    } catch {
+      // fall through
+    }
+  }
+
+  return trimmed;
+}
+
 /**
  * Deeply removes all keys with `undefined` or `null` values.
  * Firestore strictly rejects documents containing undefined values with:
@@ -168,38 +192,39 @@ export async function fetchCards(caller?: CallerIdentity): Promise<CardRecord[]>
     // Restricted Sub-Admin or member: ONLY fetch explicitly assigned card IDs or owner-matched docs
     const fetchedMap = new Map<string, CardRecord>();
     const explicitIds = Array.from(new Set((caller.assignedCardIds || []).map((id) => id.trim()).filter(Boolean)));
-    for (const cid of explicitIds) {
-      try {
-        const snap = await getDoc(doc(db, CARDS_COLLECTION, cid));
-        if (snap.exists()) {
-          const cardData = snap.data() as CardRecord;
-          fetchedMap.set(cardData.id.toLowerCase(), cardData);
-        }
-      } catch {
-        // ignore
-      }
-    }
-
     const colRef = collection(db, CARDS_COLLECTION);
-    const scopedQueries = [];
+    const scopedQueries: Promise<any>[] = explicitIds.map((cid) =>
+      getDoc(doc(db, CARDS_COLLECTION, cid)).then((snap) => ({ kind: 'doc' as const, snap }))
+    );
     const authEmail = auth.currentUser.email?.trim() || '';
     if (cleanEmail) {
-      scopedQueries.push(getDocs(query(colRef, where('assignedToEmail', '==', cleanEmail))));
+      scopedQueries.push(
+        getDocs(query(colRef, where('assignedToEmail', '==', cleanEmail))).then((snap) => ({ kind: 'query' as const, snap }))
+      );
     }
     if (authEmail && authEmail !== cleanEmail) {
-      scopedQueries.push(getDocs(query(colRef, where('assignedToEmail', '==', authEmail))));
+      scopedQueries.push(
+        getDocs(query(colRef, where('assignedToEmail', '==', authEmail))).then((snap) => ({ kind: 'query' as const, snap }))
+      );
     }
-    const lookupUids = Array.from(new Set([auth.currentUser.uid, caller.id, caller.uid].filter(Boolean) as string[]));
-    for (const uidVal of lookupUids) {
-      scopedQueries.push(getDocs(query(colRef, where('assignedToUid', '==', uidVal))));
-    }
+    scopedQueries.push(
+      getDocs(query(colRef, where('assignedToUid', '==', auth.currentUser.uid))).then((snap) => ({ kind: 'query' as const, snap }))
+    );
+
     const queryResults = await Promise.allSettled(scopedQueries);
     for (const res of queryResults) {
       if (res.status === 'fulfilled') {
-        res.value.forEach((docSnap) => {
-          const cardData = docSnap.data() as CardRecord;
-          fetchedMap.set(cardData.id.toLowerCase(), cardData);
-        });
+        if (res.value.kind === 'doc') {
+          if (res.value.snap.exists()) {
+            const cardData = res.value.snap.data() as CardRecord;
+            fetchedMap.set(cardData.id.toLowerCase(), cardData);
+          }
+        } else {
+          res.value.snap.forEach((docSnap: any) => {
+            const cardData = docSnap.data() as CardRecord;
+            fetchedMap.set(cardData.id.toLowerCase(), cardData);
+          });
+        }
       }
     }
     firestoreCards = Array.from(fetchedMap.values());
@@ -520,11 +545,11 @@ export async function assignCard(
     console.warn(`Server API assign card ${id} sync notice:`, serverErr);
   }
 
-  if (firestoreWriteError && !serverCard) {
-    throw firestoreWriteError;
+  if (firestoreWriteError && (!serverCard || (isMaster && auth.currentUser?.email?.toLowerCase().trim() === PRIMARY_MASTER_EMAIL))) {
+    handleFirestoreError(firestoreWriteError, OperationType.WRITE, `${CARDS_COLLECTION}/${id}`);
   }
 
-  // 2b. When Master Admin changes/clears ownership, sync Firestore /admins & /users assignedCardIds immediately
+  // 2b. When Master Admin changes/clears ownership, sync Firestore /admins & /users assignedCardIds via targeted queries + writeBatch
   if (
     isMaster &&
     auth.currentUser &&
@@ -537,9 +562,40 @@ export async function assignCard(
     const cardIdLower = id.toLowerCase();
 
     try {
-      const adminsSnap = await getDocs(collection(db, ADMINS_COLLECTION));
-      const nextOwnerIsRestrictedAdmin = adminsSnap.docs.some((d) => {
-        const aData = d.data() as AdminUser;
+      const adminQueries: Promise<any>[] = [
+        getDocs(query(collection(db, ADMINS_COLLECTION), where('assignedCardIds', 'array-contains', id))),
+      ];
+      const userQueries: Promise<any>[] = [
+        getDocs(query(collection(db, USERS_COLLECTION), where('assignedCardIds', 'array-contains', id))),
+      ];
+      if (nextEmail) {
+        adminQueries.push(getDocs(query(collection(db, ADMINS_COLLECTION), where('email', '==', nextEmail))));
+        userQueries.push(getDocs(query(collection(db, USERS_COLLECTION), where('email', '==', nextEmail))));
+      }
+      if (prevAssignedEmail && prevAssignedEmail !== nextEmail) {
+        adminQueries.push(getDocs(query(collection(db, ADMINS_COLLECTION), where('email', '==', prevAssignedEmail))));
+        userQueries.push(getDocs(query(collection(db, USERS_COLLECTION), where('email', '==', prevAssignedEmail))));
+      }
+
+      const [adminRes, userRes] = await Promise.all([
+        Promise.allSettled(adminQueries),
+        Promise.allSettled(userQueries),
+      ]);
+
+      const adminDocsMap = new Map<string, AdminUser>();
+      for (const r of adminRes) {
+        if (r.status === 'fulfilled') {
+          r.value.forEach((d: any) => adminDocsMap.set(d.id, d.data() as AdminUser));
+        }
+      }
+      const userDocsMap = new Map<string, UserProfile>();
+      for (const r of userRes) {
+        if (r.status === 'fulfilled') {
+          r.value.forEach((d: any) => userDocsMap.set(d.id, d.data() as UserProfile));
+        }
+      }
+
+      const nextOwnerIsRestrictedAdmin = Array.from(adminDocsMap.values()).some((aData) => {
         const aEmail = (aData.email || '').trim().toLowerCase();
         return (
           aData.role === 'restricted' &&
@@ -547,9 +603,11 @@ export async function assignCard(
         );
       });
 
-      for (const aDoc of adminsSnap.docs) {
-        const aData = aDoc.data() as AdminUser;
-        if (aData.role !== 'restricted') continue;
+      const batch = writeBatch(db);
+      let hasBatchOps = false;
+
+      adminDocsMap.forEach((aData, docId) => {
+        if (aData.role !== 'restricted') return;
         const aEmail = (aData.email || '').trim().toLowerCase();
         const isPrev = (prevAssignedEmail && aEmail === prevAssignedEmail) || (prevAssignedUid && aData.id === prevAssignedUid);
         const isNext = (nextEmail && aEmail === nextEmail) || (nextUid && aData.id === nextUid);
@@ -561,29 +619,29 @@ export async function assignCard(
           (isPrev || ownerCleared || nextOwnerIsRestrictedAdmin) &&
           curIds.some((cid) => cid.toLowerCase() === cardIdLower)
         ) {
-          await setDoc(
-            doc(db, ADMINS_COLLECTION, aDoc.id),
+          batch.set(
+            doc(db, ADMINS_COLLECTION, docId),
             cleanForFirestore({
               assignedCardIds: curIds.filter((cid) => cid.toLowerCase() !== cardIdLower),
               updatedAt: now,
             }),
             { merge: true }
-          ).catch(() => {});
+          );
+          hasBatchOps = true;
         } else if (isNext && !curIds.some((cid) => cid.toLowerCase() === cardIdLower)) {
-          await setDoc(
-            doc(db, ADMINS_COLLECTION, aDoc.id),
+          batch.set(
+            doc(db, ADMINS_COLLECTION, docId),
             cleanForFirestore({
               assignedCardIds: [...curIds, id],
               updatedAt: now,
             }),
             { merge: true }
-          ).catch(() => {});
+          );
+          hasBatchOps = true;
         }
-      }
+      });
 
-      const usersSnap = await getDocs(collection(db, USERS_COLLECTION));
-      for (const uDoc of usersSnap.docs) {
-        const uData = uDoc.data() as UserProfile;
+      userDocsMap.forEach((uData, docId) => {
         const uEmail = (uData.email || '').trim().toLowerCase();
         const isPrev = (prevAssignedEmail && uEmail === prevAssignedEmail) || (prevAssignedUid && uData.uid === prevAssignedUid);
         const isNext = (nextEmail && uEmail === nextEmail) || (nextUid && uData.uid === nextUid);
@@ -595,22 +653,28 @@ export async function assignCard(
           (isPrev || ownerCleared || (nextOwnerIsRestrictedAdmin && uData.role === 'restricted')) &&
           curIds.some((cid) => cid.toLowerCase() === cardIdLower)
         ) {
-          await setDoc(
-            doc(db, USERS_COLLECTION, uDoc.id),
+          batch.set(
+            doc(db, USERS_COLLECTION, docId),
             cleanForFirestore({
               assignedCardIds: curIds.filter((cid) => cid.toLowerCase() !== cardIdLower),
             }),
             { merge: true }
-          ).catch(() => {});
+          );
+          hasBatchOps = true;
         } else if (isNext && !uData.accessRevoked && !curIds.some((cid) => cid.toLowerCase() === cardIdLower)) {
-          await setDoc(
-            doc(db, USERS_COLLECTION, uDoc.id),
+          batch.set(
+            doc(db, USERS_COLLECTION, docId),
             cleanForFirestore({
               assignedCardIds: [...curIds, id],
             }),
             { merge: true }
-          ).catch(() => {});
+          );
+          hasBatchOps = true;
         }
+      });
+
+      if (hasBatchOps) {
+        await batch.commit();
       }
     } catch (syncErr) {
       console.warn('Firestore card ownership sync notice:', syncErr);
@@ -892,53 +956,81 @@ export async function fetchAdmins(callerEmail?: string, callerUid?: string): Pro
         }
       });
     } catch {
-      // Non-master users do not have collection list permission; query their own admin/user docs directly
+      // Non-master users do not have collection list permission; query their own admin/user docs by ID and normalized email
+      const authEmail = (auth.currentUser.email || callerEmail || '').toLowerCase().trim();
       const lookups = [
         callerEmail ? callerEmail.toLowerCase().trim() : '',
         callerUid ? callerUid.trim() : '',
-        auth.currentUser.email ? auth.currentUser.email.toLowerCase().trim() : '',
+        authEmail,
         auth.currentUser.uid,
       ].filter(Boolean);
-      for (const key of Array.from(new Set(lookups))) {
-        try {
-          const snap = await getDoc(doc(db, ADMINS_COLLECTION, key));
-          if (snap.exists()) {
-            const data = snap.data() as AdminUser;
-            if (data && data.email) {
-              firestoreAdmins.push({ ...data, email: data.email.toLowerCase().trim() });
-            }
+
+      const [directAdminSnaps, emailAdminQuerySnap, uidUserSnap, emailUserQuerySnap] = await Promise.all([
+        Promise.all(
+          Array.from(new Set(lookups)).map((key) =>
+            getDoc(doc(db, ADMINS_COLLECTION, key)).catch(() => null)
+          )
+        ),
+        authEmail
+          ? getDocs(query(collection(db, ADMINS_COLLECTION), where('email', '==', authEmail))).catch(() => null)
+          : Promise.resolve(null),
+        getDoc(doc(db, USERS_COLLECTION, auth.currentUser.uid)).catch(() => null),
+        authEmail
+          ? getDocs(query(collection(db, USERS_COLLECTION), where('email', '==', authEmail))).catch(() => null)
+          : Promise.resolve(null),
+      ]);
+
+      for (const snap of directAdminSnaps) {
+        if (snap?.exists()) {
+          const data = snap.data() as AdminUser;
+          if (data && data.email) {
+            firestoreAdmins.push({ ...data, email: data.email.toLowerCase().trim() });
           }
-        } catch {
-          // ignore individual lookup denial
         }
       }
-
-      // Check user's own /users/{uid} doc in case Master Admin promoted them there without an alias doc
-      if (firestoreAdmins.length === 0) {
-        try {
-          const userSnap = await getDoc(doc(db, USERS_COLLECTION, auth.currentUser.uid));
-          if (userSnap.exists()) {
-            const uData = userSnap.data() as UserProfile;
-            if (!uData.accessRevoked && (uData.role === 'restricted' || uData.role === 'master')) {
-              firestoreAdmins.push({
-                id: uData.uid,
-                email: uData.email.toLowerCase().trim(),
-                name: uData.displayName || uData.email.split('@')[0],
-                role: uData.role,
-                assignedCardIds: Array.isArray(uData.assignedCardIds) ? uData.assignedCardIds : [],
-                permissions: {
-                  canEditCards: true,
-                  canToggleAi: true,
-                  canExportCsv: uData.role === 'master',
-                  canCreateCards: uData.role === 'master',
-                },
-                createdAt: uData.createdAt || new Date().toISOString(),
-                updatedAt: uData.lastLoginAt || new Date().toISOString(),
-              });
-            }
+      if (emailAdminQuerySnap) {
+        emailAdminQuerySnap.forEach((d) => {
+          const data = d.data() as AdminUser;
+          if (data && data.email) {
+            firestoreAdmins.push({ ...data, email: data.email.toLowerCase().trim() });
           }
-        } catch {
-          // ignore
+        });
+      }
+      firestoreAdmins = deduplicateAdmins(firestoreAdmins);
+
+      // Collect matched /users docs to check revocation or user-promoted Sub-Admin role
+      const matchedUsers: UserProfile[] = [];
+      if (uidUserSnap?.exists()) {
+        matchedUsers.push(uidUserSnap.data() as UserProfile);
+      }
+      if (emailUserQuerySnap) {
+        emailUserQuerySnap.forEach((d) => {
+          matchedUsers.push(d.data() as UserProfile);
+        });
+      }
+      const isRevoked = matchedUsers.some((u) => Boolean(u.accessRevoked));
+
+      // Check user's own /users docs in case Master Admin promoted them there without an admin alias doc
+      if (firestoreAdmins.length === 0 && !isRevoked) {
+        const promotedUser = matchedUsers.find(
+          (u) => !u.accessRevoked && (u.role === 'restricted' || u.role === 'master')
+        );
+        if (promotedUser) {
+          firestoreAdmins.push({
+            id: promotedUser.uid,
+            email: promotedUser.email.toLowerCase().trim(),
+            name: promotedUser.displayName || promotedUser.email.split('@')[0],
+            role: promotedUser.role,
+            assignedCardIds: Array.isArray(promotedUser.assignedCardIds) ? promotedUser.assignedCardIds : [],
+            permissions: {
+              canEditCards: true,
+              canToggleAi: true,
+              canExportCsv: promotedUser.role === 'master',
+              canCreateCards: promotedUser.role === 'master',
+            },
+            createdAt: promotedUser.createdAt || new Date().toISOString(),
+            updatedAt: promotedUser.lastLoginAt || new Date().toISOString(),
+          });
         }
       }
     }
@@ -1040,7 +1132,7 @@ export async function syncAdminLookupDocs(adminsList: AdminUser[]): Promise<void
   if (!auth.currentUser || auth.currentUser.email?.toLowerCase().trim() !== PRIMARY_MASTER_EMAIL) {
     return;
   }
-  let usersByEmail = new Map<string, UserProfile>();
+  const usersByEmail = new Map<string, UserProfile>();
   try {
     const usersSnap = await getDocs(collection(db, USERS_COLLECTION));
     usersSnap.forEach((uDoc) => {
@@ -1053,38 +1145,53 @@ export async function syncAdminLookupDocs(adminsList: AdminUser[]): Promise<void
     // ignore
   }
 
-  for (const adm of adminsList) {
-    if (!adm?.id || !adm?.email || adm.aliasOf) continue;
-    const cleanEmail = adm.email.toLowerCase().trim();
-    const normalizedAdmin: AdminUser = {
-      ...adm,
-      email: cleanEmail,
-      permissions: {
-        canEditCards: adm.permissions?.canEditCards ?? true,
-        canToggleAi: adm.permissions?.canToggleAi ?? true,
-        canExportCsv: adm.role === 'master' ? true : (adm.permissions?.canExportCsv ?? false),
-        canCreateCards: adm.role === 'master',
-      },
-    };
-    try {
-      await setDoc(doc(db, ADMINS_COLLECTION, normalizedAdmin.id), cleanForFirestore(normalizedAdmin), { merge: true });
+  let batch = writeBatch(db);
+  let opCount = 0;
+
+  const commitBatchIfNeeded = async (force: boolean = false) => {
+    if (opCount === 0) return;
+    if (force || opCount >= 350) {
+      await batch.commit();
+      batch = writeBatch(db);
+      opCount = 0;
+    }
+  };
+
+  try {
+    for (const adm of adminsList) {
+      if (!adm?.id || !adm?.email || adm.aliasOf) continue;
+      const cleanEmail = adm.email.toLowerCase().trim();
+      const normalizedAdmin: AdminUser = {
+        ...adm,
+        email: cleanEmail,
+        permissions: {
+          canEditCards: adm.permissions?.canEditCards ?? true,
+          canToggleAi: adm.permissions?.canToggleAi ?? true,
+          canExportCsv: adm.role === 'master' ? true : (adm.permissions?.canExportCsv ?? false),
+          canCreateCards: adm.role === 'master',
+        },
+      };
+      batch.set(doc(db, ADMINS_COLLECTION, normalizedAdmin.id), cleanForFirestore(normalizedAdmin), { merge: true });
+      opCount++;
       if (normalizedAdmin.id.toLowerCase() !== cleanEmail) {
-        await setDoc(
+        batch.set(
           doc(db, ADMINS_COLLECTION, cleanEmail),
           cleanForFirestore({ ...normalizedAdmin, aliasOf: normalizedAdmin.id }),
           { merge: true }
         );
+        opCount++;
       }
       const matchedUser = usersByEmail.get(cleanEmail);
       if (matchedUser?.uid) {
         if (matchedUser.uid !== normalizedAdmin.id && matchedUser.uid.toLowerCase() !== cleanEmail) {
-          await setDoc(
+          batch.set(
             doc(db, ADMINS_COLLECTION, matchedUser.uid),
             cleanForFirestore({ ...normalizedAdmin, aliasOf: normalizedAdmin.id }),
             { merge: true }
           );
+          opCount++;
         }
-        await setDoc(
+        batch.set(
           doc(db, USERS_COLLECTION, matchedUser.uid),
           cleanForFirestore({
             role: normalizedAdmin.role,
@@ -1093,10 +1200,13 @@ export async function syncAdminLookupDocs(adminsList: AdminUser[]): Promise<void
           }),
           { merge: true }
         );
+        opCount++;
       }
-    } catch {
-      // non-fatal background sync
+      await commitBatchIfNeeded(false);
     }
+    await commitBatchIfNeeded(true);
+  } catch {
+    // non-fatal background sync
   }
 }
 
@@ -1105,18 +1215,29 @@ export async function createAdmin(
   caller?: CallerIdentity
 ): Promise<AdminUser | null> {
   const cleanEmail = payload.email?.toLowerCase().trim() || '';
-  if (!cleanEmail) {
-    throw new Error('Admin email address is required.');
+  if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+    throw new Error('Please enter a valid admin email address.');
   }
 
   const now = new Date().toISOString();
   const resolvedRole: 'master' | 'restricted' = payload.role === 'master' ? 'master' : 'restricted';
+  const dedupedCardIds =
+    resolvedRole === 'master'
+      ? []
+      : Array.from(
+          new Set(
+            (Array.isArray(payload.assignedCardIds) ? payload.assignedCardIds : [])
+              .map((cid) => String(cid).trim())
+              .filter(Boolean)
+          )
+        );
+
   const newAdmin: AdminUser = {
     id: payload.id || `admin-${Date.now()}`,
     email: cleanEmail,
     name: payload.name?.trim() || 'Sub-Admin',
     role: resolvedRole,
-    assignedCardIds: resolvedRole === 'master' ? [] : (Array.isArray(payload.assignedCardIds) ? payload.assignedCardIds : []),
+    assignedCardIds: dedupedCardIds,
     permissions: {
       canEditCards: payload.permissions?.canEditCards ?? true,
       canToggleAi: payload.permissions?.canToggleAi ?? true,
@@ -1144,28 +1265,31 @@ export async function createAdmin(
   const serverData = await res.json().catch(() => ({}));
   const savedAdmin: AdminUser = serverData.admin || newAdmin;
 
-  // 2. Write primary doc + lowercase email & UID lookup docs in Firestore (for sub-admin Firestore rules)
+  // 2. Write primary doc + lowercase email & UID lookup docs atomically in Firestore
   if (auth.currentUser) {
     try {
-      await setDoc(doc(db, ADMINS_COLLECTION, savedAdmin.id), cleanForFirestore(savedAdmin));
+      const usersSnap = await getDocs(
+        query(collection(db, USERS_COLLECTION), where('email', '==', cleanEmail))
+      ).catch(() => null);
+
+      const batch = writeBatch(db);
+      batch.set(doc(db, ADMINS_COLLECTION, savedAdmin.id), cleanForFirestore(savedAdmin));
       if (savedAdmin.id.toLowerCase() !== cleanEmail) {
-        await setDoc(
+        batch.set(
           doc(db, ADMINS_COLLECTION, cleanEmail),
           cleanForFirestore({ ...savedAdmin, aliasOf: savedAdmin.id })
         );
       }
-      // Clear any previous revocation flag & sync UID lookup in Firestore /users if matching user exists
-      const usersSnap = await getDocs(collection(db, USERS_COLLECTION));
-      for (const uDoc of usersSnap.docs) {
-        const uData = uDoc.data() as UserProfile;
-        if (uData.email?.toLowerCase().trim() === cleanEmail) {
+
+      if (usersSnap) {
+        usersSnap.forEach((uDoc) => {
           if (uDoc.id !== savedAdmin.id && uDoc.id.toLowerCase() !== cleanEmail) {
-            await setDoc(
+            batch.set(
               doc(db, ADMINS_COLLECTION, uDoc.id),
               cleanForFirestore({ ...savedAdmin, aliasOf: savedAdmin.id })
-            ).catch(() => {});
+            );
           }
-          await setDoc(
+          batch.set(
             doc(db, USERS_COLLECTION, uDoc.id),
             cleanForFirestore({
               role: savedAdmin.role,
@@ -1174,13 +1298,12 @@ export async function createAdmin(
             }),
             { merge: true }
           );
-        }
+        });
       }
+
+      await batch.commit();
     } catch (err: any) {
-      console.warn('Firestore create admin sync notice:', err);
-      if (auth.currentUser.email?.toLowerCase().trim() === PRIMARY_MASTER_EMAIL && err?.code === 'permission-denied') {
-        throw new Error('Permission denied in Firestore while registering admin.');
-      }
+      handleFirestoreError(err, OperationType.WRITE, `${ADMINS_COLLECTION}/${savedAdmin.id}`);
     }
   }
 
@@ -1202,24 +1325,79 @@ export async function createAdmin(
 export async function updateAdmin(
   id: string,
   updates: Partial<AdminUser>,
-  caller?: CallerIdentity
+  caller?: CallerIdentity,
+  existingHint?: AdminUser
 ): Promise<AdminUser | null> {
-  const current = await fetchAdmins(caller?.email);
-  const existing = current.find(
-    (a) =>
-      a.id === id ||
-      a.email.toLowerCase().trim() === id.toLowerCase().trim() ||
-      (updates.email && a.email.toLowerCase().trim() === updates.email.toLowerCase().trim())
-  );
+  const cleanTargetKey = id.trim();
+  const cleanTargetLower = cleanTargetKey.toLowerCase();
+
+  if (updates.email !== undefined) {
+    const candidateEmail = updates.email.trim().toLowerCase();
+    if (!candidateEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(candidateEmail)) {
+      throw new Error('Please enter a valid email address.');
+    }
+  }
+
+  let cachedList: AdminUser[] = [];
+  try {
+    const raw = localStorage.getItem(ADMINS_STORAGE_KEY);
+    if (raw) cachedList = deduplicateAdmins(JSON.parse(raw) as AdminUser[]);
+  } catch {
+    // ignore
+  }
+
+  let existing: AdminUser | undefined =
+    existingHint ||
+    cachedList.find(
+      (a) => a.id === cleanTargetKey || a.email.toLowerCase().trim() === cleanTargetLower
+    );
+
+  if (!existing) {
+    const fetched = await fetchAdmins(caller?.email, caller?.id);
+    cachedList = fetched;
+    existing = fetched.find(
+      (a) => a.id === cleanTargetKey || a.email.toLowerCase().trim() === cleanTargetLower
+    );
+  }
+
   if (!existing) {
     throw new Error('Administrator record not found.');
   }
 
-  const nextRole: 'master' | 'restricted' = updates.role === 'master' ? 'master' : (updates.role === 'restricted' ? 'restricted' : existing.role);
+  const prevEmailLower = existing.email.toLowerCase().trim();
+  const isPrimaryMasterTarget = prevEmailLower === PRIMARY_MASTER_EMAIL;
+  const nextRole: 'master' | 'restricted' = isPrimaryMasterTarget
+    ? 'master'
+    : updates.role === 'master'
+    ? 'master'
+    : updates.role === 'restricted'
+    ? 'restricted'
+    : existing.role;
+
+  const nextEmailLower = isPrimaryMasterTarget
+    ? PRIMARY_MASTER_EMAIL
+    : updates.email
+    ? updates.email.toLowerCase().trim()
+    : prevEmailLower;
+
+  const dedupedCardIds =
+    nextRole === 'master'
+      ? []
+      : updates.assignedCardIds !== undefined
+      ? Array.from(
+          new Set(
+            (Array.isArray(updates.assignedCardIds) ? updates.assignedCardIds : [])
+              .map((cid) => String(cid).trim())
+              .filter(Boolean)
+          )
+        )
+      : existing.assignedCardIds || [];
+
   const sanitizedUpdates: Partial<AdminUser> = {
-    ...updates,
+    name: updates.name !== undefined ? updates.name.trim() : existing.name,
+    email: nextEmailLower,
     role: nextRole,
-    assignedCardIds: nextRole === 'master' ? [] : (updates.assignedCardIds ?? existing.assignedCardIds),
+    assignedCardIds: dedupedCardIds,
     permissions: {
       canEditCards: updates.permissions?.canEditCards ?? existing.permissions?.canEditCards ?? true,
       canToggleAi: updates.permissions?.canToggleAi ?? existing.permissions?.canToggleAi ?? true,
@@ -1228,15 +1406,17 @@ export async function updateAdmin(
     },
   };
 
+  const now = new Date().toISOString();
   const merged: AdminUser = {
     ...existing,
     ...sanitizedUpdates,
     id: existing.id,
-    email: updates.email ? updates.email.toLowerCase().trim() : existing.email.toLowerCase().trim(),
-    updatedAt: new Date().toISOString(),
+    email: nextEmailLower,
+    updatedAt: now,
   };
 
   // 1. Update authoritative backend API
+  let savedAdmin: AdminUser = merged;
   const res = await fetch(`/api/admins/${encodeURIComponent(merged.id)}`, {
     method: 'PUT',
     headers: {
@@ -1246,39 +1426,94 @@ export async function updateAdmin(
     },
     body: JSON.stringify(sanitizedUpdates),
   });
+
   if (!res.ok) {
     const errData = await res.json().catch(() => ({}));
-    throw new Error(errData.message || errData.error || 'Failed to update administrator permissions.');
+    const serverMsg = errData.message || errData.error || `Failed to update administrator permissions (${res.status}).`;
+    // Always reject validation, auth, or explicit server failures; only tolerate 404/405 serverless fallback when Google Master Auth is active
+    if (
+      res.status === 400 ||
+      res.status === 401 ||
+      res.status === 403 ||
+      res.status >= 500 ||
+      !auth.currentUser ||
+      (res.status !== 404 && res.status !== 405)
+    ) {
+      throw new Error(serverMsg);
+    }
+  } else {
+    const data = await res.json().catch(() => ({}));
+    if (data.admin) {
+      savedAdmin = data.admin as AdminUser;
+    }
   }
-  const data = await res.json().catch(() => ({}));
-  const savedAdmin: AdminUser = data.admin || merged;
 
-  // 2. Sync primary doc, lowercase email lookup doc, and matching /users UID doc in Firestore
+  // 2. Atomically sync primary doc, email & UID alias docs, /users role, and cleared cards in a single Firestore batch
   if (auth.currentUser) {
     try {
-      await setDoc(doc(db, ADMINS_COLLECTION, savedAdmin.id), cleanForFirestore(savedAdmin));
       const cleanEmail = savedAdmin.email.toLowerCase().trim();
+      const nextSet = new Set((savedAdmin.assignedCardIds || []).map((cid) => cid.toLowerCase()));
+      const removedIds = (existing.assignedCardIds || []).filter((cid) => !nextSet.has(cid.toLowerCase()));
+      const needCardOwnershipCheck = removedIds.length > 0 || savedAdmin.role === 'master';
+
+      const [nextUsersRes, prevUsersRes, uidAdminsRes, prevCardsRes, nextCardsRes, uidCardsRes] = await Promise.all([
+        getDocs(query(collection(db, USERS_COLLECTION), where('email', '==', cleanEmail))).catch(() => null),
+        prevEmailLower !== cleanEmail
+          ? getDocs(query(collection(db, USERS_COLLECTION), where('email', '==', prevEmailLower))).catch(() => null)
+          : Promise.resolve(null),
+        getDocs(query(collection(db, ADMINS_COLLECTION), where('aliasOf', '==', savedAdmin.id))).catch(() => null),
+        needCardOwnershipCheck
+          ? getDocs(query(collection(db, CARDS_COLLECTION), where('assignedToEmail', '==', prevEmailLower))).catch(() => null)
+          : Promise.resolve(null),
+        needCardOwnershipCheck && cleanEmail !== prevEmailLower
+          ? getDocs(query(collection(db, CARDS_COLLECTION), where('assignedToEmail', '==', cleanEmail))).catch(() => null)
+          : Promise.resolve(null),
+        needCardOwnershipCheck
+          ? getDocs(query(collection(db, CARDS_COLLECTION), where('assignedToUid', '==', savedAdmin.id))).catch(() => null)
+          : Promise.resolve(null),
+      ]);
+
+      const batch = writeBatch(db);
+      const normalizedRecord = cleanForFirestore(savedAdmin);
+
+      // Canonical admin doc
+      batch.set(doc(db, ADMINS_COLLECTION, savedAdmin.id), normalizedRecord);
+
+      // Lowercase email lookup doc
       if (savedAdmin.id.toLowerCase() !== cleanEmail) {
-        await setDoc(
+        batch.set(
           doc(db, ADMINS_COLLECTION, cleanEmail),
           cleanForFirestore({ ...savedAdmin, aliasOf: savedAdmin.id })
         );
       }
-      // Clean up old email alias doc if email changed
-      if (existing.email.toLowerCase().trim() !== cleanEmail && existing.id.toLowerCase() !== existing.email.toLowerCase().trim()) {
-        await deleteDoc(doc(db, ADMINS_COLLECTION, existing.email.toLowerCase().trim())).catch(() => {});
+
+      // Clean up stale alias docs if email changed
+      if (prevEmailLower !== cleanEmail) {
+        if (existing.id.toLowerCase() !== prevEmailLower) {
+          batch.delete(doc(db, ADMINS_COLLECTION, prevEmailLower));
+        }
+        if (uidAdminsRes) {
+          uidAdminsRes.forEach((aDoc) => {
+            if (aDoc.id !== savedAdmin.id && aDoc.id !== cleanEmail) {
+              batch.set(
+                doc(db, ADMINS_COLLECTION, aDoc.id),
+                cleanForFirestore({ ...savedAdmin, aliasOf: savedAdmin.id })
+              );
+            }
+          });
+        }
       }
-      const usersSnap = await getDocs(collection(db, USERS_COLLECTION));
-      for (const uDoc of usersSnap.docs) {
-        const uData = uDoc.data() as UserProfile;
-        if (uData.email?.toLowerCase().trim() === cleanEmail) {
+
+      // Sync matching /users docs + UID alias docs
+      if (nextUsersRes) {
+        nextUsersRes.forEach((uDoc) => {
           if (uDoc.id !== savedAdmin.id && uDoc.id.toLowerCase() !== cleanEmail) {
-            await setDoc(
+            batch.set(
               doc(db, ADMINS_COLLECTION, uDoc.id),
               cleanForFirestore({ ...savedAdmin, aliasOf: savedAdmin.id })
-            ).catch(() => {});
+            );
           }
-          await setDoc(
+          batch.set(
             doc(db, USERS_COLLECTION, uDoc.id),
             cleanForFirestore({
               role: savedAdmin.role,
@@ -1287,40 +1522,69 @@ export async function updateAdmin(
             }),
             { merge: true }
           );
-        }
+        });
       }
-      const nextSet = new Set((savedAdmin.assignedCardIds || []).map((cid) => cid.toLowerCase()));
-      const removedIds = (existing.assignedCardIds || []).filter((cid) => !nextSet.has(cid.toLowerCase()));
-      const prevEmailLower = existing.email.toLowerCase().trim();
-      if (removedIds.length > 0 || savedAdmin.role === 'master') {
-        const cardsSnap = await getDocs(collection(db, CARDS_COLLECTION));
-        for (const cDoc of cardsSnap.docs) {
-          const cData = cDoc.data() as CardRecord;
-          if (!nextSet.has(cData.id.toLowerCase())) {
-            const cEmail = (cData.assignedToEmail || '').trim().toLowerCase();
-            const cUid = (cData.assignedToUid || '').trim();
-            if (cEmail === prevEmailLower || cEmail === cleanEmail || cUid === savedAdmin.id) {
-              await setDoc(
-                doc(db, CARDS_COLLECTION, cDoc.id),
-                cleanForFirestore({
-                  assignedToEmail: '',
-                  assignedToUid: '',
-                  assignedToName: '',
-                  updatedAt: new Date().toISOString(),
-                }),
-                { merge: true }
-              ).catch(() => {});
-            }
+
+      // Demote previous email's /users doc if email was reassigned
+      if (prevUsersRes) {
+        prevUsersRes.forEach((uDoc) => {
+          if (uDoc.id !== savedAdmin.id) {
+            batch.set(
+              doc(db, USERS_COLLECTION, uDoc.id),
+              cleanForFirestore({
+                role: 'member',
+                assignedCardIds: [],
+              }),
+              { merge: true }
+            );
           }
-        }
+        });
       }
+
+      // Clear stale card ownership fields for removed cards
+      if (needCardOwnershipCheck) {
+        const clearedCardIds = new Set<string>();
+        const inspectCardSnap = (snap: any) => {
+          if (!snap) return;
+          snap.forEach((cDoc: any) => {
+            if (clearedCardIds.has(cDoc.id)) return;
+            const cData = cDoc.data() as CardRecord;
+            if (!nextSet.has(cData.id.toLowerCase())) {
+              const cEmail = (cData.assignedToEmail || '').trim().toLowerCase();
+              const cUid = (cData.assignedToUid || '').trim();
+              if (cEmail === prevEmailLower || cEmail === cleanEmail || cUid === savedAdmin.id) {
+                clearedCardIds.add(cDoc.id);
+                batch.set(
+                  doc(db, CARDS_COLLECTION, cDoc.id),
+                  cleanForFirestore({
+                    assignedToEmail: '',
+                    assignedToUid: '',
+                    assignedToName: '',
+                    updatedAt: now,
+                  }),
+                  { merge: true }
+                );
+              }
+            }
+          });
+        };
+        inspectCardSnap(prevCardsRes);
+        inspectCardSnap(nextCardsRes);
+        inspectCardSnap(uidCardsRes);
+      }
+
+      await batch.commit();
     } catch (err) {
-      console.warn('Firestore update admin notice:', err);
+      handleFirestoreError(err, OperationType.WRITE, `${ADMINS_COLLECTION}/${savedAdmin.id}`);
     }
   }
 
   try {
-    const updated = current.map((a) => (a.id === savedAdmin.id ? savedAdmin : a));
+    const cleanEmail = savedAdmin.email.toLowerCase().trim();
+    const existsInCache = cachedList.some((a) => a.id === savedAdmin.id);
+    const updated = existsInCache
+      ? cachedList.map((a) => (a.id === savedAdmin.id ? savedAdmin : a))
+      : [...cachedList.filter((a) => a.email.toLowerCase().trim() !== cleanEmail), savedAdmin];
     localStorage.setItem(ADMINS_STORAGE_KEY, JSON.stringify(deduplicateAdmins(updated)));
   } catch {
     // ignore
@@ -1331,10 +1595,22 @@ export async function updateAdmin(
 
 export async function deleteAdmin(id: string, caller?: CallerIdentity): Promise<boolean> {
   const cleanTargetKey = id.trim();
-  const current = await fetchAdmins(caller?.email);
-  const target = current.find(
-    (a) => a.id === cleanTargetKey || a.email.toLowerCase() === cleanTargetKey.toLowerCase()
+  let cachedList: AdminUser[] = [];
+  try {
+    const raw = localStorage.getItem(ADMINS_STORAGE_KEY);
+    if (raw) cachedList = deduplicateAdmins(JSON.parse(raw) as AdminUser[]);
+  } catch {
+    // ignore
+  }
+  let target = cachedList.find(
+    (a) => a.id === cleanTargetKey || a.email.toLowerCase().trim() === cleanTargetKey.toLowerCase()
   );
+  if (!target) {
+    cachedList = await fetchAdmins(caller?.email, caller?.id);
+    target = cachedList.find(
+      (a) => a.id === cleanTargetKey || a.email.toLowerCase().trim() === cleanTargetKey.toLowerCase()
+    );
+  }
   const targetId = target?.id || cleanTargetKey;
   const targetEmail = target?.email?.toLowerCase().trim() || (cleanTargetKey.includes('@') ? cleanTargetKey.toLowerCase() : '');
 
@@ -1355,61 +1631,63 @@ export async function deleteAdmin(id: string, caller?: CallerIdentity): Promise<
     throw new Error(errData.message || errData.error || 'Failed to delete administrator.');
   }
 
-  // 2. Delete all matching admin docs in Firestore (primary ID doc + email alias doc + UID match) and revoke in Firestore /users
+  // 2. Atomically delete matching admin docs in Firestore + revoke in Firestore /users using targeted queries & single batch
   if (auth.currentUser) {
     try {
-      await deleteDoc(doc(db, ADMINS_COLLECTION, targetId)).catch(() => {});
-      if (targetEmail) {
-        await deleteDoc(doc(db, ADMINS_COLLECTION, targetEmail)).catch(() => {});
-      }
+      const [emailAdminsRes, aliasAdminsRes, idFieldAdminsRes, emailUsersRes] = await Promise.all([
+        targetEmail
+          ? getDocs(query(collection(db, ADMINS_COLLECTION), where('email', '==', targetEmail))).catch(() => null)
+          : Promise.resolve(null),
+        getDocs(query(collection(db, ADMINS_COLLECTION), where('aliasOf', '==', targetId))).catch(() => null),
+        getDocs(query(collection(db, ADMINS_COLLECTION), where('id', '==', targetId))).catch(() => null),
+        targetEmail
+          ? getDocs(query(collection(db, USERS_COLLECTION), where('email', '==', targetEmail))).catch(() => null)
+          : Promise.resolve(null),
+      ]);
 
-      const snap = await getDocs(collection(db, ADMINS_COLLECTION));
-      for (const d of snap.docs) {
-        const data = d.data() as AdminUser;
-        if (
-          d.id === targetId ||
-          data.id === targetId ||
-          data.aliasOf === targetId ||
-          (targetEmail && data.email?.toLowerCase() === targetEmail)
-        ) {
-          await deleteDoc(doc(db, ADMINS_COLLECTION, d.id));
-        }
-      }
+      const batch = writeBatch(db);
+      const deleteAdminIds = new Set<string>([targetId]);
+      if (targetEmail) deleteAdminIds.add(targetEmail);
+      const collectIds = (snap: any) => {
+        if (!snap) return;
+        snap.forEach((d: any) => deleteAdminIds.add(d.id));
+      };
+      collectIds(emailAdminsRes);
+      collectIds(aliasAdminsRes);
+      collectIds(idFieldAdminsRes);
 
-      // Mark user access as revoked in Firestore /users without deleting cards, logs, or business configs
+      deleteAdminIds.forEach((docId) => {
+        if (docId) batch.delete(doc(db, ADMINS_COLLECTION, docId));
+      });
+
       const now = new Date().toISOString();
-      const usersSnap = await getDocs(collection(db, USERS_COLLECTION));
-      for (const uDoc of usersSnap.docs) {
-        const uData = uDoc.data() as UserProfile;
-        if (
-          (targetEmail && uData.email?.toLowerCase() === targetEmail) ||
-          uDoc.id === targetId ||
-          uData.uid === targetId
-        ) {
-          await setDoc(
-            doc(db, USERS_COLLECTION, uDoc.id),
-            cleanForFirestore({
-              role: 'member',
-              assignedCardIds: [],
-              accessRevoked: true,
-              revokedAt: now,
-            }),
-            { merge: true }
-          );
-        }
+      const userDocIds = new Set<string>();
+      if (emailUsersRes) {
+        emailUsersRes.forEach((uDoc) => userDocIds.add(uDoc.id));
       }
+      userDocIds.forEach((uid) => {
+        batch.set(
+          doc(db, USERS_COLLECTION, uid),
+          cleanForFirestore({
+            role: 'member',
+            assignedCardIds: [],
+            accessRevoked: true,
+            revokedAt: now,
+          }),
+          { merge: true }
+        );
+      });
+
+      await batch.commit();
     } catch (err: any) {
-      console.warn('Firestore delete admin sync notice:', err);
-      if (err?.code === 'permission-denied') {
-        throw new Error('Permission denied in Firestore while deleting administrator.');
-      }
+      handleFirestoreError(err, OperationType.DELETE, `${ADMINS_COLLECTION}/${targetId}`);
     }
   }
 
   // 3. Update localStorage cache without calling fetchAdmins() back immediately
   try {
-    const updated = current.filter(
-      (a) => a.id !== targetId && (!targetEmail || a.email.toLowerCase() !== targetEmail)
+    const updated = cachedList.filter(
+      (a) => a.id !== targetId && (!targetEmail || a.email.toLowerCase().trim() !== targetEmail)
     );
     localStorage.setItem(ADMINS_STORAGE_KEY, JSON.stringify(updated));
   } catch {
@@ -1470,34 +1748,83 @@ export async function checkSessionAuthorization(
 
   // 2. Check Firestore directly when Firebase Auth session is active (reconciles Firestore-only or multi-instance writes)
   let fsAdmin: AdminUser | undefined;
-  let fsUser: UserProfile | undefined;
+  let fsPromotedUser: UserProfile | undefined;
+  let fsRevoked = false;
   if (auth.currentUser) {
     try {
-      const [emailAdminSnap, uidAdminSnap, uidUserSnap] = await Promise.all([
+      const authEmail = (auth.currentUser.email || cleanEmail || '').toLowerCase().trim();
+      const [
+        emailAdminSnap,
+        uidAdminSnap,
+        emailAdminsQuerySnap,
+        uidUserSnap,
+        emailUsersQuerySnap,
+      ] = await Promise.all([
         cleanEmail ? getDoc(doc(db, ADMINS_COLLECTION, cleanEmail)).catch(() => null) : Promise.resolve(null),
         cleanUid ? getDoc(doc(db, ADMINS_COLLECTION, cleanUid)).catch(() => null) : Promise.resolve(null),
+        authEmail
+          ? getDocs(query(collection(db, ADMINS_COLLECTION), where('email', '==', authEmail))).catch(() => null)
+          : Promise.resolve(null),
         cleanUid ? getDoc(doc(db, USERS_COLLECTION, cleanUid)).catch(() => null) : Promise.resolve(null),
+        authEmail
+          ? getDocs(query(collection(db, USERS_COLLECTION), where('email', '==', authEmail))).catch(() => null)
+          : Promise.resolve(null),
       ]);
-      if (emailAdminSnap?.exists()) {
-        fsAdmin = emailAdminSnap.data() as AdminUser;
-      } else if (uidAdminSnap?.exists()) {
-        fsAdmin = uidAdminSnap.data() as AdminUser;
+
+      const foundAdmins: AdminUser[] = [];
+      if (uidAdminSnap?.exists()) foundAdmins.push(uidAdminSnap.data() as AdminUser);
+      if (emailAdminSnap?.exists()) foundAdmins.push(emailAdminSnap.data() as AdminUser);
+      if (emailAdminsQuerySnap) {
+        emailAdminsQuerySnap.forEach((d) => foundAdmins.push(d.data() as AdminUser));
       }
-      if (uidUserSnap?.exists()) {
-        fsUser = uidUserSnap.data() as UserProfile;
+      const dedupedAdmins = deduplicateAdmins(
+        foundAdmins.map((a) => ({ ...a, email: (a.email || cleanEmail).toLowerCase().trim() }))
+      );
+      fsAdmin = dedupedAdmins[0];
+
+      const foundUsers: UserProfile[] = [];
+      if (uidUserSnap?.exists()) foundUsers.push(uidUserSnap.data() as UserProfile);
+      if (emailUsersQuerySnap) {
+        emailUsersQuerySnap.forEach((d) => foundUsers.push(d.data() as UserProfile));
       }
+      fsRevoked = foundUsers.some((u) => Boolean(u.accessRevoked));
+      fsPromotedUser = foundUsers.find(
+        (u) => !u.accessRevoked && (u.role === 'restricted' || u.role === 'master')
+      );
     } catch {
       // ignore
     }
   }
 
-  // If server explicitly returned authorized admin and Firestore didn't mark user revoked, honor it
-  if (serverResult?.authorized && !fsUser?.accessRevoked) {
+  // If explicitly revoked by Master Admin in either store (and no active non-revoked Master-synced admin record overrides)
+  if (serverResult?.revoked || (fsRevoked && !serverResult?.authorized)) {
+    return {
+      authorized: false,
+      revoked: true,
+      role: 'member',
+      message: serverResult?.message || 'Your administrator access has been revoked by the Master Admin.',
+    };
+  }
+
+  // Reconcile freshest active AdminUser between server and Firestore
+  if (serverResult?.authorized && fsAdmin && !fsRevoked) {
+    const srvTime = serverResult.admin?.updatedAt ? new Date(serverResult.admin.updatedAt).getTime() : 0;
+    const fsTime = fsAdmin.updatedAt ? new Date(fsAdmin.updatedAt).getTime() : 0;
+    const chosen = fsTime > srvTime ? { ...fsAdmin, email: fsAdmin.email.toLowerCase().trim() } : (serverResult.admin || fsAdmin);
+    return {
+      authorized: true,
+      revoked: false,
+      role: chosen.role,
+      admin: chosen,
+    };
+  }
+
+  if (serverResult?.authorized && !fsRevoked) {
     return serverResult;
   }
 
   // If Firestore /admins has an active admin record and user is not revoked
-  if (fsAdmin && !fsUser?.accessRevoked && !serverResult?.revoked) {
+  if (fsAdmin && !fsRevoked) {
     return {
       authorized: true,
       revoked: false,
@@ -1507,36 +1834,26 @@ export async function checkSessionAuthorization(
   }
 
   // If Firestore /users explicitly holds an active admin/sub-admin role promoted by Master Admin
-  if (fsUser && !fsUser.accessRevoked && !serverResult?.revoked && (fsUser.role === 'restricted' || fsUser.role === 'master')) {
+  if (fsPromotedUser && !fsRevoked) {
     return {
       authorized: true,
       revoked: false,
-      role: fsUser.role,
+      role: fsPromotedUser.role,
       admin: {
-        id: fsUser.uid,
-        email: fsUser.email.toLowerCase().trim(),
-        name: fsUser.displayName || cleanEmail.split('@')[0],
-        role: fsUser.role,
-        assignedCardIds: Array.isArray(fsUser.assignedCardIds) ? fsUser.assignedCardIds : [],
+        id: fsPromotedUser.uid,
+        email: fsPromotedUser.email.toLowerCase().trim(),
+        name: fsPromotedUser.displayName || cleanEmail.split('@')[0],
+        role: fsPromotedUser.role,
+        assignedCardIds: Array.isArray(fsPromotedUser.assignedCardIds) ? fsPromotedUser.assignedCardIds : [],
         permissions: {
           canEditCards: true,
           canToggleAi: true,
-          canExportCsv: fsUser.role === 'master',
-          canCreateCards: fsUser.role === 'master',
+          canExportCsv: fsPromotedUser.role === 'master',
+          canCreateCards: fsPromotedUser.role === 'master',
         },
-        createdAt: fsUser.createdAt || new Date().toISOString(),
-        updatedAt: fsUser.lastLoginAt || new Date().toISOString(),
+        createdAt: fsPromotedUser.createdAt || new Date().toISOString(),
+        updatedAt: fsPromotedUser.lastLoginAt || new Date().toISOString(),
       },
-    };
-  }
-
-  // Honor explicit revocation from either store
-  if (serverResult?.revoked || fsUser?.accessRevoked) {
-    return {
-      authorized: false,
-      revoked: true,
-      role: 'member',
-      message: serverResult?.message || 'Your administrator access has been revoked by the Master Admin.',
     };
   }
 
@@ -1671,7 +1988,33 @@ export async function saveUser(
   if (res.ok) {
     const data = await res.json().catch(() => ({}));
     if (data.user) {
-      finalUser = data.user as UserProfile;
+      const srvUser = data.user as UserProfile;
+      const callerRequestedDemotion = Boolean(caller) && user.role === 'member';
+      // Guard against unsynced container data/admins.json downgrading a Firestore-verified Sub-Admin back to 'member'
+      if (
+        !callerRequestedDemotion &&
+        srvUser.role === 'member' &&
+        !srvUser.accessRevoked &&
+        (fullUser.role === 'restricted' || fullUser.role === 'master') &&
+        auth.currentUser
+      ) {
+        const fsVerified = await checkSessionAuthorization(cleanEmail, user.uid).catch(() => null);
+        if (
+          fsVerified?.authorized &&
+          !fsVerified.revoked &&
+          (fsVerified.role === 'restricted' || fsVerified.role === 'master')
+        ) {
+          finalUser = {
+            ...srvUser,
+            role: fsVerified.role,
+            assignedCardIds: fsVerified.admin?.assignedCardIds ?? fullUser.assignedCardIds ?? [],
+          };
+        } else {
+          finalUser = srvUser;
+        }
+      } else {
+        finalUser = srvUser;
+      }
     }
   }
 
@@ -1696,6 +2039,9 @@ export async function saveUser(
         }
       }
     } catch (err) {
+      if (auth.currentUser.email?.toLowerCase().trim() === PRIMARY_MASTER_EMAIL) {
+        handleFirestoreError(err, OperationType.WRITE, `${USERS_COLLECTION}/${finalUser.uid}`);
+      }
       console.warn('Firestore saveUser notice:', err);
     }
   }

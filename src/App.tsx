@@ -49,6 +49,7 @@ import {
   Lock,
   ShieldCheck,
   RotateCcw,
+  RefreshCw,
   Radio,
   Crown,
   AlertCircle,
@@ -98,6 +99,10 @@ export default function App() {
   const [authRevokedNotice, setAuthRevokedNotice] = useState<string | null>(null);
   const [authReady, setAuthReady] = useState<boolean>(false);
   const [adminsSynced, setAdminsSynced] = useState<boolean>(false);
+  const [checkingAuthStatus, setCheckingAuthStatus] = useState<boolean>(false);
+  const [authStatusFeedback, setAuthStatusFeedback] = useState<string | null>(null);
+  const inFlightRefreshRef = useRef<Promise<void> | null>(null);
+  const lastRefreshAtRef = useRef<number>(0);
   const [sessionAuth, setSessionAuth] = useState<{
     authorized: boolean;
     revoked: boolean;
@@ -339,6 +344,102 @@ export default function App() {
     }
   };
 
+  const refreshAuthorization = useCallback(
+    async (options?: {
+      force?: boolean;
+      userOverride?: UserProfile | null;
+      quiet?: boolean;
+      showFeedback?: boolean;
+    }) => {
+      const force = options?.force ?? false;
+      const quiet = options?.quiet ?? true;
+      const showFeedback = options?.showFeedback ?? false;
+      const targetUser = options?.userOverride !== undefined ? options.userOverride : currentUser;
+      if (!targetUser?.email) return;
+
+      const now = Date.now();
+      if (!force && now - lastRefreshAtRef.current < 5000) {
+        return;
+      }
+      if (inFlightRefreshRef.current) {
+        return inFlightRefreshRef.current;
+      }
+
+      const task = (async () => {
+        lastRefreshAtRef.current = Date.now();
+        if (!quiet) {
+          setAdminsSynced(false);
+        }
+        if (showFeedback) {
+          setCheckingAuthStatus(true);
+          setAuthStatusFeedback(null);
+        }
+
+        const cleanEmail = targetUser.email.toLowerCase().trim();
+        const isMasterEmail = cleanEmail === '66shashwatkumar66@gmail.com';
+        try {
+          const status = await checkSessionAuthorization(cleanEmail, targetUser.uid);
+          setSessionAuth(status);
+          if (!isMasterEmail && status.revoked) {
+            await signOut(auth).catch(() => {});
+            clearSessionCaches();
+            setCards([]);
+            setAdmins([]);
+            setUsers([]);
+            setActiveAdmin(null);
+            setCurrentUser(null);
+            setAuthRevokedNotice(
+              status.message || 'Access Denied: Your administrator access has been revoked by the Master Admin.'
+            );
+            return;
+          }
+
+          const resolvedRole: 'master' | 'restricted' | 'member' = isMasterEmail ? 'master' : status.role;
+          const resolvedCardIds: string[] = status.admin?.assignedCardIds ?? targetUser.assignedCardIds ?? [];
+          const roleChanged = targetUser.role !== resolvedRole;
+          const cardsChanged =
+            JSON.stringify(targetUser.assignedCardIds || []) !== JSON.stringify(resolvedCardIds);
+
+          let syncedUser = targetUser;
+          if (roleChanged || cardsChanged) {
+            syncedUser = {
+              ...targetUser,
+              role: resolvedRole,
+              assignedCardIds: resolvedCardIds,
+            };
+            setCurrentUser(syncedUser);
+            localStorage.setItem('3dbysd_current_user', JSON.stringify(syncedUser));
+          }
+
+          const [{ resolvedAdmin }] = await Promise.all([
+            loadAdminsData(syncedUser),
+            loadUsersData(),
+          ]);
+          const authoritativeAdmin = resolvedAdmin || status.admin || null;
+          await loadCards(syncedUser, authoritativeAdmin);
+
+          if (showFeedback && !isMasterEmail && !status.authorized && !authoritativeAdmin) {
+            setAuthStatusFeedback(
+              'Still pending Master Admin approval. If you were just verified, try again in a few seconds.'
+            );
+          } else if (showFeedback) {
+            setAuthStatusFeedback(null);
+          }
+        } finally {
+          setAdminsSynced(true);
+          if (showFeedback) {
+            setCheckingAuthStatus(false);
+          }
+          inFlightRefreshRef.current = null;
+        }
+      })();
+
+      inFlightRefreshRef.current = task;
+      return task;
+    },
+    [currentUser?.email, currentUser?.uid]
+  );
+
   // Parse route from window.location and listen to popstate
   useEffect(() => {
     const checkPath = () => {
@@ -350,12 +451,6 @@ export default function App() {
       } else {
         setCustomerCardId(null);
         setCustomerCard(null);
-        if (currentUser?.email) {
-          loadAdminsData(currentUser).then(({ resolvedAdmin }) => {
-            loadCards(currentUser, resolvedAdmin);
-          });
-          loadUsersData();
-        }
       }
     };
 
@@ -367,47 +462,30 @@ export default function App() {
     };
   }, [fetchCustomerCard]);
 
-  // Re-sync admin identity and verify revocation whenever authenticated user or auth readiness changes
+  // Re-sync admin identity and verify revocation whenever authenticated user, route, or auth readiness changes
   useEffect(() => {
     if (customerCardId || !currentUser?.email || !authReady) return;
-    let cancelled = false;
-    setAdminsSynced(false);
-    const syncAuthSession = async () => {
-      const cleanEmail = currentUser.email.toLowerCase().trim();
-      const isMasterEmail = cleanEmail === '66shashwatkumar66@gmail.com';
-      try {
-        const status = await checkSessionAuthorization(cleanEmail, currentUser.uid);
-        if (cancelled) return;
-        setSessionAuth(status);
-        if (!isMasterEmail && status.revoked) {
-          await signOut(auth).catch(() => {});
-          clearSessionCaches();
-          setCards([]);
-          setAdmins([]);
-          setUsers([]);
-          setCurrentUser(null);
-          setAuthRevokedNotice(
-            status.message || 'Access Denied: Your administrator access has been revoked by the Master Admin.'
-          );
-          return;
-        }
-        if (!cancelled) {
-          const [{ resolvedAdmin }] = await Promise.all([loadAdminsData(currentUser), loadUsersData()]);
-          if (cancelled) return;
-          const authoritativeAdmin = resolvedAdmin || status.admin || null;
-          await loadCards(currentUser, authoritativeAdmin);
-        }
-      } finally {
-        if (!cancelled) {
-          setAdminsSynced(true);
-        }
+    refreshAuthorization({ force: true, quiet: false });
+  }, [currentUser?.email, currentUser?.uid, customerCardId, authReady, refreshAuthorization]);
+
+  // Quietly re-check authorization when tab regains focus or visibility
+  useEffect(() => {
+    if (customerCardId || !currentUser?.email || !authReady) return;
+    const handleFocusRefresh = () => {
+      refreshAuthorization({ force: false, quiet: true });
+    };
+    const handleVisibilityRefresh = () => {
+      if (document.visibilityState === 'visible') {
+        refreshAuthorization({ force: false, quiet: true });
       }
     };
-    syncAuthSession();
+    window.addEventListener('focus', handleFocusRefresh);
+    document.addEventListener('visibilitychange', handleVisibilityRefresh);
     return () => {
-      cancelled = true;
+      window.removeEventListener('focus', handleFocusRefresh);
+      document.removeEventListener('visibilitychange', handleVisibilityRefresh);
     };
-  }, [currentUser?.email, currentUser?.uid, customerCardId, authReady]);
+  }, [customerCardId, currentUser?.email, currentUser?.uid, authReady, refreshAuthorization]);
 
   // Guard Master-only tabs against Sub-Admin or simulated Sub-Admin navigation
   useEffect(() => {
@@ -514,20 +592,86 @@ export default function App() {
   const handleSaveAdmin = async (adminData: Partial<AdminUser>) => {
     const caller = { id: effectiveActiveAdmin.id, email: currentUser?.email };
     if (adminData.id) {
-      const updated = await updateAdmin(adminData.id, adminData, caller);
+      const existingHint = admins.find(
+        (a) => a.id === adminData.id || a.email.toLowerCase().trim() === (adminData.email || '').toLowerCase().trim()
+      );
+      const updated = await updateAdmin(adminData.id, adminData, caller, existingHint);
       if (updated) {
-        setAdmins((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
+        const nextEmailLower = updated.email.toLowerCase().trim();
+        const prevEmailLower = (existingHint?.email || updated.email).toLowerCase().trim();
+        setAdmins((prev) => {
+          const exists = prev.some((a) => a.id === updated.id);
+          return exists
+            ? prev.map((a) => (a.id === updated.id ? updated : a))
+            : [...prev.filter((a) => a.email.toLowerCase().trim() !== nextEmailLower), updated];
+        });
         if (activeAdmin && activeAdmin.id === updated.id) {
           setActiveAdmin(updated);
         }
+        setUsers((prev) =>
+          prev.map((u) => {
+            const uEmail = u.email.toLowerCase().trim();
+            if (uEmail === nextEmailLower || u.uid === updated.id) {
+              return {
+                ...u,
+                role: updated.role,
+                assignedCardIds: updated.assignedCardIds,
+                accessRevoked: false,
+                revokedAt: undefined,
+              };
+            }
+            if (prevEmailLower !== nextEmailLower && uEmail === prevEmailLower) {
+              return {
+                ...u,
+                role: 'member',
+                assignedCardIds: [],
+              };
+            }
+            return u;
+          })
+        );
+        const nextSet = new Set((updated.assignedCardIds || []).map((cid) => cid.toLowerCase()));
+        setCards((prev) =>
+          prev.map((c) => {
+            if (!nextSet.has(c.id.toLowerCase())) {
+              const cEmail = (c.assignedToEmail || '').trim().toLowerCase();
+              const cUid = (c.assignedToUid || '').trim();
+              if (cEmail === prevEmailLower || cEmail === nextEmailLower || cUid === updated.id) {
+                return {
+                  ...c,
+                  assignedToEmail: undefined,
+                  assignedToUid: undefined,
+                  assignedToName: undefined,
+                  updatedAt: updated.updatedAt,
+                };
+              }
+            }
+            return c;
+          })
+        );
       }
     } else {
       const created = await createAdmin(adminData, caller);
       if (created) {
-        setAdmins((prev) => [...prev.filter((a) => a.email.toLowerCase() !== created.email.toLowerCase()), created]);
+        const createdEmailLower = created.email.toLowerCase().trim();
+        setAdmins((prev) => [...prev.filter((a) => a.email.toLowerCase().trim() !== createdEmailLower), created]);
+        setUsers((prev) =>
+          prev.map((u) =>
+            u.email.toLowerCase().trim() === createdEmailLower
+              ? {
+                  ...u,
+                  role: created.role,
+                  assignedCardIds: created.assignedCardIds,
+                  accessRevoked: false,
+                  revokedAt: undefined,
+                }
+              : u
+          )
+        );
       }
     }
-    await Promise.all([loadUsersData(), loadCards()]);
+    lastRefreshAtRef.current = 0;
+    await loadUsersData();
   };
 
   const handleDeleteAdmin = async (adminId: string) => {
@@ -542,6 +686,7 @@ export default function App() {
       setActiveAdmin(master);
       localStorage.removeItem('3dbysd_impersonated_admin_id');
     }
+    lastRefreshAtRef.current = 0;
     await loadUsersData();
   };
 
@@ -583,6 +728,7 @@ export default function App() {
         initialError={authRevokedNotice}
         onLoginSuccess={(user) => {
           setAuthRevokedNotice(null);
+          setAuthStatusFeedback(null);
           setSessionAuth({
             authorized: user.role === 'master' || user.role === 'restricted',
             revoked: Boolean(user.accessRevoked),
@@ -590,10 +736,7 @@ export default function App() {
           });
           setCurrentUser(user);
           localStorage.setItem('3dbysd_current_user', JSON.stringify(user));
-          loadAdminsData(user).then(({ resolvedAdmin }) => {
-            loadCards(user, resolvedAdmin);
-          });
-          loadUsersData();
+          refreshAuthorization({ force: true, userOverride: user, quiet: false });
         }}
         onPreviewCard={(id) => {
           setCustomerCardId(id);
@@ -731,7 +874,24 @@ export default function App() {
               </p>
             </div>
 
+            {authStatusFeedback && (
+              <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-800 font-medium">
+                {authStatusFeedback}
+              </div>
+            )}
+
             <div className="pt-2 flex flex-col gap-2">
+              {!isRevokedUser && (
+                <button
+                  type="button"
+                  disabled={checkingAuthStatus}
+                  onClick={() => refreshAuthorization({ force: true, quiet: true, showFeedback: true })}
+                  className="w-full py-2.5 px-4 rounded-xl bg-[#1A73E8] hover:bg-[#1557B0] text-white text-xs font-bold transition-colors flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${checkingAuthStatus ? 'animate-spin' : ''}`} />
+                  <span>{checkingAuthStatus ? 'Checking Authorization...' : 'Check Authorization Status'}</span>
+                </button>
+              )}
               <button
                 onClick={handleSignOut}
                 className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition-colors flex items-center justify-center gap-2 cursor-pointer"
@@ -1118,7 +1278,7 @@ export default function App() {
           <UsersManagementView
             activeAdmin={effectiveActiveAdmin}
             callerEmail={currentUser.email}
-            onRefreshAdmins={() => loadAdminsData(currentUser)}
+            onRefreshAdmins={() => refreshAuthorization({ force: true, quiet: true })}
           />
         )}
 

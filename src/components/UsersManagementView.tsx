@@ -18,7 +18,7 @@ import {
   X,
 } from 'lucide-react';
 import { UserProfile, AdminUser } from '../types';
-import { fetchUsers, saveUser, deleteUser, updateAdmin, createAdmin, deleteAdmin } from '../utils/api';
+import { fetchUsers, saveUser, deleteUser, updateAdmin, createAdmin, deleteAdmin, formatApiError } from '../utils/api';
 import { GoogleAuthModal } from './GoogleAuthModal';
 
 interface UsersManagementViewProps {
@@ -41,6 +41,7 @@ export const UsersManagementView: React.FC<UsersManagementViewProps> = ({
   const [actionError, setActionError] = useState<string | null>(null);
   const [userToDelete, setUserToDelete] = useState<UserProfile | null>(null);
   const [isDeletingUser, setIsDeletingUser] = useState<boolean>(false);
+  const [updatingUserUid, setUpdatingUserUid] = useState<string | null>(null);
 
   const caller = {
     id: activeAdmin.id,
@@ -71,6 +72,8 @@ export const UsersManagementView: React.FC<UsersManagementViewProps> = ({
   };
 
   const handleRoleChange = async (user: UserProfile, newRole: 'master' | 'restricted' | 'member') => {
+    if (updatingUserUid === user.uid) return;
+    setUpdatingUserUid(user.uid);
     setActionError(null);
     setActionSuccess(null);
     try {
@@ -103,9 +106,11 @@ export const UsersManagementView: React.FC<UsersManagementViewProps> = ({
             caller
           );
         } catch (updateErr: any) {
-          if (updateErr?.message?.toLowerCase().includes('not found')) {
+          const msg = updateErr?.message?.toLowerCase() || '';
+          if (msg.includes('not found') || msg.includes('404')) {
             await createAdmin(
               {
+                id: user.uid,
                 email: user.email.trim().toLowerCase(),
                 name: user.displayName,
                 role: newRole,
@@ -123,18 +128,20 @@ export const UsersManagementView: React.FC<UsersManagementViewProps> = ({
           await deleteAdmin(user.email.trim().toLowerCase(), caller);
         } catch (delErr: any) {
           const msg = delErr?.message?.toLowerCase() || '';
-          if (!msg.includes('not found')) {
+          if (!msg.includes('not found') && !msg.includes('404')) {
             console.warn('Demotion admin cleanup notice:', delErr);
           }
         }
       }
 
       await loadData();
-      if (onRefreshAdmins) onRefreshAdmins();
+      if (onRefreshAdmins) await onRefreshAdmins();
       setActionSuccess(`Updated ${user.displayName}'s role to ${newRole}`);
       setTimeout(() => setActionSuccess(null), 3000);
     } catch (err: any) {
-      setActionError(`Failed to update role: ${err?.message || 'Unauthorized'}`);
+      setActionError(`Failed to update role: ${formatApiError(err, 'Unauthorized or database write failed')}`);
+    } finally {
+      setUpdatingUserUid(null);
     }
   };
 
@@ -394,7 +401,7 @@ export const UsersManagementView: React.FC<UsersManagementViewProps> = ({
 
                     <select
                       value={user.role}
-                      disabled={user.email.trim().toLowerCase() === '66shashwatkumar66@gmail.com'}
+                      disabled={user.email.trim().toLowerCase() === '66shashwatkumar66@gmail.com' || updatingUserUid === user.uid}
                       onChange={(e) => handleRoleChange(user, e.target.value as any)}
                       className={`text-[11px] font-semibold px-2 py-0.5 rounded-lg border focus:outline-none ${
                         user.role === 'master'
@@ -478,7 +485,7 @@ export const UsersManagementView: React.FC<UsersManagementViewProps> = ({
                       <td className="py-3 px-3">
                         <select
                           value={user.role}
-                          disabled={user.email.trim().toLowerCase() === '66shashwatkumar66@gmail.com'}
+                          disabled={user.email.trim().toLowerCase() === '66shashwatkumar66@gmail.com' || updatingUserUid === user.uid}
                           onChange={(e) => handleRoleChange(user, e.target.value as any)}
                           className={`text-xs font-semibold px-2 py-1 rounded-lg border focus:outline-none ${
                             user.role === 'master'
@@ -570,6 +577,7 @@ export const UsersManagementView: React.FC<UsersManagementViewProps> = ({
         onClose={() => setIsModalOpen(false)}
         onSuccess={handleUserVerified}
         defaultEmail={activeAdmin.email || '66shashwatkumar66@gmail.com'}
+        adminCaller={caller}
       />
     </div>
   );

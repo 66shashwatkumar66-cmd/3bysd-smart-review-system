@@ -1,5 +1,33 @@
 [
   {
+    "id": "log-0001-1795161095485-dqqiy",
+    "cardId": "0001",
+    "businessName": "Mercury Sports Pro Store",
+    "category": "Sports Shop",
+    "timestamp": "2026-11-20T07:51:35.485Z",
+    "scannedAt": "2026-11-20T07:51:35.485Z",
+    "device": "Desktop (Web)",
+    "browser": "Chrome",
+    "ip": "127.0.0.1",
+    "referrer": "QR Camera Scan",
+    "source": "qr",
+    "subscriptionStatusAtScan": "unconfigured"
+  },
+  {
+    "id": "log-0001-1795161090087-cg3yf",
+    "cardId": "0001",
+    "businessName": "Mercury Sports Pro Store",
+    "category": "Sports Shop",
+    "timestamp": "2026-11-20T07:51:30.087Z",
+    "scannedAt": "2026-11-20T07:51:30.087Z",
+    "device": "Desktop (Web)",
+    "browser": "Chrome",
+    "ip": "127.0.0.1",
+    "referrer": "QR Camera Scan",
+    "source": "qr",
+    "subscriptionStatusAtScan": "unconfigured"
+  },
+  {
     "id": "log-0003-1795125682681-ukgdf",
     "cardId": "0003",
     "businessName": "Expired Business",

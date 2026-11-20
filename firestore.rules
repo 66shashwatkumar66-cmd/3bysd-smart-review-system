@@ -39,17 +39,40 @@ service cloud.firestore {
         adminDoc.data.get('permissions', {}).get('canEditCards', true) == true;
     }
 
-    function isSubAdminForCard(cardId) {
+    function adminCanEditFlagNotDisabled() {
+      return (
+        !exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        adminAllowsCardEdit(get(/databases/$(database)/documents/admins/$(request.auth.uid)))
+      ) && (
+        !hasVerifiedEmail() ||
+        !exists(/databases/$(database)/documents/admins/$(authEmailLower())) ||
+        adminAllowsCardEdit(get(/databases/$(database)/documents/admins/$(authEmailLower())))
+      );
+    }
+
+    function adminAllowsAiToggle() {
+      return !incoming().diff(existing()).affectedKeys().hasAny(['aiReviewEnabled']) ||
+        incoming().get('aiReviewEnabled', false) == existing().get('aiReviewEnabled', false) || (
+          (
+            !exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+            get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.get('permissions', {}).get('canToggleAi', true) == true
+          ) && (
+            !hasVerifiedEmail() ||
+            !exists(/databases/$(database)/documents/admins/$(authEmailLower())) ||
+            get(/databases/$(database)/documents/admins/$(authEmailLower())).data.get('permissions', {}).get('canToggleAi', true) == true
+          )
+        );
+    }
+
+    function isSubAdminAssignedCard(cardId) {
       return isAuthenticated() && isNotRevoked() && (
         isMasterAdmin() ||
         // 1. Admin record lookup by UID
         (exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
-         adminAllowsCardEdit(get(/databases/$(database)/documents/admins/$(request.auth.uid))) &&
          cardId in get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.get('assignedCardIds', [])) ||
         // 2. Admin record lookup by verified lowercase email
         (hasVerifiedEmail() &&
          exists(/databases/$(database)/documents/admins/$(authEmailLower())) &&
-         adminAllowsCardEdit(get(/databases/$(database)/documents/admins/$(authEmailLower()))) &&
          cardId in get(/databases/$(database)/documents/admins/$(authEmailLower())).data.get('assignedCardIds', [])) ||
         // 3. Direct assignment on card by verified email
         (resource != null &&
@@ -67,6 +90,10 @@ service cloud.firestore {
          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', 'member') == 'restricted' &&
          cardId in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('assignedCardIds', []))
       );
+    }
+
+    function isSubAdminForCard(cardId) {
+      return isSubAdminAssignedCard(cardId) && (isMasterAdmin() || adminCanEditFlagNotDisabled());
     }
 
     function isValidId(id) {
@@ -219,6 +246,7 @@ service cloud.firestore {
         isMasterAdmin() ||
         (
           isSubAdminForCard(cardId) &&
+          adminAllowsAiToggle() &&
           (incoming().status == existing().status || incoming().status == 'assigned' || incoming().status == 'disabled') &&
           !incoming().diff(existing()).affectedKeys().hasAny([
             'id',
@@ -265,7 +293,7 @@ service cloud.firestore {
           (resource != null && resource.data.email is string && resource.data.email.lower() == authEmailLower())
         ))
       );
-      allow list: if isMasterAdmin();
+      allow list: if isMasterAdmin() || (isAuthenticated() && hasVerifiedEmail() && resource.data.email == authEmailLower());
       allow create, update: if isValidId(adminId) && isMasterAdmin() && isValidAdmin(incoming());
       allow delete: if isValidId(adminId) && isMasterAdmin() &&
         !(resource != null && 'email' in resource.data && resource.data.email is string && resource.data.email.lower() == '66shashwatkumar66@gmail.com');
@@ -278,7 +306,7 @@ service cloud.firestore {
         isMasterAdmin() ||
         (hasVerifiedEmail() && resource != null && resource.data.email is string && resource.data.email.lower() == authEmailLower())
       );
-      allow list: if isMasterAdmin();
+      allow list: if isMasterAdmin() || (isAuthenticated() && hasVerifiedEmail() && resource.data.email == authEmailLower());
       allow create: if isValidId(userId) && isAuthenticated() && isValidUser(incoming()) && (
         isMasterAdmin() ||
         (
@@ -308,8 +336,8 @@ service cloud.firestore {
 
     // QR Scan Logs Collection (Audit trail of customer QR and NFC stand interactions)
     match /qr_logs/{logId} {
-      allow get: if isMasterAdmin() || (isAuthenticated() && isNotRevoked() && isSubAdminForCard(resource.data.cardId));
-      allow list: if isMasterAdmin() || (isAuthenticated() && isNotRevoked() && isSubAdminForCard(resource.data.cardId));
+      allow get: if isMasterAdmin() || (isAuthenticated() && isNotRevoked() && isSubAdminAssignedCard(resource.data.cardId));
+      allow list: if isMasterAdmin() || (isAuthenticated() && isNotRevoked() && isSubAdminAssignedCard(resource.data.cardId));
       allow create: if isValidId(logId) && isValidScanLog(incoming());
       allow update, delete: if isMasterAdmin();
     }

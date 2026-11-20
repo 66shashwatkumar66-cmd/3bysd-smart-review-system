@@ -266,15 +266,20 @@ function resolveCallerAdmin(req: Request): ResolvedCaller {
       (callerEmail && a.email.toLowerCase() === callerEmail)
   );
 
-  // Check if user has been revoked
-  const matchedUser = users.find(
+  // Check all user records matching this email or UID (prevents duplicate entry masking)
+  const matchingUsers = users.filter(
     (u) =>
-      (callerEmail && u.email.toLowerCase() === callerEmail) ||
-      (callerId && (u.uid === callerId || u.email.toLowerCase() === callerId.toLowerCase()))
+      (callerEmail && u.email.toLowerCase().trim() === callerEmail) ||
+      (callerId && (u.uid === callerId || u.email.toLowerCase().trim() === callerId.toLowerCase()))
   );
+  const hasRevokedUser = matchingUsers.some((u) => Boolean(u.accessRevoked));
+  const matchedUser =
+    matchingUsers.find((u) => !u.accessRevoked && (u.role === 'restricted' || u.role === 'master')) ||
+    matchingUsers.find((u) => callerId && u.uid === callerId) ||
+    matchingUsers[0];
 
   // Reconcile if user profile holds an active admin role granted by Master Admin
-  if (!matchedAdmin && matchedUser && !matchedUser.accessRevoked && (matchedUser.role === 'restricted' || matchedUser.role === 'master')) {
+  if (!matchedAdmin && matchedUser && !hasRevokedUser && (matchedUser.role === 'restricted' || matchedUser.role === 'master')) {
     const now = new Date().toISOString();
     matchedAdmin = {
       id: matchedUser.uid || `admin-${Date.now()}`,
@@ -295,16 +300,16 @@ function resolveCallerAdmin(req: Request): ResolvedCaller {
     writeAdmins(admins);
   }
 
-  if (matchedUser?.accessRevoked && !matchedAdmin) {
+  if (hasRevokedUser && !matchedAdmin) {
     return { provided: true, isMaster: false, admin: null, revoked: true, callerId, callerEmail };
   }
 
   if (!matchedAdmin) {
-    return { provided: true, isMaster: false, admin: null, revoked: Boolean(matchedUser?.accessRevoked), callerId, callerEmail };
+    return { provided: true, isMaster: false, admin: null, revoked: hasRevokedUser, callerId, callerEmail };
   }
 
   // If caller is a sub-admin (restricted), enforce non-revoked check
-  if (matchedAdmin.role !== 'master' && matchedUser?.accessRevoked) {
+  if (matchedAdmin.role !== 'master' && hasRevokedUser) {
     return { provided: true, isMaster: false, admin: null, revoked: true, callerId, callerEmail };
   }
 
@@ -1317,12 +1322,17 @@ app.get('/api/auth/session-status', (req: Request, res: Response) => {
     const matchedAdmin = admins.find(
       (a) => (email && a.email.toLowerCase().trim() === email) || (uid && a.id === uid)
     );
-    const matchedUser = users.find(
+    const matchingUsers = users.filter(
       (u) => (email && u.email.toLowerCase().trim() === email) || (uid && u.uid === uid)
     );
+    const hasRevokedUser = matchingUsers.some((u) => Boolean(u.accessRevoked));
+    const matchedUser =
+      matchingUsers.find((u) => !u.accessRevoked && (u.role === 'restricted' || u.role === 'master')) ||
+      matchingUsers.find((u) => uid && u.uid === uid) ||
+      matchingUsers[0];
 
     if (matchedAdmin) {
-      if (matchedAdmin.role !== 'master' && matchedUser?.accessRevoked) {
+      if (matchedAdmin.role !== 'master' && hasRevokedUser) {
         return res.json({
           success: true,
           authorized: false,
@@ -1342,7 +1352,7 @@ app.get('/api/auth/session-status', (req: Request, res: Response) => {
       });
     }
 
-    if (matchedUser?.accessRevoked) {
+    if (hasRevokedUser) {
       return res.json({
         success: true,
         authorized: false,
@@ -1421,20 +1431,35 @@ app.post('/api/admins', (req: Request, res: Response) => {
     }
 
     const cleanEmail = String(email).trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      return res.status(400).json({ success: false, message: 'Please enter a valid email address.' });
+    }
+
     const admins = readAdmins();
-    const existing = admins.find((a) => a.email.toLowerCase() === cleanEmail);
+    const existing = admins.find((a) => a.email.toLowerCase().trim() === cleanEmail);
     if (existing) {
-      return res.status(400).json({ success: false, message: `Admin with email ${email} already exists` });
+      return res.status(400).json({ success: false, message: `Admin with email ${cleanEmail} already exists` });
     }
 
     const now = new Date().toISOString();
     const resolvedRole: 'master' | 'restricted' = role === 'master' ? 'master' : 'restricted';
+    const dedupedCardIds =
+      resolvedRole === 'master'
+        ? []
+        : Array.from(
+            new Set(
+              (Array.isArray(assignedCardIds) ? assignedCardIds : [])
+                .map((cid: any) => String(cid).trim())
+                .filter(Boolean)
+            )
+          );
+
     const newAdmin: AdminUser = {
       id: id ? String(id).trim() : `admin-${Date.now()}`,
       email: cleanEmail,
       name: String(name).trim(),
       role: resolvedRole,
-      assignedCardIds: resolvedRole === 'master' ? [] : (Array.isArray(assignedCardIds) ? assignedCardIds.map((cid: any) => String(cid).trim()).filter(Boolean) : []),
+      assignedCardIds: dedupedCardIds,
       permissions: {
         canEditCards: permissions?.canEditCards ?? true,
         canToggleAi: permissions?.canToggleAi ?? true,
@@ -1448,17 +1473,22 @@ app.post('/api/admins', (req: Request, res: Response) => {
     admins.push(newAdmin);
     writeAdmins(admins);
 
-    // Clear any prior revocation on user profile if re-registered by Master Admin
+    // Clear any prior revocation across all matching user profiles when re-registered by Master Admin
     const users = readUsers();
-    const uIdx = users.findIndex((u) => u.email.toLowerCase() === cleanEmail);
-    if (uIdx !== -1) {
-      users[uIdx] = {
-        ...users[uIdx],
-        role: newAdmin.role,
-        assignedCardIds: newAdmin.assignedCardIds,
-        accessRevoked: false,
-        revokedAt: undefined,
-      };
+    let usersModified = false;
+    for (let ui = 0; ui < users.length; ui++) {
+      if (users[ui].email.toLowerCase().trim() === cleanEmail || users[ui].uid === newAdmin.id) {
+        users[ui] = {
+          ...users[ui],
+          role: newAdmin.role,
+          assignedCardIds: newAdmin.assignedCardIds,
+          accessRevoked: false,
+          revokedAt: undefined,
+        };
+        usersModified = true;
+      }
+    }
+    if (usersModified) {
       writeUsers(users);
     }
 
@@ -1479,15 +1509,55 @@ app.put('/api/admins/:id', (req: Request, res: Response) => {
     }
 
     const { id } = req.params;
+    const cleanParamId = decodeURIComponent(String(id || '')).trim();
+    const cleanParamLower = cleanParamId.toLowerCase();
     const { name, email, role, assignedCardIds, permissions } = req.body;
 
+    if (email !== undefined) {
+      const candidateEmail = String(email).trim().toLowerCase();
+      if (!candidateEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(candidateEmail)) {
+        return res.status(400).json({ success: false, message: 'Please enter a valid email address.' });
+      }
+    }
+
     const admins = readAdmins();
-    const idx = admins.findIndex(
-      (a) => a.id === id || a.email.toLowerCase() === id.toLowerCase() || (email && a.email.toLowerCase() === String(email).trim().toLowerCase())
+    let idx = admins.findIndex(
+      (a) => a.id === cleanParamId || a.email.toLowerCase().trim() === cleanParamLower
     );
 
     if (idx === -1) {
-      return res.status(404).json({ success: false, message: 'Admin not found' });
+      // Allow Master Admin to reconcile an existing Firestore-stored admin record into ephemeral server storage
+      // when valid email metadata is included in the update payload.
+      const incomingEmail = email ? String(email).trim().toLowerCase() : (cleanParamLower.includes('@') ? cleanParamLower : '');
+      if (!incomingEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(incomingEmail)) {
+        return res.status(404).json({ success: false, message: 'Admin not found' });
+      }
+      // Check if another admin already holds that email under a different ID
+      const conflictIdx = admins.findIndex((a) => a.email.toLowerCase().trim() === incomingEmail);
+      if (conflictIdx !== -1) {
+        idx = conflictIdx;
+      } else {
+        const now = new Date().toISOString();
+        const resolvedRole: 'master' | 'restricted' =
+          incomingEmail === PRIMARY_MASTER_EMAIL ? 'master' : (role === 'master' ? 'master' : 'restricted');
+        const reconciled: AdminUser = {
+          id: cleanParamId || `admin-${Date.now()}`,
+          email: incomingEmail,
+          name: name ? String(name).trim() : incomingEmail.split('@')[0],
+          role: resolvedRole,
+          assignedCardIds: [],
+          permissions: {
+            canEditCards: permissions?.canEditCards ?? true,
+            canToggleAi: permissions?.canToggleAi ?? true,
+            canExportCsv: resolvedRole === 'master' ? true : (permissions?.canExportCsv ?? false),
+            canCreateCards: resolvedRole === 'master',
+          },
+          createdAt: now,
+          updatedAt: now,
+        };
+        admins.push(reconciled);
+        idx = admins.length - 1;
+      }
     }
 
     const prevAdmin = admins[idx];
@@ -1496,6 +1566,23 @@ app.put('/api/admins/:id', (req: Request, res: Response) => {
     const prevAssignedLower = new Set((prevAdmin.assignedCardIds || []).map((cid) => cid.toLowerCase()));
 
     const targetIsPrimaryMaster = prevAdminEmail === PRIMARY_MASTER_EMAIL;
+    const nextEmail =
+      !targetIsPrimaryMaster && email !== undefined
+        ? String(email).trim().toLowerCase()
+        : prevAdminEmail;
+
+    if (!targetIsPrimaryMaster && nextEmail !== prevAdminEmail) {
+      const duplicateOther = admins.find(
+        (a, i) => i !== idx && a.email.toLowerCase().trim() === nextEmail
+      );
+      if (duplicateOther) {
+        return res.status(400).json({
+          success: false,
+          message: `Another administrator (${duplicateOther.name}) already uses ${nextEmail}.`,
+        });
+      }
+    }
+
     const nextRole: 'master' | 'restricted' = targetIsPrimaryMaster
       ? 'master'
       : (role === 'master' ? 'master' : (role === 'restricted' ? 'restricted' : prevAdmin.role));
@@ -1511,8 +1598,8 @@ app.put('/api/admins/:id', (req: Request, res: Response) => {
 
     admins[idx] = {
       ...prevAdmin,
-      name: name !== undefined ? String(name).trim() : prevAdmin.name,
-      email: !targetIsPrimaryMaster && email !== undefined ? String(email).trim().toLowerCase() : prevAdmin.email,
+      name: name !== undefined && String(name).trim() ? String(name).trim() : prevAdmin.name,
+      email: nextEmail,
       role: nextRole,
       assignedCardIds: normalizedNextCardIds,
       permissions: {
@@ -1538,7 +1625,10 @@ app.put('/api/admins/:id', (req: Request, res: Response) => {
         const card = cards[ci];
         const cidLower = card.id.toLowerCase();
         if (!nextAssignedLower.has(cidLower)) {
-          const emailOwned = Boolean(card.assignedToEmail) && card.assignedToEmail!.trim().toLowerCase() === prevAdminEmail;
+          const emailOwned =
+            Boolean(card.assignedToEmail) &&
+            (card.assignedToEmail!.trim().toLowerCase() === prevAdminEmail ||
+              card.assignedToEmail!.trim().toLowerCase() === nextEmail);
           const uidOwned = Boolean(card.assignedToUid) && card.assignedToUid!.trim() === prevAdminId;
           if (emailOwned || uidOwned) {
             cards[ci] = {
@@ -1562,7 +1652,7 @@ app.put('/api/admins/:id', (req: Request, res: Response) => {
     let usersDirty = false;
     for (let ui = 0; ui < users.length; ui++) {
       const uEmail = users[ui].email.toLowerCase().trim();
-      if (uEmail === admins[idx].email.toLowerCase().trim() || users[ui].uid === admins[idx].id) {
+      if (uEmail === nextEmail || users[ui].uid === admins[idx].id) {
         users[ui] = {
           ...users[ui],
           role: admins[idx].role,
@@ -1571,7 +1661,7 @@ app.put('/api/admins/:id', (req: Request, res: Response) => {
           revokedAt: undefined,
         };
         usersDirty = true;
-      } else if (uEmail === prevAdminEmail && prevAdminEmail !== admins[idx].email.toLowerCase().trim()) {
+      } else if (uEmail === prevAdminEmail && prevAdminEmail !== nextEmail) {
         users[ui] = {
           ...users[ui],
           role: 'member',
@@ -1620,20 +1710,24 @@ app.delete('/api/admins/:id', (req: Request, res: Response) => {
     const filtered = admins.filter((a) => a.id !== target.id && a.email.toLowerCase() !== targetEmail);
     writeAdmins(filtered);
 
-    // Revoke admin access in users store so they can no longer log in as admin or access protected resources
+    // Revoke admin access across all matching user profiles so they can no longer log in as admin or access protected resources
     // NOTE: Strictly do NOT touch cards.json, qr_logs.json, ads.json, or business configurations.
     const now = new Date().toISOString();
     const users = readUsers();
-    const userIdx = users.findIndex((u) => u.email.toLowerCase() === targetEmail || u.uid === target.id);
-    if (userIdx !== -1) {
-      users[userIdx] = {
-        ...users[userIdx],
-        role: 'member',
-        assignedCardIds: [],
-        accessRevoked: true,
-        revokedAt: now,
-      };
-    } else {
+    let matchedAnyUser = false;
+    for (let ui = 0; ui < users.length; ui++) {
+      if (users[ui].email.toLowerCase().trim() === targetEmail || users[ui].uid === target.id) {
+        users[ui] = {
+          ...users[ui],
+          role: 'member',
+          assignedCardIds: [],
+          accessRevoked: true,
+          revokedAt: now,
+        };
+        matchedAnyUser = true;
+      }
+    }
+    if (!matchedAnyUser) {
       // Record revocation marker so if this deleted admin attempts future login before re-registration, they are blocked
       users.push({
         uid: `revoked-${target.id}`,
@@ -1686,15 +1780,21 @@ app.post('/api/users', (req: Request, res: Response) => {
     const users = readUsers();
     const admins = readAdmins();
     const cleanEmail = String(email).trim().toLowerCase();
-    const idx = users.findIndex((u) => u.uid === uid || u.email.toLowerCase() === cleanEmail);
+    const cleanUid = String(uid).trim();
+    const idxByUid = users.findIndex((u) => u.uid === cleanUid);
+    const idxByEmail = users.findIndex((u) => u.email.toLowerCase().trim() === cleanEmail);
+    const idx = idxByUid !== -1 ? idxByUid : idxByEmail;
+    const anyRevokedForUser = users.some(
+      (u) => (u.uid === cleanUid || u.email.toLowerCase().trim() === cleanEmail) && Boolean(u.accessRevoked)
+    );
 
     const now = new Date().toISOString();
     const isMasterEmail = cleanEmail === PRIMARY_MASTER_EMAIL;
-    const matchedAdmin = admins.find((a) => a.email.toLowerCase() === cleanEmail);
+    const matchedAdmin = admins.find((a) => a.email.toLowerCase().trim() === cleanEmail || a.id === cleanUid);
     const callerIsMaster = isMasterAdminStrict(req);
 
     // If user's admin access was revoked and they are NOT re-registered in admins, block unauthorized login promotion
-    if (!isMasterEmail && !matchedAdmin && idx !== -1 && users[idx].accessRevoked && !callerIsMaster) {
+    if (!isMasterEmail && !matchedAdmin && anyRevokedForUser && !callerIsMaster) {
       return res.status(403).json({
         success: false,
         revoked: true,
@@ -2317,8 +2417,12 @@ async function startServer() {
 
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
+    const disableHmr = process.env.DISABLE_HMR === 'true' || Boolean(process.env.K_SERVICE);
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        ...(disableHmr ? { hmr: false } : {}),
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);

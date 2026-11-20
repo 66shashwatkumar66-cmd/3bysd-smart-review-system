@@ -23,6 +23,7 @@ import {
   Eye,
 } from 'lucide-react';
 import { FirebaseCloudPanel } from './FirebaseCloudPanel';
+import { formatApiError } from '../utils/api';
 
 interface MasterAdminViewProps {
   cards: CardRecord[];
@@ -111,40 +112,52 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) {
+    if (isSubmitting) return;
+
+    const trimmedName = name.trim();
+    const trimmedEmail = email.trim().toLowerCase();
+    if (!trimmedName) {
       setFormError('Please enter the admin name.');
       return;
     }
-    if (!email.trim() || !email.includes('@')) {
+    if (!trimmedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
       setFormError('Please enter a valid email address.');
       return;
     }
+
+    const isPrimaryMasterTarget = editingAdmin?.email?.toLowerCase().trim() === '66shashwatkumar66@gmail.com';
+    const effectiveRole: 'master' | 'restricted' = isPrimaryMasterTarget ? 'master' : role;
+    const effectiveEmail = isPrimaryMasterTarget ? '66shashwatkumar66@gmail.com' : trimmedEmail;
+    const dedupedCardIds =
+      effectiveRole === 'master'
+        ? []
+        : Array.from(new Set(assignedCardIds.map((id) => id.trim()).filter(Boolean)));
 
     setFormError('');
     setIsSubmitting(true);
     try {
       await onSaveAdmin({
         id: editingAdmin ? editingAdmin.id : undefined,
-        name: name.trim(),
-        email: email.trim().toLowerCase(),
-        role,
-        assignedCardIds: role === 'master' ? [] : assignedCardIds,
+        name: trimmedName,
+        email: effectiveEmail,
+        role: effectiveRole,
+        assignedCardIds: dedupedCardIds,
         permissions: {
           canEditCards,
           canToggleAi,
-          canExportCsv,
-          canCreateCards: role === 'master',
+          canExportCsv: effectiveRole === 'master' ? true : canExportCsv,
+          canCreateCards: effectiveRole === 'master',
         },
       });
       setIsModalOpen(false);
       setActionFeedback({
         type: 'success',
         text: editingAdmin
-          ? `Updated permissions for "${name.trim()}" (${email.trim().toLowerCase()}).`
-          : `Registered sub-admin "${name.trim()}" (${email.trim().toLowerCase()}) successfully.`,
+          ? `Updated permissions for "${trimmedName}" (${effectiveEmail}).`
+          : `Registered sub-admin "${trimmedName}" (${effectiveEmail}) successfully.`,
       });
     } catch (err: any) {
-      setFormError(err.message || 'Failed to save admin user');
+      setFormError(formatApiError(err, 'Failed to update administrator permissions.'));
     } finally {
       setIsSubmitting(false);
     }
@@ -166,12 +179,16 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
       setAdminToDelete(null);
       setActionFeedback({
         type: 'error',
-        text: err?.message || `Failed to delete admin "${target.name}". Please try again.`,
+        text: formatApiError(err, `Failed to delete admin "${target.name}". Please try again.`),
       });
     } finally {
       setIsDeleting(false);
     }
   };
+
+  const editingIsPrimaryMaster = editingAdmin?.email?.toLowerCase().trim() === '66shashwatkumar66@gmail.com';
+  const knownCardIdsLower = new Set(cards.map((c) => c.id.toLowerCase()));
+  const unlistedAssignedIds = assignedCardIds.filter((cid) => !knownCardIdsLower.has(cid.toLowerCase()));
 
   const filteredCardsForModal = cards.filter((c) => {
     const term = cardSearch.toLowerCase().trim();
@@ -478,8 +495,10 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
                 </div>
               </div>
               <button
+                type="button"
+                disabled={isSubmitting}
                 onClick={() => setIsModalOpen(false)}
-                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100"
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 disabled:opacity-40"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -517,9 +536,10 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
                     id={emailId}
                     type="email"
                     value={email}
+                    disabled={editingIsPrimaryMaster}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="e.g. rahul@artisan.com"
-                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#1A73E8] focus:bg-white"
+                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl text-slate-900 focus:outline-none focus:ring-2 focus:ring-[#1A73E8] focus:bg-white disabled:opacity-60 disabled:cursor-not-allowed"
                   />
                 </div>
               </div>
@@ -531,7 +551,9 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
                 </label>
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   <label
-                    className={`flex items-start gap-2 p-3 rounded-xl border cursor-pointer transition-all ${
+                    className={`flex items-start gap-2 p-3 rounded-xl border transition-all ${
+                      editingIsPrimaryMaster ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
+                    } ${
                       role === 'restricted'
                         ? 'bg-blue-50/50 border-[#1A73E8] text-slate-900'
                         : 'bg-white border-slate-200 text-slate-600'
@@ -540,6 +562,7 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
                     <input
                       type="radio"
                       name="adminRole"
+                      disabled={editingIsPrimaryMaster}
                       checked={role === 'restricted'}
                       onChange={() => setRole('restricted')}
                       className="mt-0.5 text-[#1A73E8]"
@@ -565,6 +588,7 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
                     <input
                       type="radio"
                       name="adminRole"
+                      disabled={editingIsPrimaryMaster}
                       checked={role === 'master'}
                       onChange={() => setRole('master')}
                       className="mt-0.5 text-purple-600"
@@ -671,6 +695,28 @@ export const MasterAdminView: React.FC<MasterAdminViewProps> = ({
                       })
                     )}
                   </div>
+
+                  {unlistedAssignedIds.length > 0 && (
+                    <div className="pt-1.5 space-y-1">
+                      <p className="text-[10px] font-semibold text-amber-800">
+                        Additional assigned card IDs ({unlistedAssignedIds.length}):
+                      </p>
+                      <div className="flex flex-wrap gap-1">
+                        {unlistedAssignedIds.map((cid) => (
+                          <button
+                            key={cid}
+                            type="button"
+                            onClick={() => handleToggleCardSelection(cid)}
+                            title={`Remove #${cid}`}
+                            className="inline-flex items-center gap-1 font-mono text-[10px] font-bold px-2 py-0.5 rounded-md bg-amber-50 text-amber-900 border border-amber-200 hover:bg-red-50 hover:text-red-700 hover:border-red-200 transition-colors"
+                          >
+                            <span>#{cid}</span>
+                            <X className="w-2.5 h-2.5" />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 

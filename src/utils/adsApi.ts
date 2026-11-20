@@ -172,8 +172,9 @@ export async function saveAd(
   }
 
   // 2. Sync to Server REST API
+  let serverOk = false;
   try {
-    await fetch('/api/ads', {
+    const res = await fetch('/api/ads', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -181,9 +182,18 @@ export async function saveAd(
       },
       body: JSON.stringify(sanitized),
     });
-  } catch (netErr) {
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.message || `Failed to save advertisement (${res.status})`);
+    }
+    serverOk = true;
+  } catch (netErr: any) {
+    if (netErr instanceof Error && netErr.message && !netErr.message.includes('Failed to fetch')) {
+      throw netErr;
+    }
     console.warn('Server saveAd notice:', netErr);
   }
+  void serverOk;
 
   // 3. Update localStorage cache
   try {
@@ -217,14 +227,20 @@ export async function deleteAd(id: string, adminEmail?: string): Promise<boolean
 
   // 2. Delete on Server
   try {
-    await fetch(`/api/ads/${encodeURIComponent(id)}`, {
+    const res = await fetch(`/api/ads/${encodeURIComponent(id)}`, {
       method: 'DELETE',
       headers: {
         ...(adminEmail ? { 'x-admin-email': adminEmail } : {}),
       },
     });
-  } catch {
-    // ignore
+    if (!res.ok && res.status !== 404) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.message || `Failed to delete advertisement (${res.status})`);
+    }
+  } catch (netErr: any) {
+    if (netErr instanceof Error && netErr.message && !netErr.message.includes('Failed to fetch')) {
+      throw netErr;
+    }
   }
 
   // 3. Update localStorage cache
