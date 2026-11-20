@@ -22,7 +22,7 @@ import {
 import { auth, signOut, onAuthStateChanged, User } from '../firebase';
 import { AdminUser, UserProfile } from '../types';
 import { GoogleAuthModal } from './GoogleAuthModal';
-import { clearSessionCaches } from '../utils/api';
+import { saveUser } from '../utils/api';
 
 interface AdminHeaderProps {
   currentTab: 'cards' | 'logs' | 'customizer' | 'print' | 'nfc' | 'simulator' | 'admins' | 'users' | 'ads';
@@ -67,10 +67,24 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
   });
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setCurrentUser(user);
-      if (!user) {
-        setVerifiedGoogleProfile(null);
+      if (user && user.email) {
+        try {
+          const profile = await saveUser({
+            uid: user.uid,
+            email: user.email,
+            displayName: user.displayName || user.email.split('@')[0],
+            photoURL: user.photoURL || undefined,
+            provider: 'google.com',
+            emailVerified: user.emailVerified,
+            role: user.email.toLowerCase() === '66shashwatkumar66@gmail.com' ? 'master' : 'member',
+          });
+          setVerifiedGoogleProfile(profile);
+          localStorage.setItem('3dbysd_current_user', JSON.stringify(profile));
+        } catch {
+          // ignore
+        }
       }
     });
     return () => unsubscribe();
@@ -83,7 +97,7 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
   const handleGoogleSuccess = (user: UserProfile) => {
     setVerifiedGoogleProfile(user);
     localStorage.setItem('3dbysd_current_user', JSON.stringify(user));
-    if (user.role === 'master' || user.email.trim().toLowerCase() === '66shashwatkumar66@gmail.com') {
+    if (user.role === 'master' || user.email === '66shashwatkumar66@gmail.com') {
       const master = admins.find((a) => a.role === 'master') || admins[0];
       if (master) onSelectActiveAdmin(master);
     }
@@ -93,7 +107,7 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
     try {
       await signOut(auth);
       setVerifiedGoogleProfile(null);
-      clearSessionCaches();
+      localStorage.removeItem('3dbysd_current_user');
       if (onSignOut) onSignOut();
     } catch (err: any) {
       console.warn('Sign-out failed:', err?.message);
@@ -106,7 +120,7 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
     currentUser?.email ||
     verifiedGoogleProfile?.email ||
     ''
-  ).trim().toLowerCase();
+  ).toLowerCase();
   const isMasterUser = effectiveEmail === '66shashwatkumar66@gmail.com';
   const isInSubAdminMode = isMasterUser && activeAdmin.role === 'restricted';
 
@@ -298,8 +312,8 @@ export const AdminHeader: React.FC<AdminHeaderProps> = ({
               </button>
             )}
 
-            {/* Quick Add Batch Button (Master Admin Only) */}
-            {isMaster && (
+            {/* Quick Add Batch Button */}
+            {(isMaster || activeAdmin.permissions?.canCreateCards) && (
               <button
                 onClick={onOpenBatchModal}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-[#1A73E8] hover:bg-[#1557B0] rounded-xl shadow-xs transition-all whitespace-nowrap active:scale-95"

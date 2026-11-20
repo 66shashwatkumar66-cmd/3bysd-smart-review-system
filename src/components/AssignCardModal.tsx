@@ -65,8 +65,7 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
       setCategory(card.category || '');
       setGoogleReviewUrl(card.googleReviewUrl || '');
       setNotes(card.notes || '');
-      // Non-master select only exposes 'assigned' and 'disabled'; keep state aligned with visible option
-      setStatus(!isMaster && card.status === 'available' ? 'assigned' : (card.status || 'available'));
+      setStatus(card.status || 'available');
       setAiReviewEnabled(card.aiReviewEnabled !== false);
       setWhatsapp(card.whatsapp || '');
       setInstagram(card.instagram || '');
@@ -78,11 +77,9 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
       setCustomKeywordsText(card.customKeywords ? card.customKeywords.join(', ') : '');
       setError('');
     }
-  }, [card, isMaster]);
+  }, [card]);
 
   if (!isOpen || !card) return null;
-
-  const canToggleAi = isMaster || (activeAdmin?.permissions?.canToggleAi ?? true);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -136,6 +133,7 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
         googleReviewUrl: googleReviewUrl.trim(),
         notes: notes.trim(),
         status: status,
+        aiReviewEnabled: aiReviewEnabled,
         customKeywords: keywordsArray,
         whatsapp: whatsapp.trim() || undefined,
         instagram: instagram.trim() || undefined,
@@ -146,11 +144,6 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
           subscriptionEndDate: subscriptionEndDate.trim() || undefined,
         }),
       };
-
-      const initialAiEnabled = card.aiReviewEnabled !== false;
-      if (isMaster || (canToggleAi && aiReviewEnabled !== initialAiEnabled)) {
-        payload.aiReviewEnabled = aiReviewEnabled;
-      }
 
       // Only master admin can reassign card ownership
       if (isMaster) {
@@ -179,7 +172,7 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
             </div>
             <div>
               <h2 className="text-sm font-bold text-slate-900">
-                {!isMaster || card.businessName ? `Edit Card #${card.id}` : `Assign Card #${card.id}`}
+                {card.businessName ? `Edit Card #${card.id}` : `Assign Card #${card.id}`}
               </h2>
               <p className="text-[11px] text-slate-500">
                 Permanent link: <span className="font-mono text-blue-600">/r/{card.id}</span>
@@ -617,27 +610,24 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
                       {aiReviewEnabled ? 'ACTIVE (ON)' : 'BYPASS (OFF)'}
                     </span>
                   </div>
-                    <p className="text-[11px] text-slate-500">
-                      {aiReviewEnabled
-                        ? 'Scans open the AI review assistant first, customer copies draft, then continues to Google.'
-                        : 'Scans redirect directly to Google Reviews, skipping the AI generator.'}
-                      {!canToggleAi && ' (Locked by Master Admin)'}
-                    </p>
-                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    {aiReviewEnabled
+                      ? 'Scans open the AI review assistant first, customer copies draft, then continues to Google.'
+                      : 'Scans redirect directly to Google Reviews, skipping the AI generator.'}
+                  </p>
                 </div>
+              </div>
 
-                {/* Toggle Switch Button */}
-                <button
-                  type="button"
-                  disabled={!canToggleAi}
-                  onClick={() => canToggleAi && setAiReviewEnabled(!aiReviewEnabled)}
-                  title={!canToggleAi ? 'Locked by Master Admin' : 'Toggle AI Review Generator'}
-                  className={`relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                    !canToggleAi ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'
-                  } ${aiReviewEnabled ? 'bg-[#1A73E8]' : 'bg-slate-300'}`}
-                  role="switch"
-                  aria-checked={aiReviewEnabled}
-                >
+              {/* Toggle Switch Button */}
+              <button
+                type="button"
+                onClick={() => setAiReviewEnabled(!aiReviewEnabled)}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                  aiReviewEnabled ? 'bg-[#1A73E8]' : 'bg-slate-300'
+                }`}
+                role="switch"
+                aria-checked={aiReviewEnabled}
+              >
                 <span
                   className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
                     aiReviewEnabled ? 'translate-x-5' : 'translate-x-0'
@@ -659,9 +649,7 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
               className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900 focus:bg-white"
             >
               <option value="assigned">Assigned (Active for customers)</option>
-              {isMaster && (
-                <option value="available">Available (Unassigned / Physical stock)</option>
-              )}
+              <option value="available">Available (Unassigned / Physical stock)</option>
               <option value="disabled">Disabled (Temporarily inactive)</option>
             </select>
           </div>
@@ -682,7 +670,7 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
               className="flex items-center gap-1.5 px-5 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg shadow-sm transition-all active:scale-95 disabled:opacity-50"
             >
               <Check className="w-4 h-4" />
-              <span>{isSubmitting ? 'Saving...' : isMaster ? 'Save Assignment' : 'Save Changes'}</span>
+              <span>{isSubmitting ? 'Saving...' : 'Save Assignment'}</span>
             </button>
           </div>
         </form>

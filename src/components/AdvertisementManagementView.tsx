@@ -72,7 +72,6 @@ export const AdvertisementManagementView: React.FC<AdvertisementManagementViewPr
   const [formError, setFormError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
 
   // Delete modal state
   const [adToDelete, setAdToDelete] = useState<Advertisement | null>(null);
@@ -197,13 +196,12 @@ export const AdvertisementManagementView: React.FC<AdvertisementManagementViewPr
 
   // Toggle active/paused status quickly
   const handleToggleStatus = async (ad: Advertisement) => {
-    setActionError(null);
     const newStatus: AdStatus = ad.status === 'active' ? 'paused' : 'active';
     try {
       const updated = await saveAd({ ...ad, status: newStatus }, activeAdmin?.email);
       setAds((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
     } catch (err: any) {
-      setActionError(`Failed to update status: ${err?.message || 'Unknown error'}`);
+      alert(`Failed to update status: ${err?.message || 'Unknown error'}`);
     }
   };
 
@@ -284,14 +282,12 @@ export const AdvertisementManagementView: React.FC<AdvertisementManagementViewPr
   const handleDeleteConfirm = async () => {
     if (!adToDelete) return;
     setIsDeleting(true);
-    setActionError(null);
     try {
       await deleteAd(adToDelete.id, activeAdmin?.email);
       setAds((prev) => prev.filter((a) => a.id !== adToDelete.id));
       setAdToDelete(null);
     } catch (err: any) {
-      setActionError(`Failed to delete advertisement: ${err?.message || 'Unknown error'}`);
-      setAdToDelete(null);
+      alert(`Failed to delete advertisement: ${err?.message || 'Unknown error'}`);
     } finally {
       setIsDeleting(false);
     }
@@ -344,23 +340,6 @@ export const AdvertisementManagementView: React.FC<AdvertisementManagementViewPr
         <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800 font-semibold flex items-center gap-2 animate-fadeIn">
           <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
           <span>{saveSuccessMsg}</span>
-        </div>
-      )}
-
-      {actionError && (
-        <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-800 font-semibold flex items-center justify-between gap-2 animate-fadeIn">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
-            <span>{actionError}</span>
-          </div>
-          <button
-            type="button"
-            onClick={() => setActionError(null)}
-            className="p-0.5 text-red-600 hover:text-red-800 cursor-pointer"
-            aria-label="Dismiss error"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
         </div>
       )}
 

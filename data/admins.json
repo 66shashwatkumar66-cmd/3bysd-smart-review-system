@@ -15,27 +15,12 @@
     "updatedAt": "2026-10-13T19:01:58.673Z"
   },
   {
-    "id": "admin-1795125341799",
-    "email": "thakurrsameer001@gmail.com",
-    "name": "sameer",
+    "id": "admin-1793443869010",
+    "email": "merchant.sports@gmail.com",
+    "name": "Mercury Sports Store Manager",
     "role": "restricted",
     "assignedCardIds": [
-      "0060",
-      "0061",
-      "0062",
-      "0063",
-      "0064",
-      "0065",
-      "0066",
-      "0067",
-      "0068",
-      "0070",
-      "0069",
-      "0059",
-      "0058",
-      "0057",
-      "0056",
-      "0055"
+      "0001"
     ],
     "permissions": {
       "canEditCards": true,
@@ -43,7 +28,7 @@
       "canExportCsv": false,
       "canCreateCards": false
     },
-    "createdAt": "2026-11-19T21:55:41.063Z",
-    "updatedAt": "2026-11-19T21:55:41.063Z"
+    "createdAt": "2026-10-31T10:51:09.010Z",
+    "updatedAt": "2026-10-31T10:51:09.010Z"
   }
 ]

@@ -27,7 +27,7 @@ import {
 import { AdminUser, UserProfile } from '../types';
 import { auth, signOut, onAuthStateChanged, User } from '../firebase';
 import { GoogleAuthModal } from './GoogleAuthModal';
-import { clearSessionCaches } from '../utils/api';
+import { saveUser } from '../utils/api';
 
 interface SlidingSidebarProps {
   isOpen: boolean;
@@ -44,7 +44,6 @@ interface SlidingSidebarProps {
   onOpenBatchModal: () => void;
   onExportCsv?: () => void;
   currentUser?: UserProfile | null;
-  onSignOut?: () => void;
 }
 
 export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
@@ -62,7 +61,6 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
   onOpenBatchModal,
   onExportCsv,
   currentUser: propCurrentUser,
-  onSignOut,
 }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isGoogleModalOpen, setIsGoogleModalOpen] = useState<boolean>(false);
@@ -76,10 +74,24 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
   });
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setCurrentUser(user);
-      if (!user) {
-        setVerifiedGoogleProfile(null);
+      if (user && user.email) {
+        try {
+          const profile = await saveUser({
+            uid: user.uid,
+            email: user.email,
+            displayName: user.displayName || user.email.split('@')[0],
+            photoURL: user.photoURL || undefined,
+            provider: 'google.com',
+            emailVerified: user.emailVerified,
+            role: user.email.toLowerCase() === '66shashwatkumar66@gmail.com' ? 'master' : 'member',
+          });
+          setVerifiedGoogleProfile(profile);
+          localStorage.setItem('3dbysd_current_user', JSON.stringify(profile));
+        } catch {
+          // ignore
+        }
       }
     });
     return () => unsubscribe();
@@ -89,8 +101,7 @@ export const SlidingSidebar: React.FC<SlidingSidebarProps> = ({
     try {
       await signOut(auth);
       setVerifiedGoogleProfile(null);
-      clearSessionCaches();
-      if (onSignOut) onSignOut();
+      localStorage.removeItem('3dbysd_current_user');
     } catch (err: any) {
       console.warn('Sign-out failed:', err?.message);
     }

@@ -77,7 +77,6 @@ export const CardsTable: React.FC<CardsTableProps> = ({
   const [selectedCardIds, setSelectedCardIds] = useState<string[]>([]);
   const [isBulkUpdating, setIsBulkUpdating] = useState(false);
   const [bulkSuccessMessage, setBulkSuccessMessage] = useState<string | null>(null);
-  const [bulkErrorMessage, setBulkErrorMessage] = useState<string | null>(null);
 
   const isMaster = !activeAdmin || activeAdmin.role === 'master';
   const canEditCards = isMaster || (activeAdmin?.permissions?.canEditCards ?? true);
@@ -162,12 +161,11 @@ export const CardsTable: React.FC<CardsTableProps> = ({
     if (selectedCardIds.length === 0 || isBulkUpdating) return;
     setIsBulkUpdating(true);
     setBulkSuccessMessage(null);
-    setBulkErrorMessage(null);
     try {
       if (onBulkUpdateStatus) {
         await onBulkUpdateStatus(selectedCardIds, newStatus);
       } else {
-        await bulkUpdateCardsStatus(selectedCardIds, newStatus, activeAdmin?.id, activeAdmin?.email);
+        await bulkUpdateCardsStatus(selectedCardIds, newStatus, activeAdmin?.id);
       }
       const count = selectedCardIds.length;
       setBulkSuccessMessage(
@@ -177,7 +175,6 @@ export const CardsTable: React.FC<CardsTableProps> = ({
       setTimeout(() => setBulkSuccessMessage(null), 3500);
     } catch (err: any) {
       console.error('Bulk update error:', err);
-      setBulkErrorMessage(err?.message || 'Bulk status update failed.');
     } finally {
       setIsBulkUpdating(false);
     }
@@ -462,23 +459,6 @@ export const CardsTable: React.FC<CardsTableProps> = ({
         </div>
       )}
 
-      {bulkErrorMessage && (
-        <div className="bg-red-50 border border-red-200 text-red-800 px-4 py-2.5 rounded-xl text-xs font-semibold flex items-center justify-between gap-2 shadow-2xs animate-in fade-in">
-          <div className="flex items-center gap-2">
-            <Ban className="w-4 h-4 text-red-600 shrink-0" />
-            <span>{bulkErrorMessage}</span>
-          </div>
-          <button
-            type="button"
-            onClick={() => setBulkErrorMessage(null)}
-            className="text-red-700 hover:text-red-950 p-1"
-            title="Dismiss error"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      )}
-
       {/* Cards Display Container - Responsive Table on PC, Responsive Cards on Mobile */}
       <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
         {/* Bulk Action Header Strip (Visible when cards are selected) */}
@@ -523,18 +503,16 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                 </div>
               ) : (
                 <>
-                  {isMaster && (
-                    <button
-                      type="button"
-                      onClick={() => handleBulkStatusChange('available')}
-                      disabled={!canEditCards}
-                      className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-white text-amber-800 border border-amber-300 hover:bg-amber-50 shadow-2xs transition-colors disabled:opacity-50 cursor-pointer"
-                      title="Set status of selected cards to Available"
-                    >
-                      <Clock className="w-3.5 h-3.5 text-amber-600" />
-                      <span>Set Available</span>
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => handleBulkStatusChange('available')}
+                    disabled={!canEditCards}
+                    className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-white text-amber-800 border border-amber-300 hover:bg-amber-50 shadow-2xs transition-colors disabled:opacity-50 cursor-pointer"
+                    title="Set status of selected cards to Available"
+                  >
+                    <Clock className="w-3.5 h-3.5 text-amber-600" />
+                    <span>Set Available</span>
+                  </button>
                   <button
                     type="button"
                     onClick={() => handleBulkStatusChange('assigned')}
@@ -570,31 +548,28 @@ export const CardsTable: React.FC<CardsTableProps> = ({
             </div>
             <h3 className="text-sm font-bold text-slate-900 mb-1">No QR cards found</h3>
             <p className="text-xs text-slate-500 max-w-sm mx-auto mb-4">
-              {search || statusFilter !== 'all' || subscriptionFilter !== 'all'
-                ? `No cards match "${search || (statusFilter !== 'all' ? statusFilter : subscriptionFilter)}". Try resetting filters.`
-                : isMaster
-                ? 'Get started by generating your first batch of sequential QR cards.'
-                : 'No QR cards have been assigned to your account yet. Contact the Master Admin.'}
+              {search || statusFilter !== 'all'
+                ? `No cards match "${search || statusFilter}". Try resetting filters.`
+                : 'Get started by generating your first batch of sequential QR cards.'}
             </p>
-            {search || statusFilter !== 'all' || subscriptionFilter !== 'all' ? (
+            {search || statusFilter !== 'all' ? (
               <button
                 onClick={() => {
                   setSearch('');
                   setStatusFilter('all');
-                  setSubscriptionFilter('all');
                 }}
                 className="px-4 py-2 text-xs font-semibold text-[#1A73E8] bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors cursor-pointer"
               >
                 Clear all filters
               </button>
-            ) : isMaster ? (
+            ) : (
               <button
                 onClick={onOpenBatchModal}
                 className="px-4 py-2 text-xs font-semibold text-white bg-[#1A73E8] hover:bg-[#1557B0] rounded-lg shadow-sm cursor-pointer"
               >
                 Generate First Batch
               </button>
-            ) : null}
+            )}
           </div>
         ) : (
           <>
@@ -717,16 +692,11 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                         {isAssigned && (
                           <button
                             type="button"
-                            disabled={!canToggleAi}
                             onClick={() =>
-                              canToggleAi &&
                               onToggleAiReview &&
                               onToggleAiReview(card.id, card.aiReviewEnabled === false)
                             }
-                            title={!canToggleAi ? 'Locked by Master Admin' : undefined}
                             className={`px-2 py-0.5 rounded-full text-[10px] font-bold border transition-all ${
-                              !canToggleAi ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'
-                            } ${
                               card.aiReviewEnabled !== false
                                 ? 'bg-blue-50 text-[#1A73E8] border-blue-200'
                                 : 'bg-slate-100 text-slate-600 border-slate-200'
@@ -875,13 +845,13 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                           <button
                             onClick={() => onAssignCard(card)}
                             className={`px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center gap-1 ml-1 ${
-                              !isMaster || isAssigned
+                              isAssigned
                                 ? 'bg-slate-100 text-slate-800 hover:bg-slate-200'
                                 : 'bg-[#1A73E8] text-white hover:bg-[#1557B0]'
                             }`}
                           >
                             <Edit3 className="w-3 h-3" />
-                            <span>{!isMaster || isAssigned ? 'Edit' : 'Assign'}</span>
+                            <span>{isAssigned ? 'Edit' : 'Assign'}</span>
                           </button>
                         )}
 
@@ -1031,22 +1001,16 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                           {isAssigned ? (
                             <button
                               type="button"
-                              disabled={!canToggleAi}
                               onClick={() =>
-                                canToggleAi &&
                                 onToggleAiReview &&
                                 onToggleAiReview(card.id, card.aiReviewEnabled === false)
                               }
                               title={
-                                !canToggleAi
-                                  ? 'AI toggle locked by Master Admin'
-                                  : card.aiReviewEnabled !== false
+                                card.aiReviewEnabled !== false
                                   ? 'AI Review is ON. Click to switch to direct Google redirect'
                                   : 'AI Review is OFF. Click to switch to AI assistant'
                               }
                               className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold transition-all border ${
-                                !canToggleAi ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'
-                              } ${
                                 card.aiReviewEnabled !== false
                                   ? 'bg-blue-50 text-[#1A73E8] border-blue-200 hover:bg-blue-100'
                                   : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200'
@@ -1227,13 +1191,13 @@ export const CardsTable: React.FC<CardsTableProps> = ({
                               <button
                                 onClick={() => onAssignCard(card)}
                                 className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors ml-1 ${
-                                  !isMaster || isAssigned
+                                  isAssigned
                                     ? 'text-slate-800 bg-slate-100 hover:bg-slate-200'
                                     : 'text-white bg-[#1A73E8] hover:bg-[#1557B0]'
                                 }`}
                               >
                                 <Edit3 className="w-3 h-3" />
-                                <span>{!isMaster || isAssigned ? 'Edit' : 'Assign'}</span>
+                                <span>{isAssigned ? 'Edit' : 'Assign'}</span>
                               </button>
                             )}
 
@@ -1291,18 +1255,16 @@ export const CardsTable: React.FC<CardsTableProps> = ({
               </div>
             ) : (
               <>
-                {isMaster && (
-                  <button
-                    type="button"
-                    onClick={() => handleBulkStatusChange('available')}
-                    disabled={!canEditCards}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 border border-amber-500/40 transition-colors disabled:opacity-50 cursor-pointer shadow-sm"
-                    title="Update selected to Available"
-                  >
-                    <Clock className="w-3.5 h-3.5 text-amber-400" />
-                    <span>Available</span>
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={() => handleBulkStatusChange('available')}
+                  disabled={!canEditCards}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 border border-amber-500/40 transition-colors disabled:opacity-50 cursor-pointer shadow-sm"
+                  title="Update selected to Available"
+                >
+                  <Clock className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Available</span>
+                </button>
 
                 <button
                   type="button"

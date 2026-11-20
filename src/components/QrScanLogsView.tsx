@@ -60,27 +60,22 @@ export const QrScanLogsView: React.FC<QrScanLogsViewProps> = ({
   // Test scan simulation state
   const [simulating, setSimulating] = useState<boolean>(false);
   const [simulationSuccess, setSimulationSuccess] = useState<string | null>(null);
-  const [simulationError, setSimulationError] = useState<string | null>(null);
 
   const isRestricted = activeAdmin.role === 'restricted';
   const assignedCards = useMemo(() => {
-    return cards;
-  }, [cards]);
-
-  const allowedCardIds = useMemo(() => {
-    if (!isRestricted) return undefined;
-    return cards.map((c) => c.id);
-  }, [cards, isRestricted]);
+    if (!isRestricted) return cards;
+    return cards.filter((c) => activeAdmin.assignedCardIds?.includes(c.id));
+  }, [cards, activeAdmin, isRestricted]);
 
   // Load stats
   const loadStats = useCallback(async () => {
     try {
-      const data = await fetchQrLogStats(activeAdmin.id, activeAdmin.email);
+      const data = await fetchQrLogStats();
       setStats(data);
     } catch (err) {
       console.warn('Failed to load QR log stats:', err);
     }
-  }, [activeAdmin.id, activeAdmin.email]);
+  }, []);
 
   // Calculate start date ISO for date filter
   const getStartDateForFilter = useCallback((filter: string): string | undefined => {
@@ -117,8 +112,6 @@ export const QrScanLogsView: React.FC<QrScanLogsViewProps> = ({
           page: currentPage,
           limit: pageSize,
           adminId: activeAdmin.id,
-          adminEmail: activeAdmin.email,
-          allowedCardIds,
         });
 
         setLogs(result.logs || []);
@@ -130,7 +123,7 @@ export const QrScanLogsView: React.FC<QrScanLogsViewProps> = ({
         setRefreshing(false);
       }
     },
-    [cardFilter, sourceFilter, searchQuery, dateFilter, currentPage, pageSize, activeAdmin, allowedCardIds, getStartDateForFilter]
+    [cardFilter, sourceFilter, searchQuery, dateFilter, currentPage, pageSize, activeAdmin, getStartDateForFilter]
   );
 
   useEffect(() => {
@@ -151,15 +144,13 @@ export const QrScanLogsView: React.FC<QrScanLogsViewProps> = ({
   const handleSimulateScan = async (source: 'qr' | 'nfc') => {
     setSimulating(true);
     setSimulationSuccess(null);
-    setSimulationError(null);
     try {
       const targetCard = cardFilter !== 'all'
-        ? assignedCards.find((c) => c.id === cardFilter) || assignedCards[0]
-        : assignedCards[0];
+        ? cards.find((c) => c.id === cardFilter) || cards[0]
+        : assignedCards[0] || cards[0];
 
       if (!targetCard) {
-        setSimulationError('No assigned stand available to simulate a scan.');
-        setTimeout(() => setSimulationError(null), 4000);
+        alert('No stand available to simulate.');
         return;
       }
 
@@ -177,8 +168,7 @@ export const QrScanLogsView: React.FC<QrScanLogsViewProps> = ({
         setTimeout(() => setSimulationSuccess(null), 4000);
       }
     } catch (err: any) {
-      setSimulationError(`Simulation failed: ${err?.message || 'Unknown error'}`);
-      setTimeout(() => setSimulationError(null), 4000);
+      alert(`Simulation failed: ${err?.message || 'Unknown error'}`);
     } finally {
       setSimulating(false);
     }
@@ -291,12 +281,6 @@ export const QrScanLogsView: React.FC<QrScanLogsViewProps> = ({
             <span>{simulationSuccess}</span>
           </div>
         )}
-        {simulationError && (
-          <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-xl flex items-center gap-2 text-xs font-bold text-red-800 animate-fadeIn">
-            <Shield className="w-4 h-4 text-red-600 shrink-0" />
-            <span>{simulationError}</span>
-          </div>
-        )}
 
         {/* Restricted Sub-Admin Filter Notice */}
         {isRestricted && (
@@ -305,7 +289,7 @@ export const QrScanLogsView: React.FC<QrScanLogsViewProps> = ({
             <span>
               Restricted Sub-Admin Access: Showing logs exclusively for your assigned stands:{' '}
               <strong className="font-mono">
-                {assignedCards.map((c) => `#${c.id}`).join(', ') || 'None'}
+                {activeAdmin.assignedCardIds?.map((id) => `#${id}`).join(', ') || 'None'}
               </strong>
             </span>
           </div>
