@@ -138,7 +138,12 @@ async function runTests() {
   console.log('✅ Public card lookup returned correct WhatsApp & Instagram links!');
 
   // 4. Sub-admin tries to edit an UNASSIGNED card (e.g. '0003' or any card not in their assignedCardIds)
-  const cardsRes = await fetch(`${baseUrl}/api/cards`);
+  const cardsRes = await fetch(`${baseUrl}/api/cards`, {
+    headers: {
+      'x-admin-id': 'master-admin-01',
+      'x-admin-email': '66shashwatkumar66@gmail.com',
+    },
+  });
   const cardsData = (await cardsRes.json()) as any;
   const unassignedCard = cardsData.cards.find((c: any) => !subAdmin.assignedCardIds.includes(c.id));
 

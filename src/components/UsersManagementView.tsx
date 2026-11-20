@@ -14,18 +14,22 @@ import {
   Lock,
   UserCheck,
   Award,
+  AlertCircle,
+  X,
 } from 'lucide-react';
 import { UserProfile, AdminUser } from '../types';
-import { fetchUsers, saveUser, deleteUser, updateAdmin } from '../utils/api';
+import { fetchUsers, saveUser, deleteUser, updateAdmin, createAdmin, deleteAdmin } from '../utils/api';
 import { GoogleAuthModal } from './GoogleAuthModal';
 
 interface UsersManagementViewProps {
   activeAdmin: AdminUser;
+  callerEmail?: string;
   onRefreshAdmins?: () => void;
 }
 
 export const UsersManagementView: React.FC<UsersManagementViewProps> = ({
   activeAdmin,
+  callerEmail,
   onRefreshAdmins,
 }) => {
   const [users, setUsers] = useState<UserProfile[]>([]);
@@ -34,6 +38,14 @@ export const UsersManagementView: React.FC<UsersManagementViewProps> = ({
   const [roleFilter, setRoleFilter] = useState<'all' | 'master' | 'restricted' | 'member'>('all');
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [userToDelete, setUserToDelete] = useState<UserProfile | null>(null);
+  const [isDeletingUser, setIsDeletingUser] = useState<boolean>(false);
+
+  const caller = {
+    id: activeAdmin.id,
+    email: callerEmail || activeAdmin.email,
+  };
 
   const loadData = async () => {
     setLoading(true);
@@ -59,19 +71,62 @@ export const UsersManagementView: React.FC<UsersManagementViewProps> = ({
   };
 
   const handleRoleChange = async (user: UserProfile, newRole: 'master' | 'restricted' | 'member') => {
+    setActionError(null);
+    setActionSuccess(null);
     try {
-      const updated = await saveUser({
-        ...user,
-        role: newRole,
-      });
-
-      // If promoting or changing admin role, sync admin store too
-      if (newRole === 'master' || newRole === 'restricted') {
-        await updateAdmin(user.uid, {
+      await saveUser(
+        {
+          ...user,
           role: newRole,
-          name: user.displayName,
-          email: user.email,
-        });
+          accessRevoked: false,
+        },
+        caller
+      );
+
+      // Sync admin registry when promoting/changing/demoting role
+      if (newRole === 'master' || newRole === 'restricted') {
+        const syncedPermissions = {
+          canEditCards: true,
+          canToggleAi: true,
+          canExportCsv: newRole === 'master',
+          canCreateCards: newRole === 'master',
+        };
+        try {
+          await updateAdmin(
+            user.email.trim().toLowerCase(),
+            {
+              role: newRole,
+              name: user.displayName,
+              email: user.email.trim().toLowerCase(),
+              permissions: syncedPermissions,
+            },
+            caller
+          );
+        } catch (updateErr: any) {
+          if (updateErr?.message?.toLowerCase().includes('not found')) {
+            await createAdmin(
+              {
+                email: user.email.trim().toLowerCase(),
+                name: user.displayName,
+                role: newRole,
+                assignedCardIds: user.assignedCardIds || [],
+                permissions: syncedPermissions,
+              },
+              caller
+            );
+          } else {
+            throw updateErr;
+          }
+        }
+      } else if (newRole === 'member') {
+        try {
+          await deleteAdmin(user.email.trim().toLowerCase(), caller);
+        } catch (delErr: any) {
+          const msg = delErr?.message?.toLowerCase() || '';
+          if (!msg.includes('not found')) {
+            console.warn('Demotion admin cleanup notice:', delErr);
+          }
+        }
       }
 
       await loadData();
@@ -79,27 +134,35 @@ export const UsersManagementView: React.FC<UsersManagementViewProps> = ({
       setActionSuccess(`Updated ${user.displayName}'s role to ${newRole}`);
       setTimeout(() => setActionSuccess(null), 3000);
     } catch (err: any) {
-      alert(`Failed to update role: ${err?.message}`);
+      setActionError(`Failed to update role: ${err?.message || 'Unauthorized'}`);
     }
   };
 
-  const handleDeleteUser = async (user: UserProfile) => {
-    if (user.email === '66shashwatkumar66@gmail.com') {
-      alert('Cannot delete the primary Master Admin account');
+  const handleRequestDeleteUser = (user: UserProfile) => {
+    setActionError(null);
+    if (user.email.trim().toLowerCase() === '66shashwatkumar66@gmail.com') {
+      setActionError('Cannot delete the primary Master Admin account.');
       return;
     }
+    setUserToDelete(user);
+  };
 
-    if (!confirm(`Are you sure you want to remove ${user.displayName} (${user.email})?`)) {
-      return;
-    }
-
+  const handleConfirmDeleteUser = async () => {
+    if (!userToDelete) return;
+    setIsDeletingUser(true);
+    setActionError(null);
     try {
-      await deleteUser(user.uid);
+      await deleteUser(userToDelete.uid, caller);
+      const removedEmail = userToDelete.email;
+      setUserToDelete(null);
       await loadData();
-      setActionSuccess(`User ${user.email} removed.`);
+      if (onRefreshAdmins) onRefreshAdmins();
+      setActionSuccess(`User ${removedEmail} removed.`);
       setTimeout(() => setActionSuccess(null), 3000);
     } catch (err: any) {
-      alert(`Failed to delete user: ${err?.message}`);
+      setActionError(`Failed to delete user: ${err?.message || 'Permission denied'}`);
+    } finally {
+      setIsDeletingUser(false);
     }
   };
 
@@ -166,6 +229,22 @@ export const UsersManagementView: React.FC<UsersManagementViewProps> = ({
         <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-900 text-xs flex items-center gap-2 animate-in fade-in">
           <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
           <span className="font-semibold">{actionSuccess}</span>
+        </div>
+      )}
+
+      {actionError && (
+        <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-red-900 text-xs flex items-center justify-between gap-2 animate-in fade-in">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+            <span className="font-semibold">{actionError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setActionError(null)}
+            className="text-red-600 hover:text-red-800 p-0.5 cursor-pointer"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
         </div>
       )}
 
@@ -282,11 +361,11 @@ export const UsersManagementView: React.FC<UsersManagementViewProps> = ({
                       </div>
                     </div>
 
-                    {user.email !== '66shashwatkumar66@gmail.com' && (
+                    {user.email.trim().toLowerCase() !== '66shashwatkumar66@gmail.com' && (
                       <button
-                        onClick={() => handleDeleteUser(user)}
+                        onClick={() => handleRequestDeleteUser(user)}
                         title="Delete user"
-                        className="p-1 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 shrink-0"
+                        className="p-1 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 shrink-0 cursor-pointer"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
@@ -295,9 +374,19 @@ export const UsersManagementView: React.FC<UsersManagementViewProps> = ({
 
                   <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-100/80 text-xs">
                     <div className="flex items-center gap-1.5">
-                      <span className="text-[10px] bg-emerald-50 text-emerald-700 font-bold px-1.5 py-0.5 rounded-full border border-emerald-200 flex items-center gap-1">
-                        <CheckCircle className="w-2.5 h-2.5" /> Verified
-                      </span>
+                      {user.accessRevoked ? (
+                        <span className="text-[10px] bg-red-50 text-red-700 font-bold px-1.5 py-0.5 rounded-full border border-red-200 flex items-center gap-1">
+                          <AlertCircle className="w-2.5 h-2.5" /> Revoked
+                        </span>
+                      ) : user.emailVerified !== false ? (
+                        <span className="text-[10px] bg-emerald-50 text-emerald-700 font-bold px-1.5 py-0.5 rounded-full border border-emerald-200 flex items-center gap-1">
+                          <CheckCircle className="w-2.5 h-2.5" /> Verified
+                        </span>
+                      ) : (
+                        <span className="text-[10px] bg-amber-50 text-amber-800 font-bold px-1.5 py-0.5 rounded-full border border-amber-200 flex items-center gap-1">
+                          <AlertCircle className="w-2.5 h-2.5" /> Pending
+                        </span>
+                      )}
                       <span className="text-[10px] text-slate-500 font-mono">
                         {user.loginCount || 1} logins
                       </span>
@@ -305,7 +394,7 @@ export const UsersManagementView: React.FC<UsersManagementViewProps> = ({
 
                     <select
                       value={user.role}
-                      disabled={user.email === '66shashwatkumar66@gmail.com'}
+                      disabled={user.email.trim().toLowerCase() === '66shashwatkumar66@gmail.com'}
                       onChange={(e) => handleRoleChange(user, e.target.value as any)}
                       className={`text-[11px] font-semibold px-2 py-0.5 rounded-lg border focus:outline-none ${
                         user.role === 'master'
@@ -367,17 +456,29 @@ export const UsersManagementView: React.FC<UsersManagementViewProps> = ({
 
                       {/* Google Verification Status */}
                       <td className="py-3 px-3">
-                        <div className="flex items-center gap-1 text-emerald-700 font-semibold text-[11px] bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 w-fit">
-                          <CheckCircle className="w-3 h-3 text-emerald-600 shrink-0" />
-                          <span>Verified</span>
-                        </div>
+                        {user.accessRevoked ? (
+                          <div className="flex items-center gap-1 text-red-700 font-semibold text-[11px] bg-red-50 px-2 py-0.5 rounded-full border border-red-200 w-fit">
+                            <AlertCircle className="w-3 h-3 text-red-600 shrink-0" />
+                            <span>Revoked</span>
+                          </div>
+                        ) : user.emailVerified !== false ? (
+                          <div className="flex items-center gap-1 text-emerald-700 font-semibold text-[11px] bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 w-fit">
+                            <CheckCircle className="w-3 h-3 text-emerald-600 shrink-0" />
+                            <span>Verified</span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1 text-amber-800 font-semibold text-[11px] bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200 w-fit">
+                            <AlertCircle className="w-3 h-3 text-amber-600 shrink-0" />
+                            <span>Pending</span>
+                          </div>
+                        )}
                       </td>
 
                       {/* Role Selector */}
                       <td className="py-3 px-3">
                         <select
                           value={user.role}
-                          disabled={user.email === '66shashwatkumar66@gmail.com'}
+                          disabled={user.email.trim().toLowerCase() === '66shashwatkumar66@gmail.com'}
                           onChange={(e) => handleRoleChange(user, e.target.value as any)}
                           className={`text-xs font-semibold px-2 py-1 rounded-lg border focus:outline-none ${
                             user.role === 'master'
@@ -405,11 +506,11 @@ export const UsersManagementView: React.FC<UsersManagementViewProps> = ({
 
                       {/* Actions */}
                       <td className="py-3 px-4 text-right">
-                        {user.email !== '66shashwatkumar66@gmail.com' && (
+                        {user.email.trim().toLowerCase() !== '66shashwatkumar66@gmail.com' && (
                           <button
-                            onClick={() => handleDeleteUser(user)}
+                            onClick={() => handleRequestDeleteUser(user)}
                             title="Delete user"
-                            className="p-1 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                            className="p-1 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors cursor-pointer"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
@@ -423,6 +524,45 @@ export const UsersManagementView: React.FC<UsersManagementViewProps> = ({
           </>
         )}
       </div>
+
+      {/* Delete User Confirmation Modal */}
+      {userToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl border border-slate-200 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-9 h-9 rounded-xl bg-red-50 border border-red-200 text-red-600 flex items-center justify-center shrink-0">
+                <Trash2 className="w-4 h-4" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-sm font-bold text-slate-900">Remove User Account?</h3>
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  Are you sure you want to remove{' '}
+                  <strong className="text-slate-900">{userToDelete.displayName}</strong>{' '}
+                  (<span className="font-mono">{userToDelete.email}</span>)?
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                type="button"
+                disabled={isDeletingUser}
+                onClick={() => setUserToDelete(null)}
+                className="px-3.5 py-2 rounded-xl text-xs font-semibold text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingUser}
+                onClick={handleConfirmDeleteUser}
+                className="px-4 py-2 rounded-xl text-xs font-bold text-white bg-red-600 hover:bg-red-700 transition-colors disabled:opacity-50 cursor-pointer"
+              >
+                {isDeletingUser ? 'Removing...' : 'Remove User'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Google Auth Modal */}
       <GoogleAuthModal

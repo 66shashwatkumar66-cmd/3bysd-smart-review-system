@@ -6,35 +6,66 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function hasVerifiedEmail() {
+      return isAuthenticated() &&
+        'email' in request.auth.token &&
+        request.auth.token.email != null &&
+        request.auth.token.email is string &&
+        request.auth.token.email_verified == true;
+    }
+
+    function authEmailLower() {
+      return request.auth.token.email.lower();
+    }
+
+    function isNotRevoked() {
+      return !exists(/databases/$(database)/documents/users/$(request.auth.uid)) ||
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('accessRevoked', false) != true;
+    }
+
     function isMasterAdmin() {
-      return request.auth != null && (
-        request.auth.token.email.lower() == '66shashwatkumar66@gmail.com' ||
+      return isAuthenticated() && (
+        (hasVerifiedEmail() && authEmailLower() == '66shashwatkumar66@gmail.com') ||
         (exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
-         get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role == 'master')
+         get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role == 'master') ||
+        (hasVerifiedEmail() &&
+         exists(/databases/$(database)/documents/admins/$(authEmailLower())) &&
+         get(/databases/$(database)/documents/admins/$(authEmailLower())).data.role == 'master')
       );
     }
 
+    function adminAllowsCardEdit(adminDoc) {
+      return adminDoc != null &&
+        adminDoc.data.get('permissions', {}).get('canEditCards', true) == true;
+    }
+
     function isSubAdminForCard(cardId) {
-      return request.auth != null && (
+      return isAuthenticated() && isNotRevoked() && (
         isMasterAdmin() ||
-        // 1. Direct assignment on card by email
+        // 1. Admin record lookup by UID
+        (exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
+         adminAllowsCardEdit(get(/databases/$(database)/documents/admins/$(request.auth.uid))) &&
+         cardId in get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.get('assignedCardIds', [])) ||
+        // 2. Admin record lookup by verified lowercase email
+        (hasVerifiedEmail() &&
+         exists(/databases/$(database)/documents/admins/$(authEmailLower())) &&
+         adminAllowsCardEdit(get(/databases/$(database)/documents/admins/$(authEmailLower()))) &&
+         cardId in get(/databases/$(database)/documents/admins/$(authEmailLower())).data.get('assignedCardIds', [])) ||
+        // 3. Direct assignment on card by verified email
         (resource != null &&
+         hasVerifiedEmail() &&
          'assignedToEmail' in resource.data &&
-         resource.data.assignedToEmail != null &&
-         request.auth.token.email != null &&
-         resource.data.assignedToEmail.lower() == request.auth.token.email.lower()) ||
-        // 2. Direct assignment on card by uid
+         resource.data.assignedToEmail is string &&
+         resource.data.assignedToEmail.lower() == authEmailLower()) ||
+        // 4. Direct assignment on card by UID
         (resource != null &&
          'assignedToUid' in resource.data &&
-         resource.data.assignedToUid != null &&
+         resource.data.assignedToUid is string &&
          resource.data.assignedToUid == request.auth.uid) ||
-        // 3. Admin record lookup by UID
-        (exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
-         cardId in get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.assignedCardIds) ||
-        // 4. Admin record lookup by lowercase email
-        (request.auth.token.email != null &&
-         exists(/databases/$(database)/documents/admins/$(request.auth.token.email.lower())) &&
-         cardId in get(/databases/$(database)/documents/admins/$(request.auth.token.email.lower())).data.assignedCardIds)
+        // 5. Authorized Sub-Admin user profile lookup by UID
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', 'member') == 'restricted' &&
+         cardId in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('assignedCardIds', []))
       );
     }
 
@@ -65,7 +96,7 @@ service cloud.firestore {
         (!('assignedToUid' in data) || data.assignedToUid == null || (data.assignedToUid is string && data.assignedToUid.size() <= 128)) &&
         (!('assignedToName' in data) || data.assignedToName == null || (data.assignedToName is string && data.assignedToName.size() <= 200)) &&
         (!('scansCount' in data) || data.scansCount == null || ((data.scansCount is int || data.scansCount is float) && data.scansCount >= 0)) &&
-        (!('customKeywords' in data) || data.customKeywords == null || data.customKeywords is list) &&
+        (!('customKeywords' in data) || data.customKeywords == null || (data.customKeywords is list && data.customKeywords.size() <= 100)) &&
         (!('reviewTone' in data) || data.reviewTone == null || (data.reviewTone is string && data.reviewTone.size() <= 50)) &&
         (!('promptStarter' in data) || data.promptStarter == null || (data.promptStarter is string && data.promptStarter.size() <= 1000)) &&
         (!('customHeadline' in data) || data.customHeadline == null || (data.customHeadline is string && data.customHeadline.size() <= 200)) &&
@@ -82,10 +113,16 @@ service cloud.firestore {
     function isValidAdmin(data) {
       return data.id is string &&
         data.id.size() > 0 &&
+        data.id.size() <= 128 &&
         data.email is string &&
         data.email.size() > 0 &&
+        data.email.size() <= 256 &&
         data.role is string &&
-        (data.role == 'master' || data.role == 'restricted');
+        (data.role == 'master' || data.role == 'restricted') &&
+        (!('name' in data) || (data.name is string && data.name.size() <= 200)) &&
+        (!('assignedCardIds' in data) || (data.assignedCardIds is list && data.assignedCardIds.size() <= 500)) &&
+        (!('permissions' in data) || data.permissions is map) &&
+        (!('aliasOf' in data) || data.aliasOf == null || (data.aliasOf is string && data.aliasOf.size() <= 128));
     }
 
     function isValidUser(data) {
@@ -94,7 +131,9 @@ service cloud.firestore {
         data.uid.size() <= 128 &&
         data.email is string &&
         data.email.size() > 0 &&
-        data.email.size() <= 256;
+        data.email.size() <= 256 &&
+        (!('role' in data) || (data.role is string && (data.role == 'master' || data.role == 'restricted' || data.role == 'member'))) &&
+        (!('accessRevoked' in data) || data.accessRevoked is bool);
     }
 
     function isValidAd(data) {
@@ -162,63 +201,116 @@ service cloud.firestore {
       // Public customer access to single card for QR/NFC review experience
       allow get: if true;
 
-      // Full inventory listing requires authentication (admin dashboard)
-      // Note: server API acts as authenticated proxy where needed
-      allow list: if true;
+      // Scoped inventory listing: Master Admin sees all; authenticated users may only query their explicitly assigned cards
+      allow list: if isMasterAdmin() || (
+        isAuthenticated() && isNotRevoked() && (
+          (hasVerifiedEmail() && resource.data.assignedToEmail == request.auth.token.email) ||
+          (hasVerifiedEmail() && resource.data.assignedToEmail == authEmailLower()) ||
+          resource.data.assignedToUid == request.auth.uid
+        )
+      );
 
-      // Card Creation & Deletion restricted to Master Admin or isolated test records
-      allow create: if isValidId(cardId) && (isMasterAdmin() || cardId.matches('^TEST-.*')) && isValidCard(incoming());
-      allow delete: if isValidId(cardId) && (isMasterAdmin() || cardId.matches('^TEST-.*'));
+      // Card Creation & Deletion strictly restricted to Master Admin
+      allow create: if isValidId(cardId) && isMasterAdmin() && isValidCard(incoming());
+      allow delete: if isValidId(cardId) && isMasterAdmin();
 
-      // Card Updating restricted to Master Admin, authorized Sub-Admin, or test records
+      // Card Updating restricted to Master Admin, authorized Sub-Admin (permitted fields only), or scan counter
       allow update: if isValidId(cardId) && isValidCard(incoming()) && (
-        cardId.matches('^TEST-.*') ||
         isMasterAdmin() ||
         (
           isSubAdminForCard(cardId) &&
-          incoming().get('assignedToEmail', '') == existing().get('assignedToEmail', '') &&
-          incoming().get('assignedToUid', '') == existing().get('assignedToUid', '')
+          (incoming().status == existing().status || incoming().status == 'assigned' || incoming().status == 'disabled') &&
+          !incoming().diff(existing()).affectedKeys().hasAny([
+            'id',
+            'assignedToEmail',
+            'assignedToUid',
+            'assignedToName',
+            'scansCount',
+            'createdAt'
+          ]) &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'status',
+            'businessName',
+            'category',
+            'googleReviewUrl',
+            'notes',
+            'aiReviewEnabled',
+            'customKeywords',
+            'reviewTone',
+            'promptStarter',
+            'customHeadline',
+            'logoUrl',
+            'businessDescription',
+            'whatsapp',
+            'instagram',
+            'subscriptionStartDate',
+            'subscriptionEndDate',
+            'subscriptionStatus',
+            'reviewPageSettings',
+            'updatedAt'
+          ])
         ) ||
         // Public scan increment: only scansCount and updatedAt modified
         (incoming().diff(existing()).affectedKeys().hasOnly(['scansCount', 'updatedAt']))
       );
     }
 
-    // Master and Restricted Admins Collection (Restricted strictly to Master Admin)
+    // Master and Restricted Admins Collection
     match /admins/{adminId} {
-      allow get: if isAuthenticated();
+      allow get: if isAuthenticated() && (
+        isMasterAdmin() ||
+        request.auth.uid == adminId ||
+        (hasVerifiedEmail() && (
+          authEmailLower() == adminId.lower() ||
+          (resource != null && resource.data.email is string && resource.data.email.lower() == authEmailLower())
+        ))
+      );
       allow list: if isMasterAdmin();
-      allow create, update, delete: if isValidId(adminId) && isMasterAdmin() && isValidAdmin(incoming());
+      allow create, update: if isValidId(adminId) && isMasterAdmin() && isValidAdmin(incoming());
+      allow delete: if isValidId(adminId) && isMasterAdmin() &&
+        !(resource != null && 'email' in resource.data && resource.data.email is string && resource.data.email.lower() == '66shashwatkumar66@gmail.com');
     }
 
     // Google Verified Users Collection (Strictly protected user privacy)
     match /users/{userId} {
-      allow get: if isAuthenticated() && (request.auth.uid == userId || isMasterAdmin());
+      allow get: if isAuthenticated() && (
+        request.auth.uid == userId ||
+        isMasterAdmin() ||
+        (hasVerifiedEmail() && resource != null && resource.data.email is string && resource.data.email.lower() == authEmailLower())
+      );
       allow list: if isMasterAdmin();
-      allow create, update: if isValidId(userId) && isAuthenticated() &&
-        (request.auth.uid == userId || isMasterAdmin()) && isValidUser(incoming());
-      allow delete: if isValidId(userId) && isMasterAdmin();
+      allow create: if isValidId(userId) && isAuthenticated() && isValidUser(incoming()) && (
+        isMasterAdmin() ||
+        (
+          request.auth.uid == userId &&
+          incoming().get('role', 'member') == 'member' &&
+          incoming().get('accessRevoked', false) == false
+        )
+      );
+      allow update: if isValidId(userId) && isAuthenticated() && isValidUser(incoming()) && (
+        isMasterAdmin() ||
+        (
+          request.auth.uid == userId &&
+          incoming().get('role', 'member') == existing().get('role', 'member') &&
+          incoming().get('accessRevoked', false) == existing().get('accessRevoked', false)
+        )
+      );
+      allow delete: if isValidId(userId) && isMasterAdmin() &&
+        !(resource != null && 'email' in resource.data && resource.data.email is string && resource.data.email.lower() == '66shashwatkumar66@gmail.com');
     }
 
     // Advertisements Collection (Discreet Sponsored Ads)
     match /ads/{adId} {
-      // Public customers need to read active ads on the review page
       allow get, list: if true;
-
-      // Administrative ad management strictly restricted to Master Admin
       allow create, update: if isValidId(adId) && isMasterAdmin() && isValidAd(incoming());
       allow delete: if isValidId(adId) && isMasterAdmin();
     }
 
     // QR Scan Logs Collection (Audit trail of customer QR and NFC stand interactions)
     match /qr_logs/{logId} {
-      // Read access: allow listing logs for admin telemetry and card analytics
-      allow get, list: if true;
-
-      // Create access: customer scan recording with validation
+      allow get: if isMasterAdmin() || (isAuthenticated() && isNotRevoked() && isSubAdminForCard(resource.data.cardId));
+      allow list: if isMasterAdmin() || (isAuthenticated() && isNotRevoked() && isSubAdminForCard(resource.data.cardId));
       allow create: if isValidId(logId) && isValidScanLog(incoming());
-
-      // Mutation & deletion restricted to Master Admin
       allow update, delete: if isMasterAdmin();
     }
   }

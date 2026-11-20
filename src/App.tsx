@@ -2,16 +2,18 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { CardRecord, AdminUser, UserProfile } from './types';
 import {
   fetchCards,
-  fetchCardById,
   createBatchCards,
   assignCard,
   bulkUpdateCardsStatus,
   deleteCard,
   fetchAdmins,
+  syncAdminLookupDocs,
   createAdmin,
   updateAdmin,
   deleteAdmin,
   fetchUsers,
+  checkSessionAuthorization,
+  clearSessionCaches,
 } from './utils/api';
 import {
   extractCardId,
@@ -93,6 +95,16 @@ export default function App() {
   // Admin Management State
   const [admins, setAdmins] = useState<AdminUser[]>([]);
   const [activeAdmin, setActiveAdmin] = useState<AdminUser | null>(null);
+  const [authRevokedNotice, setAuthRevokedNotice] = useState<string | null>(null);
+  const [authReady, setAuthReady] = useState<boolean>(false);
+  const [adminsSynced, setAdminsSynced] = useState<boolean>(false);
+  const [sessionAuth, setSessionAuth] = useState<{
+    authorized: boolean;
+    revoked: boolean;
+    role: 'master' | 'restricted' | 'member';
+    admin?: AdminUser;
+    message?: string;
+  } | null>(null);
 
   // Customer route state (e.g. /r/0001)
   const initialTargetId = typeof window !== 'undefined' ? extractCardId() : null;
@@ -174,60 +186,109 @@ export default function App() {
   const [cardToAssign, setCardToAssign] = useState<CardRecord | null>(null);
   const [simulatorCardId, setSimulatorCardId] = useState<string | null>(null);
 
-  // Listen for Google Auth changes
+  // Listen for Google Auth changes without resetting sub-admin roles or allowing revoked admins
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (firebaseUser && firebaseUser.email) {
-        const cleanEmail = firebaseUser.email.toLowerCase().trim();
-        const isMasterEmail = cleanEmail === '66shashwatkumar66@gmail.com';
-        const userProfile: UserProfile = {
-          uid: firebaseUser.uid,
-          email: cleanEmail,
-          displayName:
-            firebaseUser.displayName || (isMasterEmail ? 'Master Administrator' : cleanEmail.split('@')[0]),
-          photoURL: firebaseUser.photoURL || undefined,
-          provider: 'google.com',
-          role: isMasterEmail ? 'master' : 'member',
-          emailVerified: firebaseUser.emailVerified || true,
-          lastLoginAt: new Date().toISOString(),
-          createdAt: new Date().toISOString(),
-          loginCount: 1,
-        };
-        setCurrentUser(userProfile);
-        localStorage.setItem('3dbysd_current_user', JSON.stringify(userProfile));
+      try {
+        if (firebaseUser && firebaseUser.email) {
+          const cleanEmail = firebaseUser.email.toLowerCase().trim();
+          const isMasterEmail = cleanEmail === '66shashwatkumar66@gmail.com';
+          try {
+            const authStatus = await checkSessionAuthorization(cleanEmail, firebaseUser.uid);
+            setSessionAuth(authStatus);
+            if (!isMasterEmail && authStatus.revoked) {
+              await signOut(auth).catch(() => {});
+              localStorage.removeItem('3dbysd_current_user');
+              setCurrentUser(null);
+              setAuthRevokedNotice(
+                authStatus.message || 'Access Denied: Your administrator access has been revoked by the Master Admin.'
+              );
+              return;
+            }
+
+            let preservedRole: 'master' | 'restricted' | 'member' = isMasterEmail ? 'master' : authStatus.role;
+            let preservedCards: string[] = authStatus.admin?.assignedCardIds || [];
+
+            const userProfile: UserProfile = {
+              uid: firebaseUser.uid,
+              email: cleanEmail,
+              displayName:
+                firebaseUser.displayName || (isMasterEmail ? 'Master Administrator' : cleanEmail.split('@')[0]),
+              photoURL: firebaseUser.photoURL || undefined,
+              provider: 'google.com',
+              role: preservedRole,
+              emailVerified: firebaseUser.emailVerified || true,
+              lastLoginAt: new Date().toISOString(),
+              createdAt: new Date().toISOString(),
+              loginCount: 1,
+              assignedCardIds: preservedCards,
+            };
+            setCurrentUser(userProfile);
+            localStorage.setItem('3dbysd_current_user', JSON.stringify(userProfile));
+          } catch {
+            // Fallback preserving any cached role cleanly
+            let fallbackRole: 'master' | 'restricted' | 'member' = isMasterEmail ? 'master' : 'member';
+            try {
+              const raw = localStorage.getItem('3dbysd_current_user');
+              if (raw) {
+                const parsed = JSON.parse(raw) as UserProfile;
+                if (parsed.email?.trim().toLowerCase() === cleanEmail && parsed.role) {
+                  fallbackRole = parsed.role;
+                }
+              }
+            } catch {
+              // ignore
+            }
+            const userProfile: UserProfile = {
+              uid: firebaseUser.uid,
+              email: cleanEmail,
+              displayName:
+                firebaseUser.displayName || (isMasterEmail ? 'Master Administrator' : cleanEmail.split('@')[0]),
+              photoURL: firebaseUser.photoURL || undefined,
+              provider: 'google.com',
+              role: fallbackRole,
+              emailVerified: firebaseUser.emailVerified || true,
+              lastLoginAt: new Date().toISOString(),
+              createdAt: new Date().toISOString(),
+              loginCount: 1,
+            };
+            setCurrentUser(userProfile);
+            localStorage.setItem('3dbysd_current_user', JSON.stringify(userProfile));
+          }
+        }
+      } finally {
+        setAuthReady(true);
       }
     });
     return () => unsubscribe();
   }, []);
 
-  // Parse route from window.location and listen to popstate
-  useEffect(() => {
-    const checkPath = () => {
-      const targetCardId = extractCardId();
+  const loadCards = async (
+    userOverride?: UserProfile | null,
+    adminOverride?: AdminUser | null
+  ) => {
+    const targetUser = userOverride !== undefined ? userOverride : currentUser;
+    const targetEmail = targetUser?.email?.trim().toLowerCase() || '';
+    if (!targetEmail && !targetUser?.uid) {
+      setCards([]);
+      setLoading(false);
+      return;
+    }
+    const targetIsMaster = targetEmail === '66shashwatkumar66@gmail.com';
+    const matchedAdmin =
+      adminOverride !== undefined
+        ? adminOverride
+        : admins.find((a) => a.email.trim().toLowerCase() === targetEmail || a.id === targetUser?.uid) ||
+          (targetIsMaster ? DEFAULT_MASTER_ADMIN : activeAdmin);
 
-      if (targetCardId) {
-        setCustomerCardId(targetCardId);
-        fetchCustomerCard(targetCardId, false);
-      } else {
-        setCustomerCardId(null);
-        setCustomerCard(null);
-        loadCards();
-        loadAdminsData();
-        loadUsersData();
-      }
-    };
-
-    checkPath();
-    window.addEventListener('popstate', checkPath);
-
-    return () => {
-      window.removeEventListener('popstate', checkPath);
-    };
-  }, [fetchCustomerCard]);
-
-  const loadCards = async () => {
     setLoading(true);
-    const data = await fetchCards();
+    const data = await fetchCards({
+      id: matchedAdmin?.id || targetUser?.uid,
+      uid: targetUser?.uid,
+      email: targetEmail,
+      role: targetIsMaster ? 'master' : (matchedAdmin?.role || targetUser?.role || 'member'),
+      assignedCardIds: targetIsMaster ? [] : (matchedAdmin?.assignedCardIds ?? targetUser?.assignedCardIds ?? []),
+    });
     setCards(data);
     setLoading(false);
   };
@@ -241,23 +302,128 @@ export default function App() {
     }
   };
 
-  const loadAdminsData = async () => {
-    const list = await fetchAdmins();
-    setAdmins(list);
-    const master =
-      list.find((a) => a.role === 'master' || a.email.toLowerCase() === '66shashwatkumar66@gmail.com') ||
-      DEFAULT_MASTER_ADMIN;
+  const loadAdminsData = async (userOverride?: UserProfile | null): Promise<{ list: AdminUser[]; resolvedAdmin: AdminUser | null }> => {
+    const targetUser = userOverride !== undefined ? userOverride : currentUser;
+    const targetEmail = targetUser?.email?.toLowerCase().trim() || '';
+    const targetIsMaster = targetEmail === '66shashwatkumar66@gmail.com';
 
-    const impersonatedId = localStorage.getItem('3dbysd_impersonated_admin_id');
-    if (impersonatedId && currentUser?.email?.toLowerCase() === '66shashwatkumar66@gmail.com') {
-      const imp = list.find((a) => a.id === impersonatedId && a.role === 'restricted');
-      if (imp) {
-        setActiveAdmin(imp);
-        return;
+    const list = await fetchAdmins(targetEmail || undefined, targetUser?.uid);
+    setAdmins(list);
+
+    if (targetIsMaster) {
+      // Quietly ensure existing Firestore admin records have normalized email lookup docs
+      syncAdminLookupDocs(list).catch(() => {});
+
+      const master =
+        list.find((a) => a.role === 'master' || a.email.trim().toLowerCase() === '66shashwatkumar66@gmail.com') ||
+        DEFAULT_MASTER_ADMIN;
+
+      const impersonatedId = localStorage.getItem('3dbysd_impersonated_admin_id');
+      if (impersonatedId) {
+        const imp = list.find((a) => a.id === impersonatedId && a.role === 'restricted');
+        if (imp) {
+          setActiveAdmin(imp);
+          return { list, resolvedAdmin: imp };
+        }
       }
+      setActiveAdmin(master);
+      return { list, resolvedAdmin: master };
+    } else if (targetEmail) {
+      const matched =
+        list.find((a) => a.email.trim().toLowerCase() === targetEmail || a.id === targetUser?.uid) || null;
+      setActiveAdmin(matched);
+      return { list, resolvedAdmin: matched };
+    } else {
+      setActiveAdmin(null);
+      return { list, resolvedAdmin: null };
     }
-    setActiveAdmin(master);
   };
+
+  // Parse route from window.location and listen to popstate
+  useEffect(() => {
+    const checkPath = () => {
+      const targetCardId = extractCardId();
+
+      if (targetCardId) {
+        setCustomerCardId(targetCardId);
+        fetchCustomerCard(targetCardId, false);
+      } else {
+        setCustomerCardId(null);
+        setCustomerCard(null);
+        if (currentUser?.email) {
+          loadAdminsData(currentUser).then(({ resolvedAdmin }) => {
+            loadCards(currentUser, resolvedAdmin);
+          });
+          loadUsersData();
+        }
+      }
+    };
+
+    checkPath();
+    window.addEventListener('popstate', checkPath);
+
+    return () => {
+      window.removeEventListener('popstate', checkPath);
+    };
+  }, [fetchCustomerCard]);
+
+  // Re-sync admin identity and verify revocation whenever authenticated user or auth readiness changes
+  useEffect(() => {
+    if (customerCardId || !currentUser?.email || !authReady) return;
+    let cancelled = false;
+    setAdminsSynced(false);
+    const syncAuthSession = async () => {
+      const cleanEmail = currentUser.email.toLowerCase().trim();
+      const isMasterEmail = cleanEmail === '66shashwatkumar66@gmail.com';
+      try {
+        const status = await checkSessionAuthorization(cleanEmail, currentUser.uid);
+        if (cancelled) return;
+        setSessionAuth(status);
+        if (!isMasterEmail && status.revoked) {
+          await signOut(auth).catch(() => {});
+          clearSessionCaches();
+          setCards([]);
+          setAdmins([]);
+          setUsers([]);
+          setCurrentUser(null);
+          setAuthRevokedNotice(
+            status.message || 'Access Denied: Your administrator access has been revoked by the Master Admin.'
+          );
+          return;
+        }
+        if (!cancelled) {
+          const [{ resolvedAdmin }] = await Promise.all([loadAdminsData(currentUser), loadUsersData()]);
+          if (cancelled) return;
+          const authoritativeAdmin = resolvedAdmin || status.admin || null;
+          await loadCards(currentUser, authoritativeAdmin);
+        }
+      } finally {
+        if (!cancelled) {
+          setAdminsSynced(true);
+        }
+      }
+    };
+    syncAuthSession();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser?.email, currentUser?.uid, customerCardId, authReady]);
+
+  // Guard Master-only tabs against Sub-Admin or simulated Sub-Admin navigation
+  useEffect(() => {
+    if (!currentUser) return;
+    const cleanEmail = currentUser.email.trim().toLowerCase();
+    const isPrimary = cleanEmail === '66shashwatkumar66@gmail.com';
+    const matchedAdm =
+      admins.find((a) => a.email.trim().toLowerCase() === cleanEmail || a.id === currentUser.uid) ||
+      (sessionAuth?.authorized && sessionAuth.admin ? sessionAuth.admin : undefined);
+    const activeRole = isPrimary
+      ? activeAdmin?.role || 'master'
+      : matchedAdm?.role || (sessionAuth?.authorized ? sessionAuth.role : 'member');
+    if (activeRole !== 'master' && ['admins', 'users', 'ads'].includes(currentTab)) {
+      setCurrentTab('cards');
+    }
+  }, [currentUser, admins, activeAdmin, sessionAuth, currentTab]);
 
   const handleSelectActiveAdmin = (adm: AdminUser) => {
     setActiveAdmin(adm);
@@ -283,12 +449,24 @@ export default function App() {
     paddingDigits: number;
     prefix?: string;
   }) => {
-    const updated = await createBatchCards(params);
+    if (!isMaster) {
+      throw new Error('Only the Master Admin can generate new QR card batches.');
+    }
+    const updated = await createBatchCards(params, {
+      id: effectiveActiveAdmin.id,
+      email: currentUser?.email,
+    });
     setCards(updated);
   };
 
   const handleAssignCard = async (id: string, updates: Partial<CardRecord>) => {
-    const updated = await assignCard(id, updates, effectiveActiveAdmin.id);
+    const updated = await assignCard(
+      id,
+      updates,
+      effectiveActiveAdmin.id,
+      currentUser?.email,
+      isMaster
+    );
     if (updated) {
       setCards((prev) =>
         prev.map((c) => (c.id.toLowerCase() === id.toLowerCase() ? updated : c))
@@ -296,11 +474,17 @@ export default function App() {
       if (customerCardId && customerCardId.toLowerCase() === id.toLowerCase()) {
         setCustomerCard(updated);
       }
+      if (isMaster && (updates.assignedToEmail !== undefined || updates.assignedToUid !== undefined)) {
+        await Promise.all([loadAdminsData(), loadUsersData()]);
+      }
     }
   };
 
   const handleDeleteCard = async (id: string) => {
-    await deleteCard(id);
+    if (!isMaster) {
+      throw new Error('Only the Master Admin can delete QR cards.');
+    }
+    await deleteCard(id, { id: effectiveActiveAdmin.id, email: currentUser?.email });
     setCards((prev) => prev.filter((c) => c.id.toLowerCase() !== id.toLowerCase()));
   };
 
@@ -309,7 +493,7 @@ export default function App() {
   };
 
   const handleBulkUpdateStatus = async (ids: string[], newStatus: 'available' | 'assigned') => {
-    await bulkUpdateCardsStatus(ids, newStatus, effectiveActiveAdmin.id);
+    await bulkUpdateCardsStatus(ids, newStatus, effectiveActiveAdmin.id, currentUser?.email);
     setCards((prev) =>
       prev.map((c) =>
         ids.some((id) => id.toLowerCase() === c.id.toLowerCase())
@@ -328,8 +512,9 @@ export default function App() {
   };
 
   const handleSaveAdmin = async (adminData: Partial<AdminUser>) => {
+    const caller = { id: effectiveActiveAdmin.id, email: currentUser?.email };
     if (adminData.id) {
-      const updated = await updateAdmin(adminData.id, adminData);
+      const updated = await updateAdmin(adminData.id, adminData, caller);
       if (updated) {
         setAdmins((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
         if (activeAdmin && activeAdmin.id === updated.id) {
@@ -337,16 +522,27 @@ export default function App() {
         }
       }
     } else {
-      const created = await createAdmin(adminData);
+      const created = await createAdmin(adminData, caller);
       if (created) {
-        setAdmins((prev) => [...prev, created]);
+        setAdmins((prev) => [...prev.filter((a) => a.email.toLowerCase() !== created.email.toLowerCase()), created]);
       }
     }
+    await Promise.all([loadUsersData(), loadCards()]);
   };
 
   const handleDeleteAdmin = async (adminId: string) => {
-    await deleteAdmin(adminId);
-    setAdmins((prev) => prev.filter((a) => a.id !== adminId));
+    const caller = { id: effectiveActiveAdmin.id, email: currentUser?.email };
+    await deleteAdmin(adminId, caller);
+    const remaining = admins.filter((a) => a.id !== adminId);
+    setAdmins(remaining);
+    if (activeAdmin && activeAdmin.id === adminId) {
+      const master =
+        remaining.find((a) => a.role === 'master' || a.email.toLowerCase() === '66shashwatkumar66@gmail.com') ||
+        DEFAULT_MASTER_ADMIN;
+      setActiveAdmin(master);
+      localStorage.removeItem('3dbysd_impersonated_admin_id');
+    }
+    await loadUsersData();
   };
 
   const handleRetryCustomerLookup = () => {
@@ -372,7 +568,9 @@ export default function App() {
           window.history.pushState({}, '', '/');
           setCustomerCardId(null);
           setCustomerCard(null);
-          loadCards();
+          if (currentUser?.email) {
+            loadCards(currentUser);
+          }
         }}
       />
     );
@@ -382,9 +580,19 @@ export default function App() {
   if (!currentUser) {
     return (
       <AuthGateway
+        initialError={authRevokedNotice}
         onLoginSuccess={(user) => {
+          setAuthRevokedNotice(null);
+          setSessionAuth({
+            authorized: user.role === 'master' || user.role === 'restricted',
+            revoked: Boolean(user.accessRevoked),
+            role: user.role,
+          });
           setCurrentUser(user);
-          loadCards();
+          localStorage.setItem('3dbysd_current_user', JSON.stringify(user));
+          loadAdminsData(user).then(({ resolvedAdmin }) => {
+            loadCards(user, resolvedAdmin);
+          });
           loadUsersData();
         }}
         onPreviewCard={(id) => {
@@ -397,39 +605,70 @@ export default function App() {
   const handleSignOut = async () => {
     try {
       await signOut(auth);
-      setCurrentUser(null);
-      localStorage.removeItem('3dbysd_current_user');
     } catch (e) {
       console.warn('Sign out failed:', e);
+    } finally {
+      clearSessionCaches();
+      setCurrentUser(null);
+      setActiveAdmin(null);
+      setSessionAuth(null);
+      setCards([]);
+      setAdmins([]);
+      setUsers([]);
+      setSimulatorCardId(null);
+      setCardToAssign(null);
     }
   };
 
+  const cleanUserEmail = currentUser.email.trim().toLowerCase();
+
   // Master Admin check: STRICTLY ONLY for the email 66shashwatkumar66@gmail.com
-  const isMasterUser = Boolean(currentUser.email.toLowerCase() === '66shashwatkumar66@gmail.com');
+  const isMasterUser = cleanUserEmail === '66shashwatkumar66@gmail.com';
 
-  // Check if authorized as a sub-admin by Master Admin
-  const authorizedAdmin = admins.find(
-    (a) => a.email.toLowerCase() === currentUser.email.toLowerCase()
+  // Check if authorized as an admin/sub-admin by Master Admin
+  const authorizedAdmin =
+    admins.find((a) => a.email.trim().toLowerCase() === cleanUserEmail || a.id === currentUser.uid) ||
+    (sessionAuth?.authorized && sessionAuth.admin ? sessionAuth.admin : undefined);
+
+  // Check if user's admin access was explicitly revoked
+  const currentUserProfile = users.find(
+    (u) => u.email.trim().toLowerCase() === cleanUserEmail || u.uid === currentUser.uid
   );
+  const isRevokedUser = !isMasterUser && Boolean(sessionAuth?.revoked || currentUserProfile?.accessRevoked);
 
-  // Check if user has allocated cards as a client merchant
-  const userAllocatedCards = cards.filter((c) => {
-    const userEmail = currentUser.email.toLowerCase();
-    const userUid = currentUser.uid;
-    const userAssigned = currentUser.assignedCardIds || [];
+  const isAuthorizedUserRole =
+    !isRevokedUser &&
+    ((currentUserProfile && (currentUserProfile.role === 'restricted' || currentUserProfile.role === 'master')) ||
+      (sessionAuth?.authorized && (sessionAuth.role === 'restricted' || sessionAuth.role === 'master')));
+
+  // Wait for Firebase Auth + admin synchronization before rendering Access Pending Authorization
+  if (!isMasterUser && !isRevokedUser && !authorizedAdmin && !isAuthorizedUserRole && (!authReady || !adminsSynced)) {
     return (
-      (c.assignedToEmail && c.assignedToEmail.toLowerCase() === userEmail) ||
-      (c.assignedToUid && c.assignedToUid === userUid) ||
-      userAssigned.includes(c.id)
+      <div className="min-h-screen bg-[#F8FAFC] text-slate-900 flex flex-col items-center justify-center p-4">
+        <div className="bg-white rounded-3xl p-8 border border-slate-200 shadow-lg text-center space-y-3 max-w-sm w-full">
+          <div className="inline-block w-8 h-8 border-2 border-[#1A73E8] border-t-transparent rounded-full animate-spin mx-auto" />
+          <div className="text-sm font-bold text-slate-900">Verifying Account Authorization...</div>
+          <p className="text-xs text-slate-500 font-mono truncate">{currentUser.email}</p>
+        </div>
+      </div>
     );
-  });
+  }
+
+  // Check if user has allocated cards as a client merchant (only when access is not revoked)
+  const userAllocatedCards = isRevokedUser
+    ? []
+    : cards.filter((c) => {
+        const userUid = currentUser.uid;
+        return (
+          (c.assignedToEmail && c.assignedToEmail.trim().toLowerCase() === cleanUserEmail) ||
+          (c.assignedToUid && c.assignedToUid === userUid)
+        );
+      });
 
   // Strict Role-Based Access Control (UBRA):
-  // If the user is NOT Master Admin (66shashwatkumar66@gmail.com),
-  // NOT authorized by Master Admin in admins list,
-  // and has NO allocated cards:
-  // Render clean "Access Pending Authorization" gate!
-  if (!isMasterUser && !authorizedAdmin && userAllocatedCards.length === 0) {
+  // Block revoked accounts OR unauthorized Viewers with 0 allocated cards.
+  // Verified Sub-Admins (0 or more assigned cards) enter the dashboard cleanly.
+  if (!isMasterUser && (isRevokedUser || (!authorizedAdmin && !isAuthorizedUserRole && userAllocatedCards.length === 0))) {
     return (
       <div className="min-h-screen bg-[#F8FAFC] text-slate-900 flex flex-col justify-between antialiased">
         <header className="border-b border-slate-200 bg-white/90 backdrop-blur-md px-4 py-3.5">
@@ -452,13 +691,17 @@ export default function App() {
 
         <main className="max-w-md w-full mx-auto px-4 py-12 flex flex-col justify-center space-y-5 flex-1">
           <div className="bg-white rounded-3xl p-6 sm:p-8 border border-slate-200 shadow-xl text-center space-y-4">
-            <div className="w-14 h-14 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto border border-amber-200">
-              <Lock className="w-7 h-7 text-amber-600" />
+            <div className={`w-14 h-14 rounded-2xl flex items-center justify-center mx-auto border ${
+              isRevokedUser
+                ? 'bg-red-50 text-red-600 border-red-200'
+                : 'bg-amber-50 text-amber-600 border-amber-200'
+            }`}>
+              <Lock className={`w-7 h-7 ${isRevokedUser ? 'text-red-600' : 'text-amber-600'}`} />
             </div>
 
             <div className="space-y-1.5">
               <h2 className="text-lg font-extrabold text-slate-900">
-                Access Pending Authorization
+                {isRevokedUser ? 'Administrator Access Revoked' : 'Access Pending Authorization'}
               </h2>
               <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100 text-slate-700 text-xs font-mono font-medium">
                 <span>{currentUser.email}</span>
@@ -466,8 +709,16 @@ export default function App() {
             </div>
 
             <p className="text-xs text-slate-600 leading-relaxed">
-              This management portal is protected by <strong>Strict Role-Based Access Control (UBRA)</strong>.
-              Your Google account is not yet authorized as an administrator, and no QR/NFC stands have been allocated to your email.
+              {isRevokedUser ? (
+                <>
+                  Your administrator access has been revoked by the <strong>Master Administrator</strong>. You no longer have access to the admin portal or protected management resources.
+                </>
+              ) : (
+                <>
+                  This management portal is protected by <strong>Strict Role-Based Access Control (UBRA)</strong>.
+                  Your Google account is not yet authorized as an administrator, and no QR/NFC stands have been allocated to your email.
+                </>
+              )}
             </p>
 
             <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl text-left text-xs text-slate-600 space-y-1.5">
@@ -499,37 +750,78 @@ export default function App() {
     );
   }
 
-  // Active admin fallback
-  const effectiveActiveAdmin: AdminUser =
-    activeAdmin ||
-    (authorizedAdmin
-      ? authorizedAdmin
-      : DEFAULT_MASTER_ADMIN);
-
   const masterAdmin =
-    admins.find((a) => a.role === 'master' || a.email.toLowerCase() === '66shashwatkumar66@gmail.com') ||
+    admins.find((a) => a.role === 'master' || a.email.trim().toLowerCase() === '66shashwatkumar66@gmail.com') ||
     DEFAULT_MASTER_ADMIN;
+
+  const promotedAdminFallback: AdminUser | null = isAuthorizedUserRole
+    ? {
+        id: currentUserProfile?.uid || currentUser.uid,
+        email: cleanUserEmail,
+        name: currentUserProfile?.displayName || currentUser.displayName || cleanUserEmail,
+        role:
+          currentUserProfile?.role === 'master' || sessionAuth?.role === 'master'
+            ? 'master'
+            : 'restricted',
+        assignedCardIds:
+          currentUserProfile?.assignedCardIds ||
+          sessionAuth?.admin?.assignedCardIds ||
+          currentUser.assignedCardIds ||
+          [],
+        permissions: {
+          canEditCards: true,
+          canToggleAi: true,
+          canExportCsv: false,
+          canCreateCards: false,
+        },
+        createdAt: currentUserProfile?.createdAt || currentUser.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }
+    : null;
+
+  const syntheticMerchantAdmin: AdminUser = {
+    id: currentUser.uid,
+    email: cleanUserEmail,
+    name: currentUser.displayName || currentUser.email,
+    role: 'restricted',
+    assignedCardIds: userAllocatedCards.map((c) => c.id),
+    permissions: {
+      canEditCards: true,
+      canToggleAi: true,
+      canExportCsv: false,
+      canCreateCards: false,
+    },
+    createdAt: currentUser.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  // Strict non-master fallback: NEVER fall back to DEFAULT_MASTER_ADMIN for non-master users!
+  const effectiveActiveAdmin: AdminUser = isMasterUser
+    ? (activeAdmin || masterAdmin)
+    : (authorizedAdmin || promotedAdminFallback || syntheticMerchantAdmin);
 
   // Check if Master Admin is currently testing or impersonating Sub-Admin mode
   const isInSubAdminMode = Boolean(isMasterUser && effectiveActiveAdmin.role === 'restricted');
 
   // Strict Role-Based Access Control (UBRA):
   // When in Sub-Admin mode, user experiences the restricted sub-admin view and limited card set
-  const isMaster = isMasterUser && !isInSubAdminMode;
+  const isMaster = (isMasterUser || effectiveActiveAdmin.role === 'master') && !isInSubAdminMode;
 
   const displayedCards = isMaster
     ? cards
     : cards.filter((c) => {
-        const userEmail = currentUser.email.toLowerCase();
         const userUid = currentUser.uid;
-        const userAssigned = currentUser.assignedCardIds || [];
+        const adminEmail = effectiveActiveAdmin?.email?.trim().toLowerCase() || cleanUserEmail;
         const adminAssigned = effectiveActiveAdmin?.assignedCardIds || [];
-        return (
-          (c.assignedToEmail && c.assignedToEmail.toLowerCase() === userEmail) ||
-          (c.assignedToUid && c.assignedToUid === userUid) ||
-          userAssigned.includes(c.id) ||
-          (effectiveActiveAdmin?.role === 'restricted' && adminAssigned.includes(c.id))
-        );
+        const isDirectOwner =
+          (c.assignedToEmail &&
+            (c.assignedToEmail.trim().toLowerCase() === cleanUserEmail ||
+              c.assignedToEmail.trim().toLowerCase() === adminEmail)) ||
+          (c.assignedToUid && (c.assignedToUid === userUid || c.assignedToUid === effectiveActiveAdmin?.id));
+        const isInAdminAssigned =
+          effectiveActiveAdmin?.role === 'restricted' &&
+          adminAssigned.some((aid) => aid.toLowerCase() === c.id.toLowerCase());
+        return Boolean(isDirectOwner || isInAdminAssigned);
       });
 
   const assignedCount = displayedCards.filter((c) => c.status === 'assigned').length;
@@ -541,13 +833,20 @@ export default function App() {
       <AdminHeader
         currentTab={currentTab}
         onSelectTab={(tab) => {
+          if (!isMaster && ['admins', 'users', 'ads'].includes(tab)) {
+            return;
+          }
           if (tab === 'simulator') {
-            setSimulatorCardId(displayedCards[0]?.id || cards[0]?.id || '0001');
+            if (displayedCards.length > 0) {
+              setSimulatorCardId(displayedCards[0].id);
+            }
           } else {
             setCurrentTab(tab);
           }
         }}
-        onOpenBatchModal={() => setIsBatchModalOpen(true)}
+        onOpenBatchModal={() => {
+          if (isMaster) setIsBatchModalOpen(true);
+        }}
         onOpenSidebar={() => setIsSidebarOpen(true)}
         totalCards={displayedCards.length}
         assignedCount={assignedCount}
@@ -577,7 +876,10 @@ export default function App() {
                   </span>
                 </div>
                 <p className="text-amber-800 text-[11px] mt-0.5 truncate">
-                  Testing restricted sub-admin view. Authorized cards: [{effectiveActiveAdmin.assignedCardIds.map((id) => `#${id}`).join(', ')}]
+                  Testing restricted sub-admin view. Authorized cards:{' '}
+                  {effectiveActiveAdmin.assignedCardIds.length > 0
+                    ? `[${effectiveActiveAdmin.assignedCardIds.map((id) => `#${id}`).join(', ')}]`
+                    : 'None assigned yet'}
                 </p>
               </div>
             </div>
@@ -623,8 +925,11 @@ export default function App() {
             ))}
 
             <button
-              onClick={() => setSimulatorCardId(displayedCards[0]?.id || '0001')}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-[#1A73E8] hover:bg-[#1557B0] text-white text-xs font-bold transition-all shadow-sm shadow-blue-500/25 active:scale-95 shrink-0"
+              onClick={() => {
+                if (displayedCards[0]) setSimulatorCardId(displayedCards[0].id);
+              }}
+              disabled={displayedCards.length === 0}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-[#1A73E8] hover:bg-[#1557B0] text-white text-xs font-bold transition-all shadow-sm shadow-blue-500/25 active:scale-95 shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <Smartphone className="w-3.5 h-3.5" />
               <span>Phone Preview</span>
@@ -663,7 +968,9 @@ export default function App() {
                 <p className="text-xs text-slate-500">
                   {isMaster
                     ? 'Manage physical card IDs, connect Google Review profiles, and configure AI settings'
-                    : `Managing authorized cards: ${effectiveActiveAdmin.assignedCardIds.map((id) => `#${id}`).join(', ')}`}
+                    : effectiveActiveAdmin.assignedCardIds.length > 0
+                    ? `Managing authorized cards: ${effectiveActiveAdmin.assignedCardIds.map((id) => `#${id}`).join(', ')}`
+                    : 'No QR cards assigned yet'}
                 </p>
               </div>
 
@@ -716,31 +1023,30 @@ export default function App() {
               </div>
             </div>
 
-            {/* Empty state for client user when no cards have been allocated by Master Admin */}
-            {!loading && displayedCards.length === 0 && !isMaster && (
-              <div className="p-8 bg-white rounded-2xl border border-slate-200 text-center space-y-3 shadow-xs">
-                <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto border border-amber-200">
-                  <Building2 className="w-6 h-6" />
-                </div>
-                <h3 className="text-base font-bold text-slate-900">No QR Review Stands Assigned Yet</h3>
-                <p className="text-xs text-slate-600 max-w-md mx-auto leading-relaxed">
-                  Welcome, <strong>{currentUser.displayName}</strong>! Content is strictly isolated by user account. Only the Master Administrator can create new QR batches and allocate them to businesses. Please ask the administrator to allocate cards to your Google email: <strong>{currentUser.email}</strong>.
-                </p>
-              </div>
-            )}
-
             {loading ? (
               <div className="p-12 text-center bg-white rounded-xl border border-slate-200">
                 <div className="inline-block w-6 h-6 border-2 border-slate-900 border-t-transparent rounded-full animate-spin mb-2" />
                 <p className="text-xs text-slate-500">Loading cards...</p>
               </div>
+            ) : displayedCards.length === 0 && !isMaster ? (
+              <div className="p-8 bg-white rounded-2xl border border-slate-200 text-center space-y-3 shadow-xs">
+                <div className="w-12 h-12 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto border border-amber-200">
+                  <Building2 className="w-6 h-6" />
+                </div>
+                <h3 className="text-base font-bold text-slate-900">No QR Cards Assigned</h3>
+                <p className="text-xs text-slate-600 max-w-md mx-auto leading-relaxed">
+                  No QR cards have been assigned to your account yet. Contact the Master Admin.
+                </p>
+              </div>
             ) : (
               <CardsTable
                 cards={displayedCards}
                 onAssignCard={(card) => setCardToAssign(card)}
-                onDeleteCard={isMaster ? handleDeleteCard : () => alert('Only Master Admin can delete cards.')}
+                onDeleteCard={isMaster ? handleDeleteCard : () => {}}
                 onPreviewCard={handleOpenCustomerPreview}
-                onOpenBatchModal={() => setIsBatchModalOpen(true)}
+                onOpenBatchModal={() => {
+                  if (isMaster) setIsBatchModalOpen(true);
+                }}
                 onToggleAiReview={
                   isMaster || effectiveActiveAdmin.permissions?.canToggleAi
                     ? handleToggleAiReview
@@ -776,6 +1082,9 @@ export default function App() {
         {currentTab === 'nfc' && (
           <NfcGeneratorView
             cards={displayedCards}
+            activeAdmin={effectiveActiveAdmin}
+            isMaster={isMaster}
+            callerEmail={currentUser.email}
             onCardUpdated={(updated) => {
               setCards((prev) => {
                 const idx = prev.findIndex((c) => c.id === updated.id);
@@ -797,7 +1106,7 @@ export default function App() {
             cards={cards}
             admins={admins}
             activeAdmin={effectiveActiveAdmin}
-            onSelectActiveAdmin={(adm) => setActiveAdmin(adm)}
+            onSelectActiveAdmin={handleSelectActiveAdmin}
             onSaveAdmin={handleSaveAdmin}
             onDeleteAdmin={handleDeleteAdmin}
             onRefreshCards={loadCards}
@@ -805,10 +1114,11 @@ export default function App() {
         )}
 
         {/* Tab 5: Google Verified Users & Logins */}
-        {currentTab === 'users' && (
+        {currentTab === 'users' && isMaster && (
           <UsersManagementView
             activeAdmin={effectiveActiveAdmin}
-            onRefreshAdmins={loadAdminsData}
+            callerEmail={currentUser.email}
+            onRefreshAdmins={() => loadAdminsData(currentUser)}
           />
         )}
 
@@ -830,13 +1140,15 @@ export default function App() {
         </div>
       </footer>
 
-      {/* Batch Generator Modal */}
-      <BatchGeneratorModal
-        isOpen={isBatchModalOpen}
-        onClose={() => setIsBatchModalOpen(false)}
-        existingCards={cards}
-        onGenerateBatch={handleGenerateBatch}
-      />
+      {/* Batch Generator Modal (Master Admin Only) */}
+      {isMaster && (
+        <BatchGeneratorModal
+          isOpen={isBatchModalOpen}
+          onClose={() => setIsBatchModalOpen(false)}
+          existingCards={cards}
+          onGenerateBatch={handleGenerateBatch}
+        />
+      )}
 
       {/* Assign Card Modal */}
       <AssignCardModal
@@ -852,7 +1164,7 @@ export default function App() {
       {/* Mobile Simulator Modal */}
       {simulatorCardId && (
         <MobileSimulatorModal
-          cards={displayedCards.length > 0 ? displayedCards : cards}
+          cards={displayedCards}
           initialCardId={simulatorCardId}
           onClose={() => setSimulatorCardId(null)}
         />
@@ -864,8 +1176,13 @@ export default function App() {
         onClose={() => setIsSidebarOpen(false)}
         currentTab={currentTab}
         onSelectTab={(tab) => {
+          if (!isMaster && ['admins', 'users', 'ads'].includes(tab)) {
+            return;
+          }
           if (tab === 'simulator') {
-            setSimulatorCardId(displayedCards[0]?.id || cards[0]?.id || '0001');
+            if (displayedCards.length > 0) {
+              setSimulatorCardId(displayedCards[0].id);
+            }
           } else {
             setCurrentTab(tab);
           }
@@ -878,7 +1195,10 @@ export default function App() {
         onSelectActiveAdmin={handleSelectActiveAdmin}
         onExitSubAdminMode={handleExitSubAdminMode}
         currentUser={currentUser}
-        onOpenBatchModal={() => setIsBatchModalOpen(true)}
+        onSignOut={handleSignOut}
+        onOpenBatchModal={() => {
+          if (isMaster) setIsBatchModalOpen(true);
+        }}
         onExportCsv={() => exportCardsToCsv(displayedCards)}
       />
     </div>

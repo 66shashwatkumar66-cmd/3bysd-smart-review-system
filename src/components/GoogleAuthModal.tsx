@@ -7,8 +7,8 @@ import {
   Lock,
   ShieldAlert,
 } from 'lucide-react';
-import { auth, googleProvider, signInWithPopup } from '../firebase';
-import { saveUser } from '../utils/api';
+import { auth, googleProvider, signInWithPopup, signOut } from '../firebase';
+import { saveUser, checkSessionAuthorization } from '../utils/api';
 import { UserProfile } from '../types';
 import { logAuthFailure } from '../utils/firebaseDiagnostics';
 import { FirebaseDiagnosticsModal } from './FirebaseDiagnosticsModal';
@@ -44,6 +44,15 @@ export const GoogleAuthModal: React.FC<GoogleAuthModalProps> = ({
       const email = (user.email || '').toLowerCase().trim();
       const isMaster = email === '66shashwatkumar66@gmail.com';
 
+      const authStatus = await checkSessionAuthorization(email, user.uid);
+      if (!isMaster && authStatus.revoked) {
+        await signOut(auth).catch(() => {});
+        setErrorMsg(
+          authStatus.message || 'Access Denied: Your administrator access has been revoked by the Master Admin.'
+        );
+        return;
+      }
+
       const profile: Partial<UserProfile> & { uid: string; email: string } = {
         uid: user.uid,
         email,
@@ -57,9 +66,10 @@ export const GoogleAuthModal: React.FC<GoogleAuthModalProps> = ({
             email || 'GU'
           )}&backgroundColor=1a73e8&textColor=ffffff`,
         provider: 'google.com',
-        role: isMaster ? 'master' : 'member',
+        role: isMaster ? 'master' : authStatus.role,
         emailVerified: user.emailVerified || true,
         device: navigator.userAgent.slice(0, 60),
+        assignedCardIds: authStatus.admin?.assignedCardIds || [],
       };
 
       const saved = await saveUser(profile);

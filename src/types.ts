@@ -41,6 +41,7 @@ export interface AdminUser {
   role: 'master' | 'restricted';
   assignedCardIds: string[]; // List of card IDs this sub-admin is restricted to managing
   permissions: AdminPermissions;
+  aliasOf?: string; // Primary admin doc ID when stored as an email/UID lookup mirror
   createdAt: string;
   updatedAt: string;
 }
@@ -106,6 +107,8 @@ export interface UserProfile {
   loginCount: number;
   device?: string;
   assignedCardIds?: string[];
+  accessRevoked?: boolean;
+  revokedAt?: string;
 }
 
 export type ScanSource = 'qr' | 'nfc' | 'direct' | 'simulator';

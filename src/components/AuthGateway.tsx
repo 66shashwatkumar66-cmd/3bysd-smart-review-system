@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ShieldCheck,
   Lock,
@@ -11,8 +11,8 @@ import {
   Clock,
   ShieldAlert,
 } from 'lucide-react';
-import { auth, googleProvider, signInWithPopup } from '../firebase';
-import { saveUser, fetchAdmins, fetchCards } from '../utils/api';
+import { auth, googleProvider, signInWithPopup, signOut } from '../firebase';
+import { saveUser, fetchAdmins, checkSessionAuthorization } from '../utils/api';
 import { UserProfile } from '../types';
 import { logAuthFailure } from '../utils/firebaseDiagnostics';
 import { FirebaseDiagnosticsModal } from './FirebaseDiagnosticsModal';
@@ -20,14 +20,22 @@ import { FirebaseDiagnosticsModal } from './FirebaseDiagnosticsModal';
 interface AuthGatewayProps {
   onLoginSuccess: (user: UserProfile) => void;
   onPreviewCard: (cardId: string) => void;
+  initialError?: string | null;
 }
 
 export const AuthGateway: React.FC<AuthGatewayProps> = ({
   onLoginSuccess,
   onPreviewCard,
+  initialError = null,
 }) => {
   const [loading, setLoading] = useState<boolean>(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(initialError);
+
+  useEffect(() => {
+    if (initialError) {
+      setErrorMsg(initialError);
+    }
+  }, [initialError]);
   const [googleEmail, setGoogleEmail] = useState<string>('');
   const [showEmailInput, setShowEmailInput] = useState<boolean>(false);
   const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState<boolean>(false);
@@ -42,20 +50,28 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
       const email = (user.email || '').toLowerCase().trim();
       const isMaster = email === '66shashwatkumar66@gmail.com';
 
-      // Check authorization in system
-      const [admins, cards] = await Promise.all([fetchAdmins(), fetchCards()]);
-      const authorizedAdmin = admins.find((a) => a.email.toLowerCase() === email);
-      const hasAssignedCards = cards.some(
-        (c) => c.assignedToEmail && c.assignedToEmail.toLowerCase() === email
-      );
+      // Authoritative revocation & authorization check
+      const authStatus = await checkSessionAuthorization(email, user.uid);
+      if (!isMaster && authStatus.revoked) {
+        await signOut(auth).catch(() => {});
+        setErrorMsg(
+          authStatus.message || 'Access Denied: Your administrator access has been revoked by the Master Admin.'
+        );
+        return;
+      }
+
+      // Check authorization in system without downloading full card inventory
+      const admins = await fetchAdmins(email, user.uid);
+      const authorizedAdmin =
+        authStatus.admin || admins.find((a) => a.email.trim().toLowerCase() === email);
 
       let role: 'master' | 'restricted' | 'member' = 'member';
       if (isMaster) {
         role = 'master';
       } else if (authorizedAdmin) {
         role = authorizedAdmin.role === 'master' ? 'master' : 'restricted';
-      } else if (hasAssignedCards) {
-        role = 'member';
+      } else if (authStatus.authorized && authStatus.role !== 'member') {
+        role = authStatus.role;
       }
 
       const profile: Partial<UserProfile> & { uid: string; email: string } = {
@@ -69,6 +85,7 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
         role,
         emailVerified: user.emailVerified || true,
         device: navigator.userAgent.slice(0, 60),
+        assignedCardIds: authorizedAdmin?.assignedCardIds || [],
       };
 
       const saved = await saveUser(profile);
@@ -112,19 +129,25 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
 
     try {
       const isMaster = cleanEmail === '66shashwatkumar66@gmail.com';
-      const [admins, cards] = await Promise.all([fetchAdmins(), fetchCards()]);
-      const authorizedAdmin = admins.find((a) => a.email.toLowerCase() === cleanEmail);
-      const hasAssignedCards = cards.some(
-        (c) => c.assignedToEmail && c.assignedToEmail.toLowerCase() === cleanEmail
-      );
+      const authStatus = await checkSessionAuthorization(cleanEmail);
+      if (!isMaster && authStatus.revoked) {
+        setErrorMsg(
+          authStatus.message || 'Access Denied: Your administrator access has been revoked by the Master Admin.'
+        );
+        return;
+      }
+
+      const admins = await fetchAdmins(cleanEmail);
+      const authorizedAdmin =
+        authStatus.admin || admins.find((a) => a.email.trim().toLowerCase() === cleanEmail);
 
       let role: 'master' | 'restricted' | 'member' = 'member';
       if (isMaster) {
         role = 'master';
       } else if (authorizedAdmin) {
         role = authorizedAdmin.role === 'master' ? 'master' : 'restricted';
-      } else if (hasAssignedCards) {
-        role = 'member';
+      } else if (authStatus.authorized && authStatus.role !== 'member') {
+        role = authStatus.role;
       }
 
       const uid = `google-uid-${cleanEmail.replace(/[^a-zA-Z0-9]/g, '')}`;
@@ -137,6 +160,7 @@ export const AuthGateway: React.FC<AuthGatewayProps> = ({
         role,
         emailVerified: true,
         device: navigator.userAgent.slice(0, 60),
+        assignedCardIds: authorizedAdmin?.assignedCardIds || [],
       };
 
       const saved = await saveUser(profile);
