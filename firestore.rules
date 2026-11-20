@@ -311,16 +311,31 @@ service cloud.firestore {
         isMasterAdmin() ||
         (
           request.auth.uid == userId &&
-          incoming().get('role', 'member') == 'member' &&
-          incoming().get('accessRevoked', false) == false
+          incoming().get('accessRevoked', false) == false &&
+          (
+            incoming().get('role', 'member') == 'member' ||
+            (
+              hasVerifiedEmail() &&
+              exists(/databases/$(database)/documents/admins/$(authEmailLower())) &&
+              incoming().get('role', 'member') == get(/databases/$(database)/documents/admins/$(authEmailLower())).data.role
+            )
+          )
         )
       );
       allow update: if isValidId(userId) && isAuthenticated() && isValidUser(incoming()) && (
         isMasterAdmin() ||
         (
           request.auth.uid == userId &&
-          incoming().get('role', 'member') == existing().get('role', 'member') &&
-          incoming().get('accessRevoked', false) == existing().get('accessRevoked', false)
+          incoming().get('accessRevoked', false) == existing().get('accessRevoked', false) &&
+          (
+            incoming().get('role', 'member') == existing().get('role', 'member') ||
+            (
+              existing().get('accessRevoked', false) == false &&
+              hasVerifiedEmail() &&
+              exists(/databases/$(database)/documents/admins/$(authEmailLower())) &&
+              incoming().get('role', 'member') == get(/databases/$(database)/documents/admins/$(authEmailLower())).data.role
+            )
+          )
         )
       );
       allow delete: if isValidId(userId) && isMasterAdmin() &&

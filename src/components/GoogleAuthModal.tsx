@@ -8,7 +8,7 @@ import {
   ShieldAlert,
 } from 'lucide-react';
 import { auth, googleProvider, signInWithPopup, signOut } from '../firebase';
-import { saveUser, createAdmin, checkSessionAuthorization, formatApiError } from '../utils/api';
+import { saveUser, authorizeUserAsAdmin, checkSessionAuthorization, formatApiError } from '../utils/api';
 import { UserProfile } from '../types';
 import { logAuthFailure } from '../utils/firebaseDiagnostics';
 import { FirebaseDiagnosticsModal } from './FirebaseDiagnosticsModal';
@@ -53,42 +53,20 @@ export const GoogleAuthModal: React.FC<GoogleAuthModalProps> = ({
 
     try {
       const displayName = targetName.trim() || cleanEmail.split('@')[0];
-      const generatedUid = `google-preauth-${cleanEmail.replace(/[^a-z0-9]/g, '-')}`;
-      const saved = await saveUser(
+      const { user: saved } = await authorizeUserAsAdmin(
         {
-          uid: generatedUid,
           email: cleanEmail,
           displayName,
-          provider: 'google.com',
           role: targetRole,
-          emailVerified: true,
-          accessRevoked: false,
-          assignedCardIds: [],
         },
         adminCaller
       );
 
-      if (targetRole === 'restricted') {
-        try {
-          await createAdmin(
-            {
-              id: saved.uid,
-              email: cleanEmail,
-              name: displayName,
-              role: 'restricted',
-              assignedCardIds: [],
-            },
-            adminCaller
-          );
-        } catch (adminErr: any) {
-          const msg = (adminErr?.message || '').toLowerCase();
-          if (!msg.includes('already exists')) {
-            throw adminErr;
-          }
-        }
-      }
-
-      setSuccessMsg(`Verified and registered ${saved.displayName} (${saved.email}) as ${targetRole}.`);
+      setSuccessMsg(
+        `Authorized & saved ${saved.displayName} (${saved.email}) as ${
+          targetRole === 'restricted' ? 'Sub-Admin' : 'Viewer'
+        }.`
+      );
       setTargetEmail('');
       setTargetName('');
       setTimeout(() => {
@@ -96,7 +74,8 @@ export const GoogleAuthModal: React.FC<GoogleAuthModalProps> = ({
         onClose();
       }, 600);
     } catch (err: any) {
-      setErrorMsg(formatApiError(err, 'Failed to register user.'));
+      logAuthFailure(err, 'Add & Authorize User');
+      setErrorMsg(formatApiError(err, 'Failed to authorize administrator.'));
     } finally {
       setLoading(false);
     }
@@ -226,18 +205,18 @@ export const GoogleAuthModal: React.FC<GoogleAuthModalProps> = ({
               <div className="space-y-1.5 flex-1 min-w-0">
                 <span className="font-semibold">Notice</span>
                 <p className="text-amber-800 leading-relaxed">{errorMsg}</p>
-                {!isMasterCallerMode && (
-                  <div className="pt-1">
-                    <button
-                      type="button"
-                      onClick={() => setIsDiagnosticsOpen(true)}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-200/80 hover:bg-amber-200 text-amber-900 font-bold text-[11px] transition-colors cursor-pointer"
-                    >
-                      <ShieldAlert className="w-3.5 h-3.5 text-amber-700" />
-                      <span>View OAuth & Domain Diagnostics</span>
-                    </button>
-                  </div>
-                )}
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setIsDiagnosticsOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-200/80 hover:bg-amber-200 text-amber-900 font-bold text-[11px] transition-colors cursor-pointer"
+                  >
+                    <ShieldAlert className="w-3.5 h-3.5 text-amber-700" />
+                    <span>
+                      {isMasterCallerMode ? 'View Firebase & Auth Diagnostics' : 'View OAuth & Domain Diagnostics'}
+                    </span>
+                  </button>
+                </div>
               </div>
             </div>
           )}

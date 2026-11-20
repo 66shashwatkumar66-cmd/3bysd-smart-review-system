@@ -671,7 +671,7 @@ export default function App() {
       }
     }
     lastRefreshAtRef.current = 0;
-    await loadUsersData();
+    await Promise.all([loadAdminsData(currentUser), loadUsersData()]);
   };
 
   const handleDeleteAdmin = async (adminId: string) => {
@@ -687,7 +687,7 @@ export default function App() {
       localStorage.removeItem('3dbysd_impersonated_admin_id');
     }
     lastRefreshAtRef.current = 0;
-    await loadUsersData();
+    await Promise.all([loadAdminsData(currentUser), loadUsersData()]);
   };
 
   const handleRetryCustomerLookup = () => {
@@ -777,7 +777,12 @@ export default function App() {
   const currentUserProfile = users.find(
     (u) => u.email.trim().toLowerCase() === cleanUserEmail || u.uid === currentUser.uid
   );
-  const isRevokedUser = !isMasterUser && Boolean(sessionAuth?.revoked || currentUserProfile?.accessRevoked);
+  const isRevokedUser =
+    !isMasterUser &&
+    Boolean(
+      sessionAuth?.revoked ||
+        (!sessionAuth?.authorized && !authorizedAdmin && currentUserProfile?.accessRevoked)
+    );
 
   const isAuthorizedUserRole =
     !isRevokedUser &&

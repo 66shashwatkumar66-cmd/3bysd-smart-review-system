@@ -18,7 +18,7 @@ import {
   X,
 } from 'lucide-react';
 import { UserProfile, AdminUser } from '../types';
-import { fetchUsers, saveUser, deleteUser, updateAdmin, createAdmin, deleteAdmin, formatApiError } from '../utils/api';
+import { fetchUsers, deleteUser, authorizeUserAsAdmin, formatApiError } from '../utils/api';
 import { GoogleAuthModal } from './GoogleAuthModal';
 
 interface UsersManagementViewProps {
@@ -77,66 +77,24 @@ export const UsersManagementView: React.FC<UsersManagementViewProps> = ({
     setActionError(null);
     setActionSuccess(null);
     try {
-      await saveUser(
+      await authorizeUserAsAdmin(
         {
-          ...user,
+          email: user.email,
+          displayName: user.displayName,
           role: newRole,
-          accessRevoked: false,
+          existingUid: user.uid,
+          ...(newRole === 'member' ? { assignedCardIds: [] } : {}),
         },
         caller
       );
 
-      // Sync admin registry when promoting/changing/demoting role
-      if (newRole === 'master' || newRole === 'restricted') {
-        const syncedPermissions = {
-          canEditCards: true,
-          canToggleAi: true,
-          canExportCsv: newRole === 'master',
-          canCreateCards: newRole === 'master',
-        };
-        try {
-          await updateAdmin(
-            user.email.trim().toLowerCase(),
-            {
-              role: newRole,
-              name: user.displayName,
-              email: user.email.trim().toLowerCase(),
-              permissions: syncedPermissions,
-            },
-            caller
-          );
-        } catch (updateErr: any) {
-          const msg = updateErr?.message?.toLowerCase() || '';
-          if (msg.includes('not found') || msg.includes('404')) {
-            await createAdmin(
-              {
-                id: user.uid,
-                email: user.email.trim().toLowerCase(),
-                name: user.displayName,
-                role: newRole,
-                assignedCardIds: user.assignedCardIds || [],
-                permissions: syncedPermissions,
-              },
-              caller
-            );
-          } else {
-            throw updateErr;
-          }
-        }
-      } else if (newRole === 'member') {
-        try {
-          await deleteAdmin(user.email.trim().toLowerCase(), caller);
-        } catch (delErr: any) {
-          const msg = delErr?.message?.toLowerCase() || '';
-          if (!msg.includes('not found') && !msg.includes('404')) {
-            console.warn('Demotion admin cleanup notice:', delErr);
-          }
-        }
-      }
-
       await loadData();
       if (onRefreshAdmins) await onRefreshAdmins();
-      setActionSuccess(`Updated ${user.displayName}'s role to ${newRole}`);
+      setActionSuccess(
+        `Updated ${user.displayName}'s role to ${
+          newRole === 'master' ? 'Master Admin' : newRole === 'restricted' ? 'Sub-Admin' : 'Viewer'
+        }`
+      );
       setTimeout(() => setActionSuccess(null), 3000);
     } catch (err: any) {
       setActionError(`Failed to update role: ${formatApiError(err, 'Unauthorized or database write failed')}`);

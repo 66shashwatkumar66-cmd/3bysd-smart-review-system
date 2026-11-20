@@ -58,6 +58,22 @@ export function formatApiError(err: unknown, fallback: string = 'An unexpected e
 }
 
 /**
+ * Returns true ONLY when the Express REST backend is absent/unreachable (e.g. static or Firebase-only
+ * deployment returning HTML 404/405/502/503 instead of our Express JSON API).
+ * Real Express JSON errors (400 validation, 401/403 RBAC, 500 server error) always return false.
+ */
+function isStaticBackendUnavailable(res: Response): boolean {
+  const ct = (res.headers.get('content-type') || '').toLowerCase();
+  if (res.status === 405 || res.status === 502 || res.status === 503 || res.status === 504) {
+    return !ct.includes('application/json');
+  }
+  if (res.status === 404 && !ct.includes('application/json')) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * Deeply removes all keys with `undefined` or `null` values.
  * Firestore strictly rejects documents containing undefined values with:
  * "FirebaseError: Function setDoc() called with invalid data. Unsupported field value: undefined"
@@ -339,30 +355,48 @@ export async function createBatchCards(
       };
       newCards.push(card);
       existingIds.add(id);
-
-      // Write to Firestore with sanitization
-      try {
-        await setDoc(doc(db, CARDS_COLLECTION, id), cleanForFirestore(card));
-      } catch (err) {
-        console.warn(`Failed writing card ${id} to Firestore:`, err);
-      }
     }
     current++;
   }
 
-  // Also notify server endpoint for backup
-  const res = await fetch('/api/cards/batch', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(caller?.id ? { 'x-admin-id': caller.id } : {}),
-      ...(caller?.email ? { 'x-admin-email': caller.email } : {}),
-    },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    const errData = await res.json().catch(() => ({}));
-    throw new Error(errData.message || errData.error || 'Failed to create batch cards.');
+  // Write to Firestore with sanitization (confirmed when signed in)
+  let firestoreConfirmed = false;
+  if (auth.currentUser) {
+    try {
+      const batch = writeBatch(db);
+      for (const card of newCards) {
+        batch.set(doc(db, CARDS_COLLECTION, card.id), cleanForFirestore(card));
+      }
+      await batch.commit();
+      firestoreConfirmed = true;
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, CARDS_COLLECTION);
+    }
+  }
+
+  // Also sync to Express backend if available
+  try {
+    const res = await fetch('/api/cards/batch', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(caller?.id ? { 'x-admin-id': caller.id } : {}),
+        ...(caller?.email ? { 'x-admin-email': caller.email } : {}),
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      if (isStaticBackendUnavailable(res) && firestoreConfirmed) {
+        // Static/Firestore-only host: Firestore write already confirmed
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.message || errData.error || `Failed to create batch cards (HTTP ${res.status}).`);
+      }
+    }
+  } catch (netErr: any) {
+    if (!firestoreConfirmed || (netErr instanceof Error && !netErr.message.includes('Failed to fetch'))) {
+      throw netErr;
+    }
   }
 
   const updatedList = [...currentCards, ...newCards];
@@ -481,6 +515,7 @@ export async function assignCard(
 
   // 1. Write to Firestore
   let firestorePermissionDenied = false;
+  let firestoreWriteConfirmed = false;
   let firestoreWriteError: Error | null = null;
   if (auth.currentUser) {
     try {
@@ -490,6 +525,7 @@ export async function assignCard(
       } else {
         await setDoc(docRef, sanitizedFullCard, { merge: true });
       }
+      firestoreWriteConfirmed = true;
     } catch (error: any) {
       console.error(`Firestore assign card ${id} error:`, error);
       if (error?.code === 'permission-denied') {
@@ -518,14 +554,21 @@ export async function assignCard(
       body: JSON.stringify(serverPayload),
     });
     if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      const msg = errData.message || errData.error || `Access denied: You are not authorized to edit Card #${id}`;
-      throw new Error(msg);
-    }
-    const data = await res.json();
-    if (data.card) {
-      serverCard = data.card as CardRecord;
-      Object.assign(sanitizedFullCard, data.card);
+      if (isStaticBackendUnavailable(res) && firestoreWriteConfirmed) {
+        // Static/Firestore-only deployment: Firestore write & security rules already verified and saved
+      } else if (isStaticBackendUnavailable(res) && firestoreWriteError) {
+        throw firestoreWriteError;
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        const msg = errData.message || errData.error || `Access denied: You are not authorized to edit Card #${id}`;
+        throw new Error(msg);
+      }
+    } else {
+      const data = await res.json().catch(() => ({}));
+      if (data.card) {
+        serverCard = data.card as CardRecord;
+        Object.assign(sanitizedFullCard, data.card);
+      }
     }
   } catch (serverErr: any) {
     if (
@@ -758,6 +801,7 @@ export async function bulkUpdateCardsStatus(
   const now = new Date().toISOString();
 
   // 1. Try batch updating in Firestore with sanitized payload
+  let firestoreBulkConfirmed = false;
   if (auth.currentUser) {
     try {
       const batch = writeBatch(db);
@@ -766,24 +810,35 @@ export async function bulkUpdateCardsStatus(
         batch.set(docRef, cleanForFirestore({ status, updatedAt: now }), { merge: true });
       }
       await batch.commit();
+      firestoreBulkConfirmed = true;
     } catch (err) {
       console.warn('Firestore bulk update failed, falling back:', err);
     }
   }
 
   // 2. Server API sync & RBAC check
-  const res = await fetch('/api/cards/bulk-status', {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(adminId ? { 'x-admin-id': adminId } : {}),
-      ...(adminEmail ? { 'x-admin-email': adminEmail } : {}),
-    },
-    body: JSON.stringify({ ids: normalizedIds, status, adminId, adminEmail }),
-  });
-  if (!res.ok) {
-    const errData = await res.json().catch(() => ({}));
-    throw new Error(errData.message || errData.error || 'Bulk status update failed.');
+  try {
+    const res = await fetch('/api/cards/bulk-status', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(adminId ? { 'x-admin-id': adminId } : {}),
+        ...(adminEmail ? { 'x-admin-email': adminEmail } : {}),
+      },
+      body: JSON.stringify({ ids: normalizedIds, status, adminId, adminEmail }),
+    });
+    if (!res.ok) {
+      if (isStaticBackendUnavailable(res) && firestoreBulkConfirmed) {
+        // Static/Firestore-only host: Firestore batch update confirmed
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.message || errData.error || 'Bulk status update failed.');
+      }
+    }
+  } catch (netErr: any) {
+    if (!firestoreBulkConfirmed || (netErr instanceof Error && !netErr.message.includes('Failed to fetch'))) {
+      throw netErr;
+    }
   }
 
   // 3. Update local cache
@@ -811,24 +866,36 @@ export async function bulkUpdateCardsStatus(
 
 export async function deleteCard(id: string, caller?: CallerIdentity): Promise<boolean> {
   const cleanId = id.trim();
+  let firestoreDeleted = false;
   if (auth.currentUser) {
     try {
       await deleteDoc(doc(db, CARDS_COLLECTION, cleanId));
+      firestoreDeleted = true;
     } catch (err) {
       console.warn(`Firestore delete card ${cleanId} failed:`, err);
     }
   }
 
-  const res = await fetch(`/api/cards/${encodeURIComponent(cleanId)}`, {
-    method: 'DELETE',
-    headers: {
-      ...(caller?.id ? { 'x-admin-id': caller.id } : {}),
-      ...(caller?.email ? { 'x-admin-email': caller.email } : {}),
-    },
-  });
-  if (!res.ok && res.status !== 404) {
-    const errData = await res.json().catch(() => ({}));
-    throw new Error(errData.message || errData.error || 'Failed to delete card.');
+  try {
+    const res = await fetch(`/api/cards/${encodeURIComponent(cleanId)}`, {
+      method: 'DELETE',
+      headers: {
+        ...(caller?.id ? { 'x-admin-id': caller.id } : {}),
+        ...(caller?.email ? { 'x-admin-email': caller.email } : {}),
+      },
+    });
+    if (!res.ok && res.status !== 404) {
+      if (isStaticBackendUnavailable(res) && firestoreDeleted) {
+        // Static/Firestore-only host: Firestore delete confirmed
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.message || errData.error || 'Failed to delete card.');
+      }
+    }
+  } catch (netErr: any) {
+    if (!firestoreDeleted || (netErr instanceof Error && !netErr.message.includes('Failed to fetch'))) {
+      throw netErr;
+    }
   }
 
   try {
@@ -1020,7 +1087,7 @@ export async function fetchAdmins(callerEmail?: string, callerUid?: string): Pro
             id: promotedUser.uid,
             email: promotedUser.email.toLowerCase().trim(),
             name: promotedUser.displayName || promotedUser.email.split('@')[0],
-            role: promotedUser.role,
+            role: promotedUser.role === 'master' ? 'master' : 'restricted',
             assignedCardIds: Array.isArray(promotedUser.assignedCardIds) ? promotedUser.assignedCardIds : [],
             permissions: {
               canEditCards: true,
@@ -1132,13 +1199,16 @@ export async function syncAdminLookupDocs(adminsList: AdminUser[]): Promise<void
   if (!auth.currentUser || auth.currentUser.email?.toLowerCase().trim() !== PRIMARY_MASTER_EMAIL) {
     return;
   }
-  const usersByEmail = new Map<string, UserProfile>();
+  const usersByEmail = new Map<string, UserProfile[]>();
   try {
     const usersSnap = await getDocs(collection(db, USERS_COLLECTION));
     usersSnap.forEach((uDoc) => {
       const uData = uDoc.data() as UserProfile;
       if (uData?.email) {
-        usersByEmail.set(uData.email.toLowerCase().trim(), { ...uData, uid: uDoc.id });
+        const key = uData.email.toLowerCase().trim();
+        const list = usersByEmail.get(key) || [];
+        list.push({ ...uData, uid: uDoc.id, email: key });
+        usersByEmail.set(key, list);
       }
     });
   } catch {
@@ -1147,6 +1217,7 @@ export async function syncAdminLookupDocs(adminsList: AdminUser[]): Promise<void
 
   let batch = writeBatch(db);
   let opCount = 0;
+  const syncedAdminEmails = new Set<string>();
 
   const commitBatchIfNeeded = async (force: boolean = false) => {
     if (opCount === 0) return;
@@ -1161,9 +1232,11 @@ export async function syncAdminLookupDocs(adminsList: AdminUser[]): Promise<void
     for (const adm of adminsList) {
       if (!adm?.id || !adm?.email || adm.aliasOf) continue;
       const cleanEmail = adm.email.toLowerCase().trim();
+      syncedAdminEmails.add(cleanEmail);
       const normalizedAdmin: AdminUser = {
         ...adm,
         email: cleanEmail,
+        assignedCardIds: Array.isArray(adm.assignedCardIds) ? adm.assignedCardIds : [],
         permissions: {
           canEditCards: adm.permissions?.canEditCards ?? true,
           canToggleAi: adm.permissions?.canToggleAi ?? true,
@@ -1181,8 +1254,9 @@ export async function syncAdminLookupDocs(adminsList: AdminUser[]): Promise<void
         );
         opCount++;
       }
-      const matchedUser = usersByEmail.get(cleanEmail);
-      if (matchedUser?.uid) {
+      const matchedUsers = usersByEmail.get(cleanEmail) || [];
+      for (const matchedUser of matchedUsers) {
+        if (!matchedUser.uid) continue;
         if (matchedUser.uid !== normalizedAdmin.id && matchedUser.uid.toLowerCase() !== cleanEmail) {
           batch.set(
             doc(db, ADMINS_COLLECTION, matchedUser.uid),
@@ -1194,6 +1268,8 @@ export async function syncAdminLookupDocs(adminsList: AdminUser[]): Promise<void
         batch.set(
           doc(db, USERS_COLLECTION, matchedUser.uid),
           cleanForFirestore({
+            uid: matchedUser.uid,
+            email: cleanEmail,
             role: normalizedAdmin.role,
             assignedCardIds: normalizedAdmin.assignedCardIds,
             accessRevoked: false,
@@ -1204,6 +1280,66 @@ export async function syncAdminLookupDocs(adminsList: AdminUser[]): Promise<void
       }
       await commitBatchIfNeeded(false);
     }
+
+    // Auto-heal any non-revoked Master/Sub-Admin users in /users that are missing their canonical /admins/{email} doc
+    const now = new Date().toISOString();
+    for (const [cleanEmail, userDocs] of usersByEmail.entries()) {
+      if (syncedAdminEmails.has(cleanEmail) || cleanEmail === PRIMARY_MASTER_EMAIL) continue;
+      const hasRevoked = userDocs.some((u) => Boolean(u.accessRevoked));
+      if (hasRevoked) continue;
+      const promoted = userDocs.find((u) => u.role === 'restricted' || u.role === 'master');
+      if (!promoted) continue;
+
+      const healedRole: 'master' | 'restricted' = promoted.role === 'master' ? 'master' : 'restricted';
+      const healedCardIds =
+        healedRole === 'master'
+          ? []
+          : Array.from(
+              new Set(
+                userDocs
+                  .flatMap((u) => (Array.isArray(u.assignedCardIds) ? u.assignedCardIds : []))
+                  .map((cid) => String(cid).trim())
+                  .filter(Boolean)
+              )
+            );
+      const healedAdmin: AdminUser = {
+        id: promoted.uid,
+        email: cleanEmail,
+        name: promoted.displayName || cleanEmail.split('@')[0],
+        role: healedRole,
+        assignedCardIds: healedCardIds,
+        permissions: {
+          canEditCards: true,
+          canToggleAi: true,
+          canExportCsv: healedRole === 'master',
+          canCreateCards: healedRole === 'master',
+        },
+        createdAt: promoted.createdAt || now,
+        updatedAt: promoted.lastLoginAt || now,
+      };
+      batch.set(doc(db, ADMINS_COLLECTION, healedAdmin.id), cleanForFirestore(healedAdmin), { merge: true });
+      opCount++;
+      if (healedAdmin.id.toLowerCase() !== cleanEmail) {
+        batch.set(
+          doc(db, ADMINS_COLLECTION, cleanEmail),
+          cleanForFirestore({ ...healedAdmin, aliasOf: healedAdmin.id }),
+          { merge: true }
+        );
+        opCount++;
+      }
+      for (const u of userDocs) {
+        if (u.uid && u.uid !== healedAdmin.id && u.uid.toLowerCase() !== cleanEmail) {
+          batch.set(
+            doc(db, ADMINS_COLLECTION, u.uid),
+            cleanForFirestore({ ...healedAdmin, aliasOf: healedAdmin.id }),
+            { merge: true }
+          );
+          opCount++;
+        }
+      }
+      await commitBatchIfNeeded(false);
+    }
+
     await commitBatchIfNeeded(true);
   } catch {
     // non-fatal background sync
@@ -1212,60 +1348,159 @@ export async function syncAdminLookupDocs(adminsList: AdminUser[]): Promise<void
 
 export async function createAdmin(
   payload: Partial<AdminUser>,
-  caller?: CallerIdentity
+  caller?: CallerIdentity,
+  options?: { upsertIfExists?: boolean }
 ): Promise<AdminUser | null> {
   const cleanEmail = payload.email?.toLowerCase().trim() || '';
   if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
     throw new Error('Please enter a valid admin email address.');
   }
 
+  // Check Firestore for an existing admin record with this email to prevent duplicates or preserve canonical ID on upsert
+  let existingFsAdmin: AdminUser | undefined;
+  if (auth.currentUser) {
+    try {
+      const [emailSnap, querySnap] = await Promise.all([
+        getDoc(doc(db, ADMINS_COLLECTION, cleanEmail)).catch(() => null),
+        getDocs(query(collection(db, ADMINS_COLLECTION), where('email', '==', cleanEmail))).catch(() => null),
+      ]);
+      const found: AdminUser[] = [];
+      if (emailSnap?.exists()) found.push(emailSnap.data() as AdminUser);
+      if (querySnap) {
+        querySnap.forEach((d) => found.push(d.data() as AdminUser));
+      }
+      const deduped = deduplicateAdmins(found);
+      if (deduped.length > 0) {
+        existingFsAdmin = deduped[0];
+      }
+    } catch {
+      // ignore pre-check errors; actual write will enforce permissions
+    }
+  }
+
+  if (existingFsAdmin && !options?.upsertIfExists) {
+    throw new Error(`Admin with email ${cleanEmail} already exists.`);
+  }
+
   const now = new Date().toISOString();
   const resolvedRole: 'master' | 'restricted' = payload.role === 'master' ? 'master' : 'restricted';
+  const rawCardIds =
+    payload.assignedCardIds !== undefined
+      ? payload.assignedCardIds
+      : existingFsAdmin?.assignedCardIds || [];
   const dedupedCardIds =
     resolvedRole === 'master'
       ? []
       : Array.from(
           new Set(
-            (Array.isArray(payload.assignedCardIds) ? payload.assignedCardIds : [])
+            (Array.isArray(rawCardIds) ? rawCardIds : [])
               .map((cid) => String(cid).trim())
               .filter(Boolean)
           )
         );
 
+  const canonicalId = existingFsAdmin?.id || payload.id || `admin-${Date.now()}`;
   const newAdmin: AdminUser = {
-    id: payload.id || `admin-${Date.now()}`,
+    id: canonicalId,
     email: cleanEmail,
-    name: payload.name?.trim() || 'Sub-Admin',
+    name: payload.name?.trim() || existingFsAdmin?.name || cleanEmail.split('@')[0] || 'Sub-Admin',
     role: resolvedRole,
     assignedCardIds: dedupedCardIds,
     permissions: {
-      canEditCards: payload.permissions?.canEditCards ?? true,
-      canToggleAi: payload.permissions?.canToggleAi ?? true,
-      canExportCsv: resolvedRole === 'master' ? true : (payload.permissions?.canExportCsv ?? false),
+      canEditCards: payload.permissions?.canEditCards ?? existingFsAdmin?.permissions?.canEditCards ?? true,
+      canToggleAi: payload.permissions?.canToggleAi ?? existingFsAdmin?.permissions?.canToggleAi ?? true,
+      canExportCsv:
+        resolvedRole === 'master'
+          ? true
+          : (payload.permissions?.canExportCsv ?? existingFsAdmin?.permissions?.canExportCsv ?? false),
       canCreateCards: resolvedRole === 'master',
     },
-    createdAt: now,
+    createdAt: existingFsAdmin?.createdAt || now,
     updatedAt: now,
   };
 
-  // 1. Persist via authoritative backend API first
-  const res = await fetch('/api/admins', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(caller?.id ? { 'x-admin-id': caller.id } : {}),
-      ...(caller?.email ? { 'x-admin-email': caller.email } : {}),
-    },
-    body: JSON.stringify(newAdmin),
-  });
-  if (!res.ok) {
-    const errData = await res.json().catch(() => ({}));
-    throw new Error(errData.message || errData.error || 'Failed to register administrator.');
-  }
-  const serverData = await res.json().catch(() => ({}));
-  const savedAdmin: AdminUser = serverData.admin || newAdmin;
+  // 1. Persist via authoritative Express backend when available (tolerating static-host HTML 404/405)
+  let savedAdmin: AdminUser = newAdmin;
+  let backendUnavailable = false;
+  try {
+    const res = await fetch('/api/admins', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(caller?.id ? { 'x-admin-id': caller.id } : {}),
+        ...(caller?.email ? { 'x-admin-email': caller.email } : {}),
+      },
+      body: JSON.stringify(newAdmin),
+    });
 
-  // 2. Write primary doc + lowercase email & UID lookup docs atomically in Firestore
+    if (res.ok) {
+      const contentType = (res.headers.get('content-type') || '').toLowerCase();
+      if (contentType.includes('application/json')) {
+        const serverData = await res.json().catch(() => ({}));
+        if (serverData.admin) {
+          savedAdmin = serverData.admin as AdminUser;
+        }
+      } else {
+        backendUnavailable = true;
+      }
+    } else if (isStaticBackendUnavailable(res)) {
+      backendUnavailable = true;
+    } else {
+      const errData = await res.json().catch(() => ({}));
+      const errMsg = errData.message || errData.error || `Failed to register administrator (HTTP ${res.status}).`;
+
+      if (
+        res.status === 400 &&
+        options?.upsertIfExists &&
+        errMsg.toLowerCase().includes('already exists')
+      ) {
+        // Server already has this email; update it instead of failing
+        const putBody: Partial<AdminUser> = {
+          name: newAdmin.name,
+          email: cleanEmail,
+          role: newAdmin.role,
+          permissions: newAdmin.permissions,
+          ...(payload.assignedCardIds !== undefined ? { assignedCardIds: newAdmin.assignedCardIds } : {}),
+        };
+        const putRes = await fetch(`/api/admins/${encodeURIComponent(cleanEmail)}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(caller?.id ? { 'x-admin-id': caller.id } : {}),
+            ...(caller?.email ? { 'x-admin-email': caller.email } : {}),
+          },
+          body: JSON.stringify(putBody),
+        });
+        if (putRes.ok) {
+          const putData = await putRes.json().catch(() => ({}));
+          if (putData.admin) {
+            savedAdmin = putData.admin as AdminUser;
+          }
+        } else if (isStaticBackendUnavailable(putRes)) {
+          backendUnavailable = true;
+        } else {
+          const putErr = await putRes.json().catch(() => ({}));
+          throw new Error(putErr.message || putErr.error || 'Failed to update existing administrator.');
+        }
+      } else {
+        throw new Error(errMsg);
+      }
+    }
+  } catch (err: any) {
+    if (err instanceof TypeError || (err?.message || '').toLowerCase().includes('failed to fetch')) {
+      backendUnavailable = true;
+    } else {
+      throw err;
+    }
+  }
+
+  if (backendUnavailable && !auth.currentUser) {
+    throw new Error(
+      'Firebase Google Auth session required: please sign in with Google as Master Admin to register administrators.'
+    );
+  }
+
+  // 2. Write canonical doc + lowercase email & UID lookup docs + /users sync atomically in Firestore
   if (auth.currentUser) {
     try {
       const usersSnap = await getDocs(
@@ -1273,27 +1508,34 @@ export async function createAdmin(
       ).catch(() => null);
 
       const batch = writeBatch(db);
-      batch.set(doc(db, ADMINS_COLLECTION, savedAdmin.id), cleanForFirestore(savedAdmin));
-      if (savedAdmin.id.toLowerCase() !== cleanEmail) {
+      const normalizedRecord: AdminUser = {
+        ...savedAdmin,
+        email: cleanEmail,
+        assignedCardIds: Array.isArray(savedAdmin.assignedCardIds) ? savedAdmin.assignedCardIds : dedupedCardIds,
+      };
+      batch.set(doc(db, ADMINS_COLLECTION, normalizedRecord.id), cleanForFirestore(normalizedRecord));
+      if (normalizedRecord.id.toLowerCase() !== cleanEmail) {
         batch.set(
           doc(db, ADMINS_COLLECTION, cleanEmail),
-          cleanForFirestore({ ...savedAdmin, aliasOf: savedAdmin.id })
+          cleanForFirestore({ ...normalizedRecord, aliasOf: normalizedRecord.id })
         );
       }
 
       if (usersSnap) {
         usersSnap.forEach((uDoc) => {
-          if (uDoc.id !== savedAdmin.id && uDoc.id.toLowerCase() !== cleanEmail) {
+          if (uDoc.id !== normalizedRecord.id && uDoc.id.toLowerCase() !== cleanEmail) {
             batch.set(
               doc(db, ADMINS_COLLECTION, uDoc.id),
-              cleanForFirestore({ ...savedAdmin, aliasOf: savedAdmin.id })
+              cleanForFirestore({ ...normalizedRecord, aliasOf: normalizedRecord.id })
             );
           }
           batch.set(
             doc(db, USERS_COLLECTION, uDoc.id),
             cleanForFirestore({
-              role: savedAdmin.role,
-              assignedCardIds: savedAdmin.assignedCardIds,
+              uid: uDoc.id,
+              email: cleanEmail,
+              role: normalizedRecord.role,
+              assignedCardIds: normalizedRecord.assignedCardIds,
               accessRevoked: false,
             }),
             { merge: true }
@@ -1302,6 +1544,7 @@ export async function createAdmin(
       }
 
       await batch.commit();
+      savedAdmin = normalizedRecord;
     } catch (err: any) {
       handleFirestoreError(err, OperationType.WRITE, `${ADMINS_COLLECTION}/${savedAdmin.id}`);
     }
@@ -1415,37 +1658,55 @@ export async function updateAdmin(
     updatedAt: now,
   };
 
-  // 1. Update authoritative backend API
+  // 1. Update authoritative backend API when available (tolerating static-host non-JSON 404/405)
   let savedAdmin: AdminUser = merged;
-  const res = await fetch(`/api/admins/${encodeURIComponent(merged.id)}`, {
-    method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(caller?.id ? { 'x-admin-id': caller.id } : {}),
-      ...(caller?.email ? { 'x-admin-email': caller.email } : {}),
-    },
-    body: JSON.stringify(sanitizedUpdates),
-  });
+  let backendUnavailable = false;
+  try {
+    const res = await fetch(`/api/admins/${encodeURIComponent(merged.id)}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(caller?.id ? { 'x-admin-id': caller.id } : {}),
+        ...(caller?.email ? { 'x-admin-email': caller.email } : {}),
+      },
+      body: JSON.stringify(sanitizedUpdates),
+    });
 
-  if (!res.ok) {
-    const errData = await res.json().catch(() => ({}));
-    const serverMsg = errData.message || errData.error || `Failed to update administrator permissions (${res.status}).`;
-    // Always reject validation, auth, or explicit server failures; only tolerate 404/405 serverless fallback when Google Master Auth is active
-    if (
-      res.status === 400 ||
-      res.status === 401 ||
-      res.status === 403 ||
-      res.status >= 500 ||
-      !auth.currentUser ||
-      (res.status !== 404 && res.status !== 405)
-    ) {
-      throw new Error(serverMsg);
+    if (res.ok) {
+      const contentType = (res.headers.get('content-type') || '').toLowerCase();
+      if (contentType.includes('application/json')) {
+        const data = await res.json().catch(() => ({}));
+        if (data.admin) {
+          savedAdmin = data.admin as AdminUser;
+        }
+      } else {
+        backendUnavailable = true;
+      }
+    } else if (isStaticBackendUnavailable(res)) {
+      backendUnavailable = true;
+    } else {
+      const errData = await res.json().catch(() => ({}));
+      const serverMsg =
+        errData.message || errData.error || `Failed to update administrator permissions (HTTP ${res.status}).`;
+      // If local Express JSON file doesn't yet have a Firestore-only admin, allow Firestore Master write if 404
+      if (res.status === 404 && auth.currentUser) {
+        backendUnavailable = true;
+      } else {
+        throw new Error(serverMsg);
+      }
     }
-  } else {
-    const data = await res.json().catch(() => ({}));
-    if (data.admin) {
-      savedAdmin = data.admin as AdminUser;
+  } catch (err: any) {
+    if (err instanceof TypeError || (err?.message || '').toLowerCase().includes('failed to fetch')) {
+      backendUnavailable = true;
+    } else {
+      throw err;
     }
+  }
+
+  if (backendUnavailable && !auth.currentUser) {
+    throw new Error(
+      'Firebase Google Auth session required: please sign in with Google as Master Admin to update permissions.'
+    );
   }
 
   // 2. Atomically sync primary doc, email & UID alias docs, /users role, and cleared cards in a single Firestore batch
@@ -1516,6 +1777,8 @@ export async function updateAdmin(
           batch.set(
             doc(db, USERS_COLLECTION, uDoc.id),
             cleanForFirestore({
+              uid: uDoc.id,
+              email: cleanEmail,
               role: savedAdmin.role,
               assignedCardIds: savedAdmin.assignedCardIds,
               accessRevoked: false,
@@ -1532,6 +1795,8 @@ export async function updateAdmin(
             batch.set(
               doc(db, USERS_COLLECTION, uDoc.id),
               cleanForFirestore({
+                uid: uDoc.id,
+                email: prevEmailLower,
                 role: 'member',
                 assignedCardIds: [],
               }),
@@ -1618,17 +1883,39 @@ export async function deleteAdmin(id: string, caller?: CallerIdentity): Promise<
     throw new Error('The primary Master Administrator cannot be deleted.');
   }
 
-  // 1. Delete via authoritative backend API (verifies Master privileges, removes from admins.json, revokes in users.json, leaves cards/logs/ads intact)
-  const res = await fetch(`/api/admins/${encodeURIComponent(targetId)}`, {
-    method: 'DELETE',
-    headers: {
-      ...(caller?.id ? { 'x-admin-id': caller.id } : {}),
-      ...(caller?.email ? { 'x-admin-email': caller.email } : {}),
-    },
-  });
-  if (!res.ok) {
-    const errData = await res.json().catch(() => ({}));
-    throw new Error(errData.message || errData.error || 'Failed to delete administrator.');
+  // 1. Delete via authoritative backend API when available (tolerating static-host non-JSON 404/405)
+  let backendUnavailable = false;
+  try {
+    const res = await fetch(`/api/admins/${encodeURIComponent(targetId)}`, {
+      method: 'DELETE',
+      headers: {
+        ...(caller?.id ? { 'x-admin-id': caller.id } : {}),
+        ...(caller?.email ? { 'x-admin-email': caller.email } : {}),
+      },
+    });
+    if (!res.ok) {
+      if (isStaticBackendUnavailable(res)) {
+        backendUnavailable = true;
+      } else if (res.status === 404 && auth.currentUser) {
+        // Admin may exist only in Firestore; proceed to Firestore delete
+        backendUnavailable = true;
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.message || errData.error || `Failed to delete administrator (HTTP ${res.status}).`);
+      }
+    }
+  } catch (err: any) {
+    if (err instanceof TypeError || (err?.message || '').toLowerCase().includes('failed to fetch')) {
+      backendUnavailable = true;
+    } else {
+      throw err;
+    }
+  }
+
+  if (backendUnavailable && !auth.currentUser) {
+    throw new Error(
+      'Firebase Google Auth session required: please sign in with Google as Master Admin to delete administrators.'
+    );
   }
 
   // 2. Atomically delete matching admin docs in Firestore + revoke in Firestore /users using targeted queries & single batch
@@ -1661,14 +1948,19 @@ export async function deleteAdmin(id: string, caller?: CallerIdentity): Promise<
       });
 
       const now = new Date().toISOString();
-      const userDocIds = new Set<string>();
+      const userDocMap = new Map<string, string>();
       if (emailUsersRes) {
-        emailUsersRes.forEach((uDoc) => userDocIds.add(uDoc.id));
+        emailUsersRes.forEach((uDoc) => {
+          const uData = uDoc.data() as UserProfile;
+          userDocMap.set(uDoc.id, (uData?.email || targetEmail || '').toLowerCase().trim());
+        });
       }
-      userDocIds.forEach((uid) => {
+      userDocMap.forEach((uEmail, uid) => {
         batch.set(
           doc(db, USERS_COLLECTION, uid),
           cleanForFirestore({
+            uid,
+            ...(uEmail ? { email: uEmail } : {}),
             role: 'member',
             assignedCardIds: [],
             accessRevoked: true,
@@ -1695,6 +1987,127 @@ export async function deleteAdmin(id: string, caller?: CallerIdentity): Promise<
   }
 
   return true;
+}
+
+/**
+ * Unified Master Admin authorization workflow used by BOTH "Add & Authorize User"
+ * and the Users table role selector. Writes canonical Firestore `/admins/{email}`
+ * and `/users/{uid}` records atomically with zero duplicate records and full error surfacing.
+ */
+export async function authorizeUserAsAdmin(
+  input: {
+    email: string;
+    displayName?: string;
+    role: 'master' | 'restricted' | 'member';
+    assignedCardIds?: string[];
+    existingUid?: string;
+  },
+  caller?: CallerIdentity
+): Promise<{ user: UserProfile; admin: AdminUser | null }> {
+  const cleanEmail = input.email.trim().toLowerCase();
+  if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+    throw new Error('Please enter a valid Google email address.');
+  }
+
+  const displayName = input.displayName?.trim() || cleanEmail.split('@')[0];
+  let resolvedUid = input.existingUid?.trim() || '';
+  let preservedCardIds: string[] | undefined = input.assignedCardIds;
+
+  // Inspect existing /users records for this email to reuse existing UID (avoid duplicates)
+  if (auth.currentUser) {
+    try {
+      const uSnap = await getDocs(query(collection(db, USERS_COLLECTION), where('email', '==', cleanEmail)));
+      if (!uSnap.empty) {
+        const docs = uSnap.docs.map((d) => ({ ...(d.data() as UserProfile), uid: d.id }));
+        // Prefer a real Firebase OAuth UID over a synthetic google-preauth-* UID
+        const preferred =
+          docs.find((d) => !d.uid.startsWith('google-preauth-')) || docs[0];
+        if (!resolvedUid && preferred?.uid) {
+          resolvedUid = preferred.uid;
+        }
+        if (preservedCardIds === undefined) {
+          const existingIds = docs.flatMap((d) => (Array.isArray(d.assignedCardIds) ? d.assignedCardIds : []));
+          if (existingIds.length > 0) {
+            preservedCardIds = Array.from(new Set(existingIds.map((c) => String(c).trim()).filter(Boolean)));
+          }
+        }
+      }
+    } catch {
+      // non-fatal lookup
+    }
+  }
+
+  if (!resolvedUid) {
+    resolvedUid = `google-preauth-${cleanEmail.replace(/[^a-z0-9]/g, '-')}`;
+  }
+
+  if (input.role === 'restricted' || input.role === 'master') {
+    // 1. Canonical admin record first (creates/updates Express + Firestore /admins/{id} & /admins/{email} + existing /users)
+    const savedAdmin = await createAdmin(
+      {
+        id: resolvedUid,
+        email: cleanEmail,
+        name: displayName,
+        role: input.role,
+        ...(preservedCardIds !== undefined ? { assignedCardIds: preservedCardIds } : {}),
+        permissions: {
+          canEditCards: true,
+          canToggleAi: true,
+          canExportCsv: input.role === 'master',
+          canCreateCards: input.role === 'master',
+        },
+      },
+      caller,
+      { upsertIfExists: true }
+    );
+
+    if (!savedAdmin) {
+      throw new Error('Failed to confirm administrator authorization record.');
+    }
+
+    // 2. Ensure matching /users profile exists and reflects canonical role & card assignments
+    const savedUser = await saveUser(
+      {
+        uid: resolvedUid,
+        email: cleanEmail,
+        displayName,
+        provider: 'google.com',
+        role: savedAdmin.role,
+        emailVerified: true,
+        accessRevoked: false,
+        assignedCardIds: savedAdmin.assignedCardIds || [],
+      },
+      caller
+    );
+
+    return { user: savedUser, admin: savedAdmin };
+  }
+
+  // Demoting or adding as Viewer ('member')
+  const savedUser = await saveUser(
+    {
+      uid: resolvedUid,
+      email: cleanEmail,
+      displayName,
+      provider: 'google.com',
+      role: 'member',
+      emailVerified: true,
+      accessRevoked: false,
+      assignedCardIds: [],
+    },
+    caller
+  );
+
+  try {
+    await deleteAdmin(cleanEmail, caller);
+  } catch (delErr: any) {
+    const msg = (delErr?.message || '').toLowerCase();
+    if (!msg.includes('not found') && !msg.includes('404')) {
+      console.warn('Viewer role admin cleanup notice:', delErr);
+    }
+  }
+
+  return { user: savedUser, admin: null };
 }
 
 // ---------------- Users & Google Verified Logins Layer ----------------
@@ -1725,12 +2138,13 @@ export async function checkSessionAuthorization(
     message?: string;
   } | null = null;
 
-  // 1. Check backend session-status endpoint
+  // 1. Check backend session-status endpoint (safely ignoring static-host non-JSON 404/405)
   try {
     const params = new URLSearchParams({ email: cleanEmail });
     if (cleanUid) params.set('uid', cleanUid);
     const res = await fetch(`/api/auth/session-status?${params.toString()}`);
-    if (res.ok) {
+    const contentType = (res.headers.get('content-type') || '').toLowerCase();
+    if (res.ok && contentType.includes('application/json')) {
       const data = await res.json();
       if (data.success) {
         serverResult = {
@@ -1787,7 +2201,18 @@ export async function checkSessionAuthorization(
       if (emailUsersQuerySnap) {
         emailUsersQuerySnap.forEach((d) => foundUsers.push(d.data() as UserProfile));
       }
-      fsRevoked = foundUsers.some((u) => Boolean(u.accessRevoked));
+
+      const revokedDocs = foundUsers.filter((u) => Boolean(u.accessRevoked));
+      const latestRevokedTime = revokedDocs.reduce((max, u) => {
+        const t = u.revokedAt ? new Date(u.revokedAt).getTime() : 0;
+        return t > max ? t : max;
+      }, 0);
+      const fsAdminTime = fsAdmin
+        ? new Date(fsAdmin.updatedAt || fsAdmin.createdAt || 0).getTime()
+        : 0;
+
+      // Only treat Firestore revocation as blocking if no newer active /admins record re-authorized the email
+      fsRevoked = revokedDocs.length > 0 && (!fsAdmin || latestRevokedTime > fsAdminTime);
       fsPromotedUser = foundUsers.find(
         (u) => !u.accessRevoked && (u.role === 'restricted' || u.role === 'master')
       );
@@ -1797,7 +2222,7 @@ export async function checkSessionAuthorization(
   }
 
   // If explicitly revoked by Master Admin in either store (and no active non-revoked Master-synced admin record overrides)
-  if (serverResult?.revoked || (fsRevoked && !serverResult?.authorized)) {
+  if ((serverResult?.revoked && !fsAdmin) || (fsRevoked && !serverResult?.authorized)) {
     return {
       authorized: false,
       revoked: true,
@@ -1843,7 +2268,7 @@ export async function checkSessionAuthorization(
         id: fsPromotedUser.uid,
         email: fsPromotedUser.email.toLowerCase().trim(),
         name: fsPromotedUser.displayName || cleanEmail.split('@')[0],
-        role: fsPromotedUser.role,
+        role: fsPromotedUser.role === 'master' ? 'master' : 'restricted',
         assignedCardIds: Array.isArray(fsPromotedUser.assignedCardIds) ? fsPromotedUser.assignedCardIds : [],
         permissions: {
           canEditCards: true,
@@ -1879,7 +2304,8 @@ export async function fetchUsers(): Promise<UserProfile[]> {
   let serverOk = false;
   try {
     const res = await fetch('/api/users');
-    if (res.ok) {
+    const contentType = (res.headers.get('content-type') || '').toLowerCase();
+    if (res.ok && contentType.includes('application/json')) {
       const data = await res.json();
       if (data.success && Array.isArray(data.users)) {
         serverOk = true;
@@ -1967,83 +2393,117 @@ export async function saveUser(
     ...(user.accessRevoked !== undefined ? { accessRevoked: user.accessRevoked } : {}),
   };
 
-  // 1. Authoritative backend save & revocation check
+  // 1. Authoritative backend save & revocation check (gracefully tolerating static-host HTML 404/405)
   let finalUser = fullUser;
-  const res = await fetch('/api/users', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(caller?.id ? { 'x-admin-id': caller.id } : {}),
-      ...(caller?.email ? { 'x-admin-email': caller.email } : {}),
-    },
-    body: JSON.stringify(fullUser),
-  });
+  let backendUnavailable = false;
+  try {
+    const res = await fetch('/api/users', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(caller?.id ? { 'x-admin-id': caller.id } : {}),
+        ...(caller?.email ? { 'x-admin-email': caller.email } : {}),
+      },
+      body: JSON.stringify(fullUser),
+    });
 
-  if (res.status === 403) {
-    const errData = await res.json().catch(() => ({}));
-    throw new Error(
-      errData.message || 'Access denied: Your administrator access has been revoked by the Master Admin.'
-    );
-  }
-  if (res.ok) {
-    const data = await res.json().catch(() => ({}));
-    if (data.user) {
-      const srvUser = data.user as UserProfile;
-      const callerRequestedDemotion = Boolean(caller) && user.role === 'member';
-      // Guard against unsynced container data/admins.json downgrading a Firestore-verified Sub-Admin back to 'member'
-      if (
-        !callerRequestedDemotion &&
-        srvUser.role === 'member' &&
-        !srvUser.accessRevoked &&
-        (fullUser.role === 'restricted' || fullUser.role === 'master') &&
-        auth.currentUser
-      ) {
-        const fsVerified = await checkSessionAuthorization(cleanEmail, user.uid).catch(() => null);
+    if (res.status === 403) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(
+        errData.message || 'Access denied: Your administrator access has been revoked by the Master Admin.'
+      );
+    }
+
+    const contentType = (res.headers.get('content-type') || '').toLowerCase();
+    if (res.ok && contentType.includes('application/json')) {
+      const data = await res.json().catch(() => ({}));
+      if (data.user) {
+        const srvUser = data.user as UserProfile;
+        const callerRequestedDemotion = Boolean(caller) && user.role === 'member';
+        // Guard against unsynced container data/admins.json downgrading a Firestore-verified Sub-Admin back to 'member'
         if (
-          fsVerified?.authorized &&
-          !fsVerified.revoked &&
-          (fsVerified.role === 'restricted' || fsVerified.role === 'master')
+          !callerRequestedDemotion &&
+          srvUser.role === 'member' &&
+          !srvUser.accessRevoked &&
+          (fullUser.role === 'restricted' || fullUser.role === 'master') &&
+          auth.currentUser
         ) {
-          finalUser = {
-            ...srvUser,
-            role: fsVerified.role,
-            assignedCardIds: fsVerified.admin?.assignedCardIds ?? fullUser.assignedCardIds ?? [],
-          };
+          const fsVerified = await checkSessionAuthorization(cleanEmail, user.uid).catch(() => null);
+          if (
+            fsVerified?.authorized &&
+            !fsVerified.revoked &&
+            (fsVerified.role === 'restricted' || fsVerified.role === 'master')
+          ) {
+            finalUser = {
+              ...srvUser,
+              role: fsVerified.role,
+              assignedCardIds: fsVerified.admin?.assignedCardIds ?? fullUser.assignedCardIds ?? [],
+            };
+          } else {
+            finalUser = srvUser;
+          }
         } else {
           finalUser = srvUser;
         }
-      } else {
-        finalUser = srvUser;
       }
+    } else if (isStaticBackendUnavailable(res) || !contentType.includes('application/json')) {
+      backendUnavailable = true;
+    }
+  } catch (err: any) {
+    if (err instanceof TypeError || (err?.message || '').toLowerCase().includes('failed to fetch')) {
+      backendUnavailable = true;
+    } else {
+      throw err;
     }
   }
 
   // 2. Sync to Firestore (only write fields allowed by rules for non-master self-writes)
   if (auth.currentUser) {
+    const callerIsMaster = auth.currentUser.email?.toLowerCase().trim() === PRIMARY_MASTER_EMAIL;
     try {
-      const callerIsMaster = auth.currentUser.email?.toLowerCase().trim() === PRIMARY_MASTER_EMAIL;
       if (callerIsMaster) {
         await setDoc(doc(db, USERS_COLLECTION, finalUser.uid), cleanForFirestore(finalUser), { merge: true });
       } else if (auth.currentUser.uid === finalUser.uid) {
         const existingSnap = await getDoc(doc(db, USERS_COLLECTION, finalUser.uid)).catch(() => null);
         if (existingSnap?.exists()) {
-          // Do not attempt to change role/accessRevoked on self-update
-          const { role: _r, accessRevoked: _ar, revokedAt: _ra, ...safeUpdates } = finalUser;
-          await setDoc(doc(db, USERS_COLLECTION, finalUser.uid), cleanForFirestore(safeUpdates), { merge: true });
+          // Allow syncing role when it matches Master-authorized /admins/{email}; fall back to safe profile-only merge
+          try {
+            const { accessRevoked: _ar, revokedAt: _ra, ...syncableUpdates } = finalUser;
+            await setDoc(doc(db, USERS_COLLECTION, finalUser.uid), cleanForFirestore(syncableUpdates), {
+              merge: true,
+            });
+          } catch {
+            const { role: _r, accessRevoked: _ar, revokedAt: _ra, ...safeUpdates } = finalUser;
+            await setDoc(doc(db, USERS_COLLECTION, finalUser.uid), cleanForFirestore(safeUpdates), {
+              merge: true,
+            });
+          }
         } else {
-          await setDoc(
-            doc(db, USERS_COLLECTION, finalUser.uid),
-            cleanForFirestore({ ...finalUser, role: 'member', accessRevoked: false }),
-            { merge: true }
-          );
+          try {
+            await setDoc(
+              doc(db, USERS_COLLECTION, finalUser.uid),
+              cleanForFirestore({ ...finalUser, accessRevoked: false }),
+              { merge: true }
+            );
+          } catch {
+            await setDoc(
+              doc(db, USERS_COLLECTION, finalUser.uid),
+              cleanForFirestore({ ...finalUser, role: 'member', accessRevoked: false }),
+              { merge: true }
+            );
+          }
         }
       }
     } catch (err) {
-      if (auth.currentUser.email?.toLowerCase().trim() === PRIMARY_MASTER_EMAIL) {
+      if (callerIsMaster) {
         handleFirestoreError(err, OperationType.WRITE, `${USERS_COLLECTION}/${finalUser.uid}`);
       }
       console.warn('Firestore saveUser notice:', err);
     }
+  } else if (backendUnavailable && caller) {
+    throw new Error(
+      'Firebase Google Auth session required: please sign in with Google as Master Admin to save users.'
+    );
   }
 
   // 3. Save to localStorage cache
@@ -2067,17 +2527,36 @@ export async function saveUser(
 }
 
 export async function deleteUser(uid: string, caller?: CallerIdentity): Promise<boolean> {
-  // 1. Delete on authoritative backend
-  const res = await fetch(`/api/users/${encodeURIComponent(uid)}`, {
-    method: 'DELETE',
-    headers: {
-      ...(caller?.id ? { 'x-admin-id': caller.id } : {}),
-      ...(caller?.email ? { 'x-admin-email': caller.email } : {}),
-    },
-  });
-  if (!res.ok && res.status !== 404) {
-    const errData = await res.json().catch(() => ({}));
-    throw new Error(errData.message || errData.error || 'Failed to delete user.');
+  // 1. Delete on authoritative backend when available (tolerating static-host HTML 404/405)
+  let backendUnavailable = false;
+  try {
+    const res = await fetch(`/api/users/${encodeURIComponent(uid)}`, {
+      method: 'DELETE',
+      headers: {
+        ...(caller?.id ? { 'x-admin-id': caller.id } : {}),
+        ...(caller?.email ? { 'x-admin-email': caller.email } : {}),
+      },
+    });
+    if (!res.ok) {
+      if (isStaticBackendUnavailable(res) || res.status === 404) {
+        backendUnavailable = true;
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.message || errData.error || `Failed to delete user (HTTP ${res.status}).`);
+      }
+    }
+  } catch (err: any) {
+    if (err instanceof TypeError || (err?.message || '').toLowerCase().includes('failed to fetch')) {
+      backendUnavailable = true;
+    } else {
+      throw err;
+    }
+  }
+
+  if (backendUnavailable && !auth.currentUser) {
+    throw new Error(
+      'Firebase Google Auth session required: please sign in with Google as Master Admin to remove users.'
+    );
   }
 
   // 2. Delete in Firestore
@@ -2085,6 +2564,9 @@ export async function deleteUser(uid: string, caller?: CallerIdentity): Promise<
     try {
       await deleteDoc(doc(db, USERS_COLLECTION, uid));
     } catch (err) {
+      if (backendUnavailable) {
+        handleFirestoreError(err, OperationType.DELETE, `${USERS_COLLECTION}/${uid}`);
+      }
       console.warn('Firestore deleteUser notice:', err);
     }
   }

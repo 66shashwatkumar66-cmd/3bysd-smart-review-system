@@ -177,6 +177,58 @@ export const FirebaseDiagnosticsModal: React.FC<FirebaseDiagnosticsModalProps> =
 
               {/* Service Status Grid */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* Active Firebase Auth Session */}
+                <div className="p-3.5 rounded-2xl border border-slate-200 bg-white space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 font-bold text-slate-900">
+                      <ShieldAlert className="w-4 h-4 text-[#1A73E8]" />
+                      <span>Auth Session</span>
+                    </div>
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                        report.isMasterAuthSession
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : report.signedInEmail
+                          ? 'bg-blue-100 text-blue-800'
+                          : 'bg-amber-100 text-amber-900'
+                      }`}
+                    >
+                      {report.isMasterAuthSession
+                        ? 'Master Active'
+                        : report.signedInEmail
+                        ? 'Signed In'
+                        : 'Not Signed In'}
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-slate-500 font-mono truncate">
+                    {report.signedInEmail || 'No Firebase Auth user'}
+                  </div>
+                </div>
+
+                {/* Persistence / Backend Mode */}
+                <div className="p-3.5 rounded-2xl border border-slate-200 bg-white space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 font-bold text-slate-900">
+                      <Globe className="w-4 h-4 text-indigo-600" />
+                      <span>Persistence Mode</span>
+                    </div>
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                        report.backendApiReachable
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : 'bg-blue-100 text-blue-800'
+                      }`}
+                    >
+                      {report.backendApiReachable ? 'Express + Firestore' : 'Direct Firestore'}
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-slate-500 truncate">
+                    {report.backendApiReachable
+                      ? 'Server API & Firestore synced'
+                      : 'Static host — saving directly to Firestore'}
+                  </div>
+                </div>
+
                 {/* Firestore Status */}
                 <div className="p-3.5 rounded-2xl border border-slate-200 bg-white space-y-2">
                   <div className="flex items-center justify-between">
