@@ -164,11 +164,10 @@ function isCardExplicitlyAssignedToCaller(card: CardRecord, caller?: CallerIdent
   if (!caller) return false;
   const cleanEmail = caller.email?.trim().toLowerCase() || '';
   const cleanIds = [caller.id, caller.uid].filter((v): v is string => Boolean(v && v.trim()));
-  const cardIdLower = card.id.toLowerCase();
 
   const inAssignedList =
     Array.isArray(caller.assignedCardIds) &&
-    caller.assignedCardIds.some((cid) => cid.toLowerCase() === cardIdLower);
+    caller.assignedCardIds.some((cid) => areCardIdsEqual(cid, card.id));
   const emailMatch = Boolean(cleanEmail) && card.assignedToEmail?.trim().toLowerCase() === cleanEmail;
   const uidMatch = Boolean(card.assignedToUid) && cleanIds.includes(card.assignedToUid!.trim());
 
@@ -210,10 +209,23 @@ export async function fetchCards(caller?: CallerIdentity): Promise<CardRecord[]>
   } else if (auth.currentUser) {
     // Restricted Sub-Admin or member: ONLY fetch explicitly assigned card IDs or owner-matched docs
     const fetchedMap = new Map<string, CardRecord>();
-    const explicitIds = Array.from(new Set((caller.assignedCardIds || []).map((id) => id.trim()).filter(Boolean)));
+    const rawExplicitIds = Array.from(new Set((caller.assignedCardIds || []).map((id) => id.trim()).filter(Boolean)));
+    const candidateDocIds = new Set<string>();
+    for (const rawId of rawExplicitIds) {
+      candidateDocIds.add(rawId);
+      const norm = normalizeCardIdForCompare(rawId);
+      if (norm) {
+        candidateDocIds.add(norm);
+        if (/^\d+$/.test(norm) && norm.length < 4) {
+          candidateDocIds.add(norm.padStart(4, '0'));
+        }
+      }
+    }
     const colRef = collection(db, CARDS_COLLECTION);
-    const scopedQueries: Promise<any>[] = explicitIds.map((cid) =>
-      getDoc(doc(db, CARDS_COLLECTION, cid)).then((snap) => ({ kind: 'doc' as const, snap }))
+    const scopedQueries: Promise<any>[] = Array.from(candidateDocIds).map((cid) =>
+      getDocFromServer(doc(db, CARDS_COLLECTION, cid))
+        .catch(() => getDoc(doc(db, CARDS_COLLECTION, cid)))
+        .then((snap) => ({ kind: 'doc' as const, snap }))
     );
     const authEmail = auth.currentUser.email?.trim() || '';
     if (cleanEmail) {
@@ -323,7 +335,7 @@ export async function fetchCards(caller?: CallerIdentity): Promise<CardRecord[]>
   return isMasterCaller ? INITIAL_CARDS : [];
 }
 
-import { lookupCard } from './cardLookup';
+import { lookupCard, areCardIdsEqual, normalizeCardIdForCompare } from './cardLookup';
 
 export async function fetchCardById(id: string, recordScan: boolean = false): Promise<CardRecord | null> {
   const result = await lookupCard(id, { recordScan });
@@ -469,11 +481,11 @@ export async function assignCard(
     // ignore
   }
 
-  // Read existing doc if available in Firestore
+  // Read existing doc directly from Firestore server first (falls back to cache) to avoid stale state
   let existsInFirestore = false;
   try {
-    const existingSnap = await getDoc(docRef);
-    if (existingSnap.exists()) {
+    const existingSnap = await getDocFromServer(docRef).catch(() => getDoc(docRef));
+    if (existingSnap && existingSnap.exists()) {
       existsInFirestore = true;
       existingData = { ...existingData, ...(existingSnap.data() as CardRecord) };
     }
@@ -537,8 +549,8 @@ export async function assignCard(
   let firestoreWriteError: Error | null = null;
   if (auth.currentUser) {
     try {
-      if (existsInFirestore) {
-        // Use merge: true with ONLY modified permitted fields so untouched ownership/immutable fields stay intact in rules diff()
+      if (!isMaster || existsInFirestore) {
+        // Sub-Admins MUST ALWAYS use merge: true with ONLY permitted fields so immutable/ownership keys stay untouched in rules diff()
         await setDoc(docRef, firestoreMergePayload, { merge: true });
       } else {
         await setDoc(docRef, sanitizedFullCard, { merge: true });
@@ -557,6 +569,7 @@ export async function assignCard(
 
   // 2. Sync with Server API (data/cards.json & authoritative RBAC check)
   let serverCard: CardRecord | null = null;
+  let staticHostFallback = false;
   try {
     const serverPayload = isMaster
       ? { ...sanitizedFullCard, ...effectiveUpdates, adminId, adminEmail }
@@ -571,15 +584,23 @@ export async function assignCard(
       },
       body: JSON.stringify(serverPayload),
     });
+    const contentType = (res.headers.get('content-type') || '').toLowerCase();
+    const isHtmlSpaFallback = !contentType.includes('application/json');
+
     if (!res.ok) {
-      if (isStaticBackendUnavailable(res) && firestoreWriteConfirmed) {
-        // Static/Firestore-only deployment: Firestore write & security rules already verified and saved
-      } else if (isStaticBackendUnavailable(res) && firestoreWriteError) {
+      if ((isStaticBackendUnavailable(res) || isHtmlSpaFallback) && firestoreWriteConfirmed) {
+        staticHostFallback = true;
+      } else if ((isStaticBackendUnavailable(res) || isHtmlSpaFallback) && firestoreWriteError) {
         throw firestoreWriteError;
       } else {
         const errData = await res.json().catch(() => ({}));
         const msg = errData.message || errData.error || `Access denied: You are not authorized to edit Card #${id}`;
         throw new Error(msg);
+      }
+    } else if (isHtmlSpaFallback) {
+      staticHostFallback = true;
+      if (firestoreWriteError) {
+        throw firestoreWriteError;
       }
     } else {
       const data = await res.json().catch(() => ({}));
@@ -606,7 +627,7 @@ export async function assignCard(
     console.warn(`Server API assign card ${id} sync notice:`, serverErr);
   }
 
-  if (firestoreWriteError && (!serverCard || (isMaster && auth.currentUser?.email?.toLowerCase().trim() === PRIMARY_MASTER_EMAIL))) {
+  if (firestoreWriteError && !staticHostFallback && (!serverCard || (isMaster && auth.currentUser?.email?.toLowerCase().trim() === PRIMARY_MASTER_EMAIL))) {
     handleFirestoreError(firestoreWriteError, OperationType.WRITE, `${CARDS_COLLECTION}/${id}`);
   }
 
@@ -678,18 +699,18 @@ export async function assignCard(
           ownerChanged &&
           !isNext &&
           (isPrev || ownerCleared || nextOwnerIsRestrictedAdmin) &&
-          curIds.some((cid) => cid.toLowerCase() === cardIdLower)
+          curIds.some((cid) => areCardIdsEqual(cid, id))
         ) {
           batch.set(
             doc(db, ADMINS_COLLECTION, docId),
             cleanForFirestore({
-              assignedCardIds: curIds.filter((cid) => cid.toLowerCase() !== cardIdLower),
+              assignedCardIds: curIds.filter((cid) => !areCardIdsEqual(cid, id)),
               updatedAt: now,
             }),
             { merge: true }
           );
           hasBatchOps = true;
-        } else if (isNext && !curIds.some((cid) => cid.toLowerCase() === cardIdLower)) {
+        } else if (isNext && !curIds.some((cid) => areCardIdsEqual(cid, id))) {
           batch.set(
             doc(db, ADMINS_COLLECTION, docId),
             cleanForFirestore({
@@ -712,25 +733,29 @@ export async function assignCard(
           ownerChanged &&
           !isNext &&
           (isPrev || ownerCleared || (nextOwnerIsRestrictedAdmin && uData.role === 'restricted')) &&
-          curIds.some((cid) => cid.toLowerCase() === cardIdLower)
+          curIds.some((cid) => areCardIdsEqual(cid, id))
         ) {
           batch.set(
             doc(db, USERS_COLLECTION, docId),
             cleanForFirestore({
-              assignedCardIds: curIds.filter((cid) => cid.toLowerCase() !== cardIdLower),
+              assignedCardIds: curIds.filter((cid) => !areCardIdsEqual(cid, id)),
             }),
             { merge: true }
           );
           hasBatchOps = true;
-        } else if (isNext && !uData.accessRevoked && !curIds.some((cid) => cid.toLowerCase() === cardIdLower)) {
-          batch.set(
-            doc(db, USERS_COLLECTION, docId),
-            cleanForFirestore({
-              assignedCardIds: [...curIds, id],
-            }),
-            { merge: true }
-          );
-          hasBatchOps = true;
+        } else if (isNext && (!uData.accessRevoked || nextOwnerIsRestrictedAdmin)) {
+          const nextList = curIds.some((cid) => areCardIdsEqual(cid, id)) ? curIds : [...curIds, id];
+          if (nextList.length !== curIds.length || uData.accessRevoked) {
+            batch.set(
+              doc(db, USERS_COLLECTION, docId),
+              cleanForFirestore({
+                assignedCardIds: nextList,
+                ...(nextOwnerIsRestrictedAdmin ? { accessRevoked: false } : {}),
+              }),
+              { merge: true }
+            );
+            hasBatchOps = true;
+          }
         }
       });
 
@@ -1601,7 +1626,7 @@ export async function createAdmin(
               const aEmail = (aData.email || '').toLowerCase().trim();
               if (aEmail === cleanEmail || aDoc.id === normalizedRecord.id || aData.role !== 'restricted') return;
               const curIds = Array.isArray(aData.assignedCardIds) ? aData.assignedCardIds : [];
-              const filtered = curIds.filter((cid) => !assignedLowerSet.has(cid.toLowerCase()));
+              const filtered = curIds.filter((cid) => !assignedIds.some((aid) => areCardIdsEqual(cid, aid)));
               if (filtered.length !== curIds.length) {
                 strippedAdminDocs.add(aDoc.id);
                 batch.set(
@@ -1618,7 +1643,7 @@ export async function createAdmin(
               const uEmail = (uData.email || '').toLowerCase().trim();
               if (uEmail === cleanEmail) return;
               const curIds = Array.isArray(uData.assignedCardIds) ? uData.assignedCardIds : [];
-              const filtered = curIds.filter((cid) => !assignedLowerSet.has(cid.toLowerCase()));
+              const filtered = curIds.filter((cid) => !assignedIds.some((aid) => areCardIdsEqual(cid, aid)));
               if (filtered.length !== curIds.length) {
                 strippedUserDocs.add(uDoc.id);
                 batch.set(
@@ -1935,7 +1960,7 @@ export async function updateAdmin(
                 return;
               }
               const curIds = Array.isArray(aData.assignedCardIds) ? aData.assignedCardIds : [];
-              const filtered = curIds.filter((cid) => !nextSet.has(cid.toLowerCase()));
+              const filtered = curIds.filter((cid) => !nextAssignedIds.some((aid) => areCardIdsEqual(cid, aid)));
               if (filtered.length !== curIds.length) {
                 strippedAdminDocs.add(aDoc.id);
                 batch.set(
@@ -1952,7 +1977,7 @@ export async function updateAdmin(
               const uEmail = (uData.email || '').toLowerCase().trim();
               if (uEmail === cleanEmail) return;
               const curIds = Array.isArray(uData.assignedCardIds) ? uData.assignedCardIds : [];
-              const filtered = curIds.filter((cid) => !nextSet.has(cid.toLowerCase()));
+              const filtered = curIds.filter((cid) => !nextAssignedIds.some((aid) => areCardIdsEqual(cid, aid)));
               if (filtered.length !== curIds.length) {
                 strippedUserDocs.add(uDoc.id);
                 batch.set(

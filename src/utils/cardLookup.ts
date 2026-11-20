@@ -84,6 +84,53 @@ export function isValidCardId(id: string | null | undefined): boolean {
 }
 
 /**
+ * Normalizes a card identifier ONLY for permission/equality comparisons.
+ * Never mutates stored card IDs, Firestore document IDs, QR codes, or NFC permanent URLs.
+ * Examples that all normalize to the same comparison key:
+ *   "0084", "#0084", "84", "/r/0084", "https://nfc.3dbysd.in/r/0084" -> "84"
+ *   "VIP-0084", "#VIP-0084", "/r/VIP-0084" -> "vip-0084"
+ */
+export function normalizeCardIdForCompare(raw: string | null | undefined): string {
+  if (!raw || typeof raw !== 'string') return '';
+  let s = raw.trim();
+  if (!s) return '';
+
+  // Strip full URL or path prefixes like /r/0084, /c/0084, /review/0084, /nfc/0084
+  const pathMatch = s.match(/(?:^|\/)(?:r|c|review|nfc)\/([^/?#]+)/i);
+  if (pathMatch && pathMatch[1]) {
+    try {
+      s = decodeURIComponent(pathMatch[1]).trim();
+    } catch {
+      s = pathMatch[1].trim();
+    }
+  }
+
+  // Strip leading hash(es) and normalize case
+  s = s.replace(/^#+/, '').trim().toLowerCase();
+
+  // For pure numeric IDs (e.g. "0084" vs "84"), strip leading zeros (preserving "0" for all zeros)
+  if (/^\d+$/.test(s)) {
+    const stripped = s.replace(/^0+/, '');
+    return stripped || '0';
+  }
+
+  return s;
+}
+
+/**
+ * Returns true if two card IDs refer to the same card across format variations
+ * ("0084", "#0084", "84", "/r/0084", etc.) without altering stored values.
+ */
+export function areCardIdsEqual(
+  a: string | null | undefined,
+  b: string | null | undefined
+): boolean {
+  const na = normalizeCardIdForCompare(a);
+  const nb = normalizeCardIdForCompare(b);
+  return Boolean(na && nb && na === nb);
+}
+
+/**
  * Updates a single card record in the local storage cache without clobbering other cards.
  */
 export function updateLocalStorageCard(card: CardRecord): void {

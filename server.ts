@@ -636,11 +636,36 @@ function writeCards(cards: CardRecord[]): void {
   }
 }
 
+function normalizeCardIdForCompare(raw: string | null | undefined): string {
+  if (!raw || typeof raw !== 'string') return '';
+  let s = raw.trim();
+  if (!s) return '';
+  const pathMatch = s.match(/(?:^|\/)(?:r|c|review|nfc)\/([^/?#]+)/i);
+  if (pathMatch && pathMatch[1]) {
+    try {
+      s = decodeURIComponent(pathMatch[1]).trim();
+    } catch {
+      s = pathMatch[1].trim();
+    }
+  }
+  s = s.replace(/^#+/, '').trim().toLowerCase();
+  if (/^\d+$/.test(s)) {
+    const stripped = s.replace(/^0+/, '');
+    return stripped || '0';
+  }
+  return s;
+}
+
+function areCardIdsEqual(a: string | null | undefined, b: string | null | undefined): boolean {
+  const na = normalizeCardIdForCompare(a);
+  const nb = normalizeCardIdForCompare(b);
+  return Boolean(na && nb && na === nb);
+}
+
 function isCardExplicitlyAssignedToAdmin(card: CardRecord, admin: AdminUser): boolean {
-  const cardIdLower = card.id.toLowerCase();
   const inAdminList =
     Array.isArray(admin.assignedCardIds) &&
-    admin.assignedCardIds.some((cid) => cid.toLowerCase() === cardIdLower);
+    admin.assignedCardIds.some((cid) => areCardIdsEqual(cid, card.id));
   const emailMatch =
     Boolean(card.assignedToEmail) &&
     card.assignedToEmail!.trim().toLowerCase() === admin.email.trim().toLowerCase();
@@ -825,8 +850,8 @@ app.put('/api/cards/bulk-status', (req: Request, res: Response) => {
       });
     }
 
-    const requestedIds = ids.map((id: string) => String(id).trim().toLowerCase());
-    let allowedIds = new Set(requestedIds);
+    const requestedIds = ids.map((id: string) => String(id).trim()).filter(Boolean);
+    let allowedIds = requestedIds;
 
     if (caller.admin.role === 'restricted') {
       const admin = caller.admin;
@@ -838,7 +863,7 @@ app.put('/api/cards/bulk-status', (req: Request, res: Response) => {
       }
 
       const unauthorized = requestedIds.filter((reqId) => {
-        const card = cards.find((c) => c.id.toLowerCase() === reqId);
+        const card = cards.find((c) => areCardIdsEqual(c.id, reqId));
         if (!card) return true;
         return !isCardExplicitlyAssignedToAdmin(card, admin);
       });
@@ -849,12 +874,12 @@ app.put('/api/cards/bulk-status', (req: Request, res: Response) => {
           message: `Permission Denied: You are not authorized to bulk-update card(s): ${unauthorized.join(', ')}.`,
         });
       }
-      allowedIds = new Set(requestedIds);
+      allowedIds = requestedIds;
     }
 
     const updatedCards: CardRecord[] = [];
     for (let i = 0; i < cards.length; i++) {
-      if (allowedIds.has(cards[i].id.toLowerCase())) {
+      if (allowedIds.some((aid) => areCardIdsEqual(cards[i].id, aid))) {
         cards[i] = {
           ...cards[i],
           status,
@@ -890,7 +915,7 @@ app.put(['/api/cards/:id/assign', '/api/cards/:id'], (req: Request, res: Respons
     } = req.body;
 
     const cards = readCards();
-    let index = cards.findIndex((c) => c.id.toLowerCase() === id.toLowerCase());
+    let index = cards.findIndex((c) => areCardIdsEqual(c.id, id));
 
     const caller = resolveCallerAdmin(req);
     if (!caller.provided || caller.revoked || !caller.admin) {
@@ -1130,16 +1155,21 @@ app.put(['/api/cards/:id/assign', '/api/cards/:id'], (req: Request, res: Respons
             (isPrevOwner || ownerCleared || (nextOwnerIsRestrictedAdmin && u.role === 'restricted')) &&
             Array.isArray(u.assignedCardIds)
           ) {
-            const nextList = u.assignedCardIds.filter((cid) => cid.toLowerCase() !== savedCardIdLower);
+            const nextList = u.assignedCardIds.filter((cid) => !areCardIdsEqual(cid, savedCardId));
             if (nextList.length !== u.assignedCardIds.length) {
               users[ui] = { ...u, assignedCardIds: nextList };
               usersDirty = true;
             }
           }
-          if (isNewOwner && !u.accessRevoked) {
+          if (isNewOwner && (!u.accessRevoked || nextOwnerIsRestrictedAdmin)) {
             const cur = Array.isArray(u.assignedCardIds) ? u.assignedCardIds : [];
-            if (!cur.some((cid) => cid.toLowerCase() === savedCardIdLower)) {
-              users[ui] = { ...u, assignedCardIds: [...cur, savedCardId] };
+            const hasCard = cur.some((cid) => areCardIdsEqual(cid, savedCardId));
+            if (!hasCard || u.accessRevoked) {
+              users[ui] = {
+                ...u,
+                assignedCardIds: hasCard ? cur : [...cur, savedCardId],
+                ...(nextOwnerIsRestrictedAdmin ? { accessRevoked: false } : {}),
+              };
               usersDirty = true;
             }
           }
@@ -1168,7 +1198,7 @@ app.put(['/api/cards/:id/assign', '/api/cards/:id'], (req: Request, res: Respons
             (isPrevOwner || ownerCleared || nextOwnerIsRestrictedAdmin) &&
             Array.isArray(adm.assignedCardIds)
           ) {
-            const nextList = adm.assignedCardIds.filter((cid) => cid.toLowerCase() !== savedCardIdLower);
+            const nextList = adm.assignedCardIds.filter((cid) => !areCardIdsEqual(cid, savedCardId));
             if (nextList.length !== adm.assignedCardIds.length) {
               adminsList[ai] = { ...adm, assignedCardIds: nextList, updatedAt: new Date().toISOString() };
               adminsDirty = true;
@@ -1176,7 +1206,7 @@ app.put(['/api/cards/:id/assign', '/api/cards/:id'], (req: Request, res: Respons
           }
           if (isNewOwner) {
             const cur = Array.isArray(adm.assignedCardIds) ? adm.assignedCardIds : [];
-            if (!cur.some((cid) => cid.toLowerCase() === savedCardIdLower)) {
+            if (!cur.some((cid) => areCardIdsEqual(cid, savedCardId))) {
               adminsList[ai] = { ...adm, assignedCardIds: [...cur, savedCardId], updatedAt: new Date().toISOString() };
               adminsDirty = true;
             }
@@ -1522,11 +1552,13 @@ app.post('/api/admins', (req: Request, res: Response) => {
     };
 
     // Enforce exclusive card reassignment: strip assigned cards from any other restricted sub-admin
-    const assignedLowerSet = new Set(dedupedCardIds.map((cid) => cid.toLowerCase()));
-    if (resolvedRole === 'restricted' && assignedLowerSet.size > 0) {
+    const assignedNormSet = new Set(dedupedCardIds.map((cid) => normalizeCardIdForCompare(cid)).filter(Boolean));
+    if (resolvedRole === 'restricted' && assignedNormSet.size > 0) {
       for (let ai = 0; ai < admins.length; ai++) {
         if (admins[ai].role === 'restricted' && Array.isArray(admins[ai].assignedCardIds)) {
-          const filtered = admins[ai].assignedCardIds.filter((cid) => !assignedLowerSet.has(cid.toLowerCase()));
+          const filtered = admins[ai].assignedCardIds.filter(
+            (cid) => !assignedNormSet.has(normalizeCardIdForCompare(cid))
+          );
           if (filtered.length !== admins[ai].assignedCardIds.length) {
             admins[ai] = { ...admins[ai], assignedCardIds: filtered, updatedAt: now };
           }
@@ -1535,7 +1567,7 @@ app.post('/api/admins', (req: Request, res: Response) => {
       const cards = readCards();
       let cardsDirty = false;
       for (let ci = 0; ci < cards.length; ci++) {
-        if (assignedLowerSet.has(cards[ci].id.toLowerCase())) {
+        if (assignedNormSet.has(normalizeCardIdForCompare(cards[ci].id))) {
           cards[ci] = {
             ...cards[ci],
             assignedToEmail: cleanEmail,
@@ -1571,10 +1603,12 @@ app.post('/api/admins', (req: Request, res: Response) => {
         usersModified = true;
       } else if (
         resolvedRole === 'restricted' &&
-        assignedLowerSet.size > 0 &&
+        assignedNormSet.size > 0 &&
         Array.isArray(users[ui].assignedCardIds)
       ) {
-        const filtered = users[ui].assignedCardIds!.filter((cid) => !assignedLowerSet.has(cid.toLowerCase()));
+        const filtered = users[ui].assignedCardIds!.filter(
+          (cid) => !assignedNormSet.has(normalizeCardIdForCompare(cid))
+        );
         if (filtered.length !== users[ui].assignedCardIds!.length) {
           users[ui] = { ...users[ui], assignedCardIds: filtered };
           usersModified = true;
@@ -1703,14 +1737,17 @@ app.put('/api/admins/:id', (req: Request, res: Response) => {
       updatedAt: updateNow,
     };
 
-    const nextAssignedLower = new Set((admins[idx].assignedCardIds || []).map((cid) => cid.toLowerCase()));
+    const nextAssignedIdsList = admins[idx].assignedCardIds || [];
+    const nextAssignedNormSet = new Set(nextAssignedIdsList.map((cid) => normalizeCardIdForCompare(cid)).filter(Boolean));
 
     // Enforce exclusive card reassignment: strip cards newly assigned to this sub-admin from any other restricted sub-admin
-    if (nextRole === 'restricted' && nextAssignedLower.size > 0) {
+    if (nextRole === 'restricted' && nextAssignedNormSet.size > 0) {
       for (let ai = 0; ai < admins.length; ai++) {
         if (ai === idx) continue;
         if (admins[ai].role === 'restricted' && Array.isArray(admins[ai].assignedCardIds)) {
-          const filtered = admins[ai].assignedCardIds.filter((cid) => !nextAssignedLower.has(cid.toLowerCase()));
+          const filtered = admins[ai].assignedCardIds.filter(
+            (cid) => !nextAssignedNormSet.has(normalizeCardIdForCompare(cid))
+          );
           if (filtered.length !== admins[ai].assignedCardIds.length) {
             admins[ai] = {
               ...admins[ai],
@@ -1727,16 +1764,16 @@ app.put('/api/admins/:id', (req: Request, res: Response) => {
     // Sync card ownership: clear removed cards AND stamp newly assigned cards exclusively to this sub-admin
     const removedAny =
       nextRole === 'master' ||
-      Array.from(prevAssignedLower).some((cid) => !nextAssignedLower.has(cid)) ||
+      (prevAdmin.assignedCardIds || []).some((cid) => !nextAssignedNormSet.has(normalizeCardIdForCompare(cid))) ||
       assignedCardIds !== undefined;
 
-    if (removedAny || (nextRole === 'restricted' && nextAssignedLower.size > 0)) {
+    if (removedAny || (nextRole === 'restricted' && nextAssignedNormSet.size > 0)) {
       const cards = readCards();
       let cardsDirty = false;
       for (let ci = 0; ci < cards.length; ci++) {
         const card = cards[ci];
-        const cidLower = card.id.toLowerCase();
-        if (nextRole === 'restricted' && nextAssignedLower.has(cidLower)) {
+        const cidNorm = normalizeCardIdForCompare(card.id);
+        if (nextRole === 'restricted' && nextAssignedNormSet.has(cidNorm)) {
           if (
             (card.assignedToEmail || '').trim().toLowerCase() !== nextEmail ||
             (card.assignedToUid || '').trim() !== admins[idx].id ||
@@ -1751,7 +1788,7 @@ app.put('/api/admins/:id', (req: Request, res: Response) => {
             };
             cardsDirty = true;
           }
-        } else if (!nextAssignedLower.has(cidLower)) {
+        } else if (!nextAssignedNormSet.has(cidNorm)) {
           const emailOwned =
             Boolean(card.assignedToEmail) &&
             (card.assignedToEmail!.trim().toLowerCase() === prevAdminEmail ||
@@ -1798,10 +1835,12 @@ app.put('/api/admins/:id', (req: Request, res: Response) => {
         usersDirty = true;
       } else if (
         nextRole === 'restricted' &&
-        nextAssignedLower.size > 0 &&
+        nextAssignedNormSet.size > 0 &&
         Array.isArray(users[ui].assignedCardIds)
       ) {
-        const filtered = users[ui].assignedCardIds!.filter((cid) => !nextAssignedLower.has(cid.toLowerCase()));
+        const filtered = users[ui].assignedCardIds!.filter(
+          (cid) => !nextAssignedNormSet.has(normalizeCardIdForCompare(cid))
+        );
         if (filtered.length !== users[ui].assignedCardIds!.length) {
           users[ui] = { ...users[ui], assignedCardIds: filtered };
           usersDirty = true;

@@ -27,6 +27,7 @@ import {
   lookupCard,
   CustomerLoadState,
   getCachedCard,
+  areCardIdsEqual,
 } from './utils/cardLookup';
 import { auth, db, onAuthStateChanged, signOut } from './firebase';
 import { collection, doc, onSnapshot, query, where } from 'firebase/firestore';
@@ -568,6 +569,7 @@ export default function App() {
 
     let firstAdminSnap = true;
     let firstUserSnap = true;
+    let firstCardsSnap = true;
     const unsubAdmin = onSnapshot(
       doc(db, 'admins', cleanEmail),
       () => {
@@ -590,9 +592,21 @@ export default function App() {
       },
       () => {}
     );
+    const unsubAssignedCards = onSnapshot(
+      query(collection(db, 'cards'), where('assignedToEmail', '==', cleanEmail)),
+      () => {
+        if (firstCardsSnap) {
+          firstCardsSnap = false;
+          return;
+        }
+        refreshAuthorization({ force: true, quiet: true, fresh: true });
+      },
+      () => {}
+    );
     return () => {
       unsubAdmin();
       unsubUser();
+      unsubAssignedCards();
     };
   }, [customerCardId, authReady, firebaseAuthActive, currentUser?.email, currentUser?.uid, refreshAuthorization]);
 
@@ -656,9 +670,9 @@ export default function App() {
     );
     if (updated) {
       setCards((prev) =>
-        prev.map((c) => (c.id.toLowerCase() === id.toLowerCase() ? updated : c))
+        prev.map((c) => (areCardIdsEqual(c.id, id) ? updated : c))
       );
-      if (customerCardId && customerCardId.toLowerCase() === id.toLowerCase()) {
+      if (customerCardId && areCardIdsEqual(customerCardId, id)) {
         setCustomerCard(updated);
       }
       if (isMaster && (updates.assignedToEmail !== undefined || updates.assignedToUid !== undefined)) {
@@ -1292,7 +1306,7 @@ export default function App() {
           (c.assignedToUid && (c.assignedToUid === userUid || c.assignedToUid === effectiveActiveAdmin?.id));
         const isInAdminAssigned =
           effectiveActiveAdmin?.role === 'restricted' &&
-          adminAssigned.some((aid) => aid.toLowerCase() === c.id.toLowerCase());
+          adminAssigned.some((aid) => areCardIdsEqual(aid, c.id));
         return Boolean(isDirectOwner || isInAdminAssigned);
       });
 

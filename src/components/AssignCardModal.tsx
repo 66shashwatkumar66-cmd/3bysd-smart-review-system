@@ -65,7 +65,8 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
       setCategory(card.category || '');
       setGoogleReviewUrl(card.googleReviewUrl || '');
       setNotes(card.notes || '');
-      setStatus(card.status || 'available');
+      // Non-master select only exposes 'assigned' and 'disabled'; keep state aligned with visible option
+      setStatus(!isMaster && card.status === 'available' ? 'assigned' : (card.status || 'available'));
       setAiReviewEnabled(card.aiReviewEnabled !== false);
       setWhatsapp(card.whatsapp || '');
       setInstagram(card.instagram || '');
@@ -77,7 +78,7 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
       setCustomKeywordsText(card.customKeywords ? card.customKeywords.join(', ') : '');
       setError('');
     }
-  }, [card]);
+  }, [card, isMaster]);
 
   if (!isOpen || !card) return null;
 
@@ -146,7 +147,8 @@ export const AssignCardModal: React.FC<AssignCardModalProps> = ({
         }),
       };
 
-      if (canToggleAi) {
+      const initialAiEnabled = card.aiReviewEnabled !== false;
+      if (isMaster || (canToggleAi && aiReviewEnabled !== initialAiEnabled)) {
         payload.aiReviewEnabled = aiReviewEnabled;
       }
 
