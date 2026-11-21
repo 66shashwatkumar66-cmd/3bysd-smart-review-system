@@ -596,6 +596,153 @@ export async function deleteCard(id: string): Promise<boolean> {
   return true;
 }
 
+/**
+ * Safely extracts a human-readable string from an unknown error payload
+ * (including nested objects such as { code, message } or { error: { code, message } }).
+ * Never returns "[object Object]".
+ */
+export function extractErrorMessage(value: unknown, fallback: string): string {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed && trimmed !== '[object Object]') {
+      return trimmed;
+    }
+    return fallback;
+  }
+
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+
+  if (value && typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    const candidateKeys = ['message', 'error', 'detail', 'details', 'reason', 'description', 'statusText'];
+    for (const key of candidateKeys) {
+      if (key in obj && obj[key] !== undefined && obj[key] !== null) {
+        const extracted = extractErrorMessage(obj[key], '');
+        if (extracted) {
+          return extracted;
+        }
+      }
+    }
+  }
+
+  return fallback;
+}
+
+/**
+ * Safely extracts plain review text from an AI response field.
+ * Handles plain strings as well as structured object responses without producing "[object Object]".
+ */
+export function extractReviewText(value: unknown, depth: number = 0): string {
+  if (depth > 4 || value === null || value === undefined) {
+    return '';
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed === '[object Object]' ? '' : trimmed;
+  }
+
+  if (Array.isArray(value)) {
+    const parts = value
+      .map((item) => extractReviewText(item, depth + 1))
+      .filter(Boolean);
+    return parts.join('\n').trim();
+  }
+
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    const textKeys = ['review', 'reviewText', 'text', 'content', 'draft', 'output', 'generatedReview', 'body', 'data'];
+    for (const key of textKeys) {
+      if (key in obj && obj[key] !== undefined && obj[key] !== null) {
+        const extracted = extractReviewText(obj[key], depth + 1);
+        if (extracted) {
+          return extracted;
+        }
+      }
+    }
+
+    // Handle raw Gemini-like candidates array if ever returned
+    if (Array.isArray(obj.candidates) && obj.candidates.length > 0) {
+      const firstCandidate = obj.candidates[0] as Record<string, unknown> | undefined;
+      const candidateContent = firstCandidate?.content as Record<string, unknown> | undefined;
+      if (Array.isArray(candidateContent?.parts)) {
+        const extracted = extractReviewText(candidateContent.parts, depth + 1);
+        if (extracted) {
+          return extracted;
+        }
+      }
+    }
+  }
+
+  return '';
+}
+
+/**
+ * Normalizes any raw JSON response from /api/generate-review into a safe GenerateReviewResponse
+ * whose review/reviewText/error/message fields are strictly strings (never raw objects).
+ */
+export function normalizeGenerateReviewResponse(
+  raw: unknown,
+  fallbackError: string = 'Unable to generate your review right now. Please tap Try Again.'
+): GenerateReviewResponse {
+  if (!raw || typeof raw !== 'object') {
+    const directText = extractReviewText(raw);
+    if (directText) {
+      return {
+        success: true,
+        review: directText,
+        reviewText: directText,
+      };
+    }
+    return {
+      success: false,
+      message: fallbackError,
+      error: fallbackError,
+    };
+  }
+
+  const obj = raw as Record<string, unknown>;
+  const extractedReview =
+    extractReviewText(obj.review) ||
+    extractReviewText(obj.reviewText) ||
+    extractReviewText(obj.text) ||
+    extractReviewText(obj.data);
+
+  if (obj.success === true) {
+    if (extractedReview) {
+      return {
+        success: true,
+        review: extractedReview,
+        reviewText: extractedReview,
+      };
+    }
+    const malformedMsg = 'Received an unexpected review format from the AI service. Please tap Try Again.';
+    return {
+      success: false,
+      message: malformedMsg,
+      error: malformedMsg,
+    };
+  }
+
+  // Some unexpected gateways/wrappers may omit `success` but still return a review text without an error
+  if (obj.success === undefined && extractedReview && !obj.error) {
+    return {
+      success: true,
+      review: extractedReview,
+      reviewText: extractedReview,
+    };
+  }
+
+  const safeErr = extractErrorMessage(obj.error ?? obj.message ?? obj, fallbackError);
+  return {
+    success: false,
+    message: safeErr,
+    error: safeErr,
+  };
+}
+
 export async function generateAiReview(
   payload: GenerateReviewRequest,
   signal?: AbortSignal
@@ -614,15 +761,25 @@ export async function generateAiReview(
     const rawText = await res.text();
 
     if (!res.ok) {
-      let serverError = `Request failed (${res.status}). Please try again.`;
+      let fallbackError = `Request failed (${res.status}). Please try again.`;
+      if (res.status === 405) {
+        fallbackError = 'Review generation API method not allowed (405).';
+      } else if (res.status === 504) {
+        fallbackError = 'Review generation timed out. Please tap Try Again.';
+      }
+      let serverError = fallbackError;
+
       if (rawText && rawText.trim()) {
         try {
           const parsed = JSON.parse(rawText);
-          serverError = parsed.error || parsed.message || serverError;
+          serverError = extractErrorMessage(
+            parsed && typeof parsed === 'object'
+              ? (parsed as Record<string, unknown>).error ?? (parsed as Record<string, unknown>).message ?? parsed
+              : parsed,
+            fallbackError
+          );
         } catch {
-          if (res.status === 405) {
-            serverError = 'Review generation API method not allowed (405).';
-          }
+          serverError = fallbackError;
         }
       }
       return {
@@ -633,27 +790,37 @@ export async function generateAiReview(
     }
 
     if (!rawText || !rawText.trim()) {
+      const emptyMsg = 'Empty response received from review generation service. Please tap Try Again.';
       return {
         success: false,
-        message: 'Empty response received from review generation service.',
+        message: emptyMsg,
+        error: emptyMsg,
       };
     }
 
     try {
-      return JSON.parse(rawText);
+      const parsed = JSON.parse(rawText);
+      return normalizeGenerateReviewResponse(parsed);
     } catch {
+      const invalidMsg = 'Invalid response format from review generation service. Please tap Try Again.';
       return {
         success: false,
-        message: 'Invalid response format from review generation service.',
+        message: invalidMsg,
+        error: invalidMsg,
       };
     }
   } catch (err: any) {
     if (err?.name === 'AbortError') {
       throw err;
     }
+    const netMsg = extractErrorMessage(
+      err,
+      'Network request failed. Please check your connection and try again.'
+    );
     return {
       success: false,
-      message: err?.message || 'Network request failed. Please check your connection and try again.',
+      message: netMsg,
+      error: netMsg,
     };
   }
 }

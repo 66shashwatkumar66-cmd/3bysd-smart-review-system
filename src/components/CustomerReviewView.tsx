@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useId, useRef, useMemo } from 'react';
 import { CardRecord, ReviewLanguage, ReviewTone, Advertisement } from '../types';
-import { generateAiReview } from '../utils/api';
+import { generateAiReview, extractErrorMessage, extractReviewText } from '../utils/api';
 import { fetchAds, recordAdImpression, recordAdClick, isSafeUrl } from '../utils/adsApi';
 import {
   Star,
@@ -137,12 +137,17 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
 
   // Dynamic tags list: Use customKeywords if configured on card, otherwise defaults
   const activeTagsList = useMemo(() => {
-    if (card?.customKeywords && card.customKeywords.length > 0) {
-      return card.customKeywords.map((kw) => ({
-        id: kw,
-        label: kw,
-        icon: Sparkles,
-      }));
+    if (Array.isArray(card?.customKeywords) && card.customKeywords.length > 0) {
+      const normalized = card.customKeywords
+        .map((kw) => (typeof kw === 'string' ? kw.trim() : extractReviewText(kw)))
+        .filter(Boolean);
+      if (normalized.length > 0) {
+        return normalized.map((kw) => ({
+          id: kw,
+          label: kw,
+          icon: Sparkles,
+        }));
+      }
     }
     return DEFAULT_EXPERIENCE_TAGS;
   }, [card?.customKeywords]);
@@ -344,16 +349,22 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
       // Ignore outdated response if a newer request has started
       if (currentRequestId !== requestIdRef.current) return;
 
-      if (res.success && res.review) {
-        setGeneratedReview(res.review);
+      const normalizedReview =
+        extractReviewText(res?.review) || extractReviewText(res?.reviewText);
+
+      if (res?.success && normalizedReview) {
+        setGeneratedReview(normalizedReview);
         setHasGenerated(true);
-        setRecentDrafts((prev) => [res.review!, ...prev.filter((d) => d !== res.review)].slice(0, 6));
+        setRecentDrafts((prev) =>
+          [normalizedReview, ...prev.filter((d) => d !== normalizedReview)].slice(0, 6)
+        );
         setGenerationError(null);
       } else {
         setGenerationError(
-          res.error ||
-            res.message ||
+          extractErrorMessage(
+            res?.error ?? res?.message,
             'Unable to generate your review right now. Please tap Try Again.'
+          )
         );
       }
     } catch (err: any) {
@@ -361,7 +372,10 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
         return;
       }
       setGenerationError(
-        err?.message || 'Unable to connect to the review service. Please check your connection and try again.'
+        extractErrorMessage(
+          err,
+          'Unable to connect to the review service. Please check your connection and try again.'
+        )
       );
     } finally {
       if (currentRequestId === requestIdRef.current) {
@@ -513,7 +527,10 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
               Unable to Connect
             </h1>
             <p className="text-xs text-slate-500 mt-1">
-              {errorMessage || `A temporary network issue prevented us from reaching Stand #${cardId}. Please check your connection and try again.`}
+              {extractErrorMessage(
+                errorMessage,
+                `A temporary network issue prevented us from reaching Stand #${cardId}. Please check your connection and try again.`
+              )}
             </p>
           </div>
           <div className="flex items-center justify-center gap-2 pt-1 flex-wrap">
@@ -1010,7 +1027,10 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
                       <div className="flex-1 min-w-0">
                         <div className="font-bold text-rose-900">Review Generation Notice</div>
                         <div className="text-[11px] text-rose-700 mt-0.5 leading-relaxed">
-                          {generationError}
+                          {extractErrorMessage(
+                            generationError,
+                            'Unable to generate your review right now. Please tap Try Again.'
+                          )}
                         </div>
                       </div>
                       <button
