@@ -1,5 +1,5 @@
 import { GoogleGenAI, ThinkingLevel } from '@google/genai';
-import { ReviewLanguage, ReviewTone } from '../types';
+import type { ReviewLanguage, ReviewTone } from '../types';
 
 export interface GenerateReviewInput {
   businessName?: string;
@@ -7,9 +7,10 @@ export interface GenerateReviewInput {
   businessDescription?: string;
   rating?: number;
   tags?: string[];
+  keywords?: string[];
   notes?: string;
-  language?: ReviewLanguage;
-  tone?: ReviewTone;
+  language?: ReviewLanguage | string;
+  tone?: ReviewTone | string;
   recentDrafts?: string[];
   cardId?: string;
   aiReviewEnabled?: boolean;
@@ -430,27 +431,41 @@ export async function generateReviewWithGemini(
   }
 
   const ratingNum = Math.min(Math.max(Number(input.rating) || 5, 1), 5);
-  const tagsList = Array.isArray(input.tags)
-    ? input.tags.map((t) => String(t).trim()).filter(Boolean)
-    : [];
-  const safeBusinessName = input.businessName ? String(input.businessName).trim() : 'this business';
-  const safeNotes = input.notes ? String(input.notes).trim() : '';
-  const safeCategory = input.category ? String(input.category).trim() : 'Local Business';
-  const safeDescription = input.businessDescription ? String(input.businessDescription).trim() : '';
-  if (!input.language || !input.tone) {
+  const rawTags = Array.isArray(input.tags)
+    ? input.tags
+    : Array.isArray(input.keywords)
+      ? input.keywords
+      : [];
+  const tagsList = rawTags
+    .map((t) => (typeof t === 'string' ? t.trim() : ''))
+    .filter(Boolean)
+    .slice(0, 25);
+  const safeBusinessName = input.businessName ? String(input.businessName).trim().slice(0, 160) : 'this business';
+  const safeNotes = input.notes ? String(input.notes).trim().slice(0, 400) : '';
+  const safeCategory = input.category ? String(input.category).trim().slice(0, 160) : 'Local Business';
+  const safeDescription = input.businessDescription ? String(input.businessDescription).trim().slice(0, 500) : '';
+
+  const normalizedLangInput = typeof input.language === 'string' ? input.language.trim().toLowerCase() : '';
+  const normalizedToneInput = typeof input.tone === 'string' ? input.tone.trim().toLowerCase() : '';
+
+  if (!normalizedLangInput || !normalizedToneInput) {
     return {
       success: false,
       error: 'Select your preferred language and tone to generate your review.',
       message: 'Select your preferred language and tone to generate your review.',
+      errorCode: 'MISSING_OPTIONS',
     };
   }
 
-  const targetLanguage: ReviewLanguage = input.language === 'hinglish' ? 'hinglish' : 'en';
-  const targetTone: ReviewTone =
-    ['casual', 'warm', 'professional', 'enthusiastic', 'direct'].includes(input.tone)
-      ? input.tone
-      : 'casual';
-  const recentDrafts = Array.isArray(input.recentDrafts) ? input.recentDrafts.filter(Boolean).slice(0, 4) : [];
+  const targetLanguage: ReviewLanguage =
+    normalizedLangInput === 'hinglish' ? 'hinglish' : 'en';
+  const validTones: ReviewTone[] = ['casual', 'warm', 'professional', 'enthusiastic', 'direct'];
+  const targetTone: ReviewTone = validTones.includes(normalizedToneInput as ReviewTone)
+    ? (normalizedToneInput as ReviewTone)
+    : 'casual';
+  const recentDrafts = Array.isArray(input.recentDrafts)
+    ? input.recentDrafts.filter((d): d is string => typeof d === 'string' && d.trim().length > 0).slice(0, 4)
+    : [];
 
   const toneDirective = getTonePromptDirective(targetTone);
   const languageDirective = getLanguagePromptDirective(targetLanguage);
@@ -535,186 +550,256 @@ ${tagsList.length > 0 ? `Selected Highlights to include: ${tagsList.join(', ')}`
 ${safeNotes ? `Customer Personal Detail: "${safeNotes}"` : ''}
 Random variation seed: ${randomSeed}.`;
 
-  const geminiApiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+  const geminiApiKey = (
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_API_KEY ||
+    process.env.API_KEY ||
+    ''
+  ).trim();
 
-  if (geminiApiKey) {
-    try {
-      const ai = new GoogleGenAI({
-        apiKey: geminiApiKey,
-        httpOptions: {
-          headers: {
-            'User-Agent': 'aistudio-build',
-          },
+  if (!geminiApiKey) {
+    console.error('[3DBYSD AI] Missing Gemini API key in server environment.');
+    const configMsg =
+      'AI review service is temporarily unavailable due to a server configuration issue. Please try again shortly or skip directly to Google.';
+    return {
+      success: false,
+      error: configMsg,
+      message: configMsg,
+      errorCode: 'API_KEY_MISSING',
+    };
+  }
+
+  try {
+    const ai = new GoogleGenAI({
+      apiKey: geminiApiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
         },
-      });
+      },
+    });
 
-      const callGeminiModel = async (modelName: string, timeoutMs: number): Promise<string> => {
-        const config: Record<string, any> = {
-          systemInstruction: systemPrompt,
-        };
-        if (modelName === 'gemini-4-hydrogen') {
-          config.thinkingConfig = { thinkingLevel: ThinkingLevel.LOW };
-        }
+    const callGeminiModel = async (modelName: string, timeoutMs: number): Promise<string> => {
+      const config: Record<string, any> = {
+        systemInstruction: systemPrompt,
+      };
+      if (modelName === 'gemini-4-hydrogen') {
+        config.thinkingConfig = { thinkingLevel: ThinkingLevel.LOW };
+      }
+
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+      try {
         const geminiPromise = ai.models.generateContent({
           model: modelName,
           contents: userPrompt,
           config,
         });
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('AI review generation timed out. Please try again.')), timeoutMs)
-        );
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timeoutId = setTimeout(
+            () => reject(new Error('AI review generation timed out. Please try again.')),
+            timeoutMs
+          );
+        });
         const response = await Promise.race([geminiPromise, timeoutPromise]);
-        return (response.text ? response.text.trim() : '').replace(/^["'`]+|["'`]+$/g, '').trim();
-      };
-
-      const callWithResilience = async (): Promise<string> => {
-        const modelPlan: Array<{ model: string; timeoutMs: number; delayBeforeMs: number }> = [
-          { model: 'gemini-4-hydrogen', timeoutMs: 6500, delayBeforeMs: 0 },
-          { model: 'gemini-3.1-flash-lite', timeoutMs: 10000, delayBeforeMs: 250 },
-          { model: 'gemini-3.1-flash-lite', timeoutMs: 12000, delayBeforeMs: 700 },
-        ];
-
-        let lastErr: any = null;
-        for (const step of modelPlan) {
-          if (step.delayBeforeMs > 0) {
-            await new Promise((r) => setTimeout(r, step.delayBeforeMs));
-          }
-          try {
-            const text = await callGeminiModel(step.model, step.timeoutMs);
-            if (text) return text;
-          } catch (err: any) {
-            lastErr = err;
-            const status = Number(err?.status || err?.code || 0);
-            const msg = String(err?.message || '');
-            const isTransient =
-              status === 503 ||
-              status === 429 ||
-              status === 500 ||
-              msg.includes('UNAVAILABLE') ||
-              msg.includes('timed out');
-            if (!isTransient) {
-              throw err;
-            }
-          }
-        }
-        if (lastErr) throw lastErr;
-        return '';
-      };
-
-      let candidateReview = '';
-      let attempts = 0;
-      const maxAttempts = recentDrafts.length > 0 ? 2 : 1;
-
-      while (attempts < maxAttempts && !candidateReview) {
-        attempts++;
-        const text = await callWithResilience();
-
-        if (text) {
-          let isTooSimilar = false;
-          for (const draft of recentDrafts) {
-            const similarity = computeTextSimilarity(text, draft);
-            if (similarity > 0.65) {
-              isTooSimilar = true;
-              break;
-            }
-          }
-
-          if (!isTooSimilar || attempts >= maxAttempts) {
-            candidateReview = text;
-          }
+        const rawText = typeof response?.text === 'string' ? response.text : '';
+        return rawText.trim().replace(/^["'`]+|["'`]+$/g, '').trim();
+      } finally {
+        if (timeoutId !== undefined) {
+          clearTimeout(timeoutId);
         }
       }
+    };
 
-      if (candidateReview) {
-        return {
-          success: true,
-          review: candidateReview,
-          reviewText: candidateReview,
-          source: 'gemini',
-          toneUsed: targetTone,
-          languageUsed: targetLanguage,
-        };
+    const isTransientError = (err: any): boolean => {
+      const status = Number(err?.status || err?.code || 0);
+      const msg = String(err?.message || '');
+      return (
+        status === 503 ||
+        status === 502 ||
+        status === 504 ||
+        status === 429 ||
+        status === 500 ||
+        status === 404 ||
+        msg.includes('UNAVAILABLE') ||
+        msg.includes('DEADLINE_EXCEEDED') ||
+        msg.includes('timed out') ||
+        msg.includes('fetch failed')
+      );
+    };
+
+    const callWithResilience = async (fastOnly: boolean = false): Promise<string> => {
+      if (fastOnly) {
+        return await callGeminiModel('gemini-3.1-flash-lite', 9000);
       }
 
+      // Hedged dual-model execution:
+      // 1. Start gemini-3.1-flash-lite immediately (1 API call on normal fast responses ~1.5-4s).
+      // 2. If it hasn't replied within 4.5s or fails with a transient error, launch gemini-4-hydrogen in parallel;
+      //    whichever returns valid review text first wins!
+      const raceHedged = (): Promise<string> =>
+        new Promise((resolve, reject) => {
+          let settled = false;
+          let hedgeStarted = false;
+          let completedCount = 0;
+          let totalLaunched = 1;
+          let lastError: any = null;
+          let hedgeTimer: ReturnType<typeof setTimeout> | undefined;
+
+          const cleanup = () => {
+            if (hedgeTimer !== undefined) {
+              clearTimeout(hedgeTimer);
+              hedgeTimer = undefined;
+            }
+          };
+
+          const finishSuccess = (text: string) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve(text);
+          };
+
+          const onAttemptDone = (err?: any) => {
+            completedCount++;
+            if (err) {
+              lastError = err;
+              if (!isTransientError(err)) {
+                if (!settled) {
+                  settled = true;
+                  cleanup();
+                  reject(err);
+                }
+                return;
+              }
+              if (!hedgeStarted && !settled) {
+                startHedge();
+                return;
+              }
+            }
+            if (!settled && completedCount >= totalLaunched && hedgeStarted) {
+              settled = true;
+              cleanup();
+              if (lastError) reject(lastError);
+              else resolve('');
+            }
+          };
+
+          const startHedge = () => {
+            if (hedgeStarted || settled) return;
+            hedgeStarted = true;
+            totalLaunched = 2;
+            cleanup();
+            callGeminiModel('gemini-4-hydrogen', 13000)
+              .then((text) => {
+                if (text) finishSuccess(text);
+                else onAttemptDone(new Error('Empty response from fallback model'));
+              })
+              .catch((err) => onAttemptDone(err));
+          };
+
+          hedgeTimer = setTimeout(startHedge, 4500);
+
+          callGeminiModel('gemini-3.1-flash-lite', 13000)
+            .then((text) => {
+              if (text) finishSuccess(text);
+              else onAttemptDone(new Error('Empty response from primary model'));
+            })
+            .catch((err) => onAttemptDone(err));
+        });
+
+      try {
+        const text = await raceHedged();
+        if (text) return text;
+      } catch (err: any) {
+        if (!isTransientError(err)) {
+          throw err;
+        }
+        // Final bounded retry on fast model after a brief backoff
+        await new Promise((r) => setTimeout(r, 350));
+        return await callGeminiModel('gemini-3.1-flash-lite', 9000);
+      }
+
+      return '';
+    };
+
+    const startedAt = Date.now();
+    let candidateReview = await callWithResilience(false);
+
+    // If a fresh variation was requested and came back too similar while we still have time budget, try one quick fast-model variation
+    if (candidateReview && recentDrafts.length > 0 && Date.now() - startedAt < 10000) {
+      const isTooSimilar = recentDrafts.some((draft) => computeTextSimilarity(candidateReview, draft) > 0.72);
+      if (isTooSimilar) {
+        try {
+          const alt = await callWithResilience(true);
+          if (alt) {
+            candidateReview = alt;
+          }
+        } catch {
+          // Keep the valid first candidate if quick variation retry fails
+        }
+      }
+    }
+
+    if (candidateReview) {
       return {
-        success: false,
-        error: 'The AI service returned an empty draft. Please tap Try Again.',
-        errorCode: 'EMPTY_RESPONSE',
-      };
-    } catch (geminiError: any) {
-      const status = Number(geminiError?.status || geminiError?.code || 0);
-      const rawMsg = String(geminiError?.message || '');
-      console.error('[3DBYSD AI] Gemini generation failed:', status || 'unknown', rawMsg);
-
-      if (rawMsg.includes('timed out')) {
-        return {
-          success: false,
-          error: 'Review generation timed out. Please try again.',
-          errorCode: 'TIMEOUT',
-        };
-      }
-      if (status === 403 || rawMsg.includes('PERMISSION_DENIED')) {
-        return {
-          success: false,
-          error: 'AI service permission error. Please check the GEMINI_API_KEY in Settings > Secrets.',
-          errorCode: 'PERMISSION_DENIED',
-        };
-      }
-      if (rawMsg.includes('API_KEY_INVALID') || rawMsg.includes('API key not valid')) {
-        return {
-          success: false,
-          error: 'Invalid Gemini API key configuration. Please verify GEMINI_API_KEY in Settings > Secrets.',
-          errorCode: 'API_KEY_INVALID',
-        };
-      }
-      if (status === 404 || rawMsg.includes('NOT_FOUND')) {
-        return {
-          success: false,
-          error: 'Configured AI model was not found. Please contact the administrator.',
-          errorCode: 'MODEL_NOT_FOUND',
-        };
-      }
-      if (status === 429 || rawMsg.includes('RESOURCE_EXHAUSTED')) {
-        return {
-          success: false,
-          error: 'AI review quota is temporarily busy. Please try again in a few seconds.',
-          errorCode: 'RESOURCE_EXHAUSTED',
-        };
-      }
-      if (status === 400 || rawMsg.includes('INVALID_ARGUMENT')) {
-        return {
-          success: false,
-          error: 'AI request parameter error. Please try again.',
-          errorCode: 'INVALID_ARGUMENT',
-        };
-      }
-      return {
-        success: false,
-        error: 'Unable to generate review right now. Please try again in a moment.',
-        errorCode: status ? `HTTP_${status}` : 'UPSTREAM_ERROR',
+        success: true,
+        review: candidateReview,
+        reviewText: candidateReview,
+        source: 'gemini',
+        toneUsed: targetTone,
+        languageUsed: targetLanguage,
       };
     }
+
+    const emptyMsg = 'The AI service returned an empty draft. Please tap Try Again.';
+    return {
+      success: false,
+      error: emptyMsg,
+      message: emptyMsg,
+      errorCode: 'EMPTY_RESPONSE',
+    };
+  } catch (geminiError: any) {
+    const status = Number(geminiError?.status || geminiError?.code || 0);
+    const rawMsg = String(geminiError?.message || '');
+    console.error('[3DBYSD AI] Gemini generation failed:', status || 'unknown', rawMsg);
+
+    if (rawMsg.includes('timed out') || rawMsg.includes('DEADLINE_EXCEEDED') || status === 504) {
+      const msg = 'Review generation timed out. Please tap Try Again.';
+      return { success: false, error: msg, message: msg, errorCode: 'TIMEOUT' };
+    }
+    if (
+      status === 403 ||
+      rawMsg.includes('PERMISSION_DENIED') ||
+      rawMsg.includes('API_KEY_INVALID') ||
+      rawMsg.includes('API key not valid')
+    ) {
+      const msg =
+        'AI review service is temporarily unavailable due to a server configuration issue. Please try again shortly or skip directly to Google.';
+      return {
+        success: false,
+        error: msg,
+        message: msg,
+        errorCode: rawMsg.includes('API_KEY') ? 'API_KEY_INVALID' : 'PERMISSION_DENIED',
+      };
+    }
+    if (status === 404 || rawMsg.includes('NOT_FOUND')) {
+      const msg = 'The AI review service is temporarily unavailable. Please tap Try Again in a moment.';
+      return { success: false, error: msg, message: msg, errorCode: 'MODEL_NOT_FOUND' };
+    }
+    if (status === 429 || rawMsg.includes('RESOURCE_EXHAUSTED')) {
+      const msg = 'The AI review service is busy right now. Please wait a few seconds and tap Try Again.';
+      return { success: false, error: msg, message: msg, errorCode: 'RESOURCE_EXHAUSTED' };
+    }
+    if (status === 400 || rawMsg.includes('INVALID_ARGUMENT')) {
+      const msg = 'Unable to process the selected review options. Please adjust your selection and tap Try Again.';
+      return { success: false, error: msg, message: msg, errorCode: 'INVALID_ARGUMENT' };
+    }
+    const msg = 'The AI review service is temporarily unavailable. Please tap Try Again in a moment.';
+    return {
+      success: false,
+      error: msg,
+      message: msg,
+      errorCode: status ? `HTTP_${status}` : 'UPSTREAM_ERROR',
+    };
   }
-
-  // Only used when GEMINI_API_KEY is not configured in local dev/offline test mode
-  const fallbackText = generateSmartFallbackReview(
-    safeBusinessName,
-    safeCategory,
-    safeDescription,
-    ratingNum,
-    tagsList,
-    safeNotes,
-    targetLanguage,
-    targetTone,
-    recentDrafts
-  );
-
-  return {
-    success: true,
-    review: fallbackText,
-    reviewText: fallbackText,
-    source: 'smart_fallback',
-    toneUsed: targetTone,
-    languageUsed: targetLanguage,
-  };
 }

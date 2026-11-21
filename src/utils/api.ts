@@ -736,17 +736,71 @@ export function normalizeGenerateReviewResponse(
   }
 
   const safeErr = extractErrorMessage(obj.error ?? obj.message ?? obj, fallbackError);
+  const errorCode = typeof obj.errorCode === 'string' ? obj.errorCode : undefined;
   return {
     success: false,
     message: safeErr,
     error: safeErr,
+    ...(errorCode ? { errorCode } : {}),
   };
+}
+
+function getFriendlyReviewHttpError(status: number, extracted: string, errorCode?: string): string {
+  const normalized = extracted.trim();
+  const isGenericPlatformMessage =
+    !normalized ||
+    /^a server error has occurred$/i.test(normalized) ||
+    /^internal server error$/i.test(normalized) ||
+    /^bad gateway$/i.test(normalized) ||
+    /^function_invocation_/i.test(normalized);
+
+  if (status === 429 || errorCode === 'RESOURCE_EXHAUSTED') {
+    return 'The AI review service is busy right now. Please wait a few seconds and tap Try Again.';
+  }
+  if (status === 504 || errorCode === 'TIMEOUT') {
+    return 'Review generation timed out. Please tap Try Again.';
+  }
+  if (
+    status === 503 ||
+    errorCode === 'API_KEY_MISSING' ||
+    errorCode === 'API_KEY_INVALID' ||
+    errorCode === 'PERMISSION_DENIED'
+  ) {
+    return isGenericPlatformMessage
+      ? 'The AI review service is temporarily unavailable. Please try again shortly or skip directly to Google.'
+      : normalized;
+  }
+  if (status === 405) {
+    return 'Review generation service is temporarily misconfigured. Please try again shortly.';
+  }
+  if (status >= 500) {
+    return isGenericPlatformMessage
+      ? 'The review service encountered a temporary server error. Please tap Try Again.'
+      : normalized;
+  }
+  return isGenericPlatformMessage ? `Unable to generate review right now (${status}). Please tap Try Again.` : normalized;
 }
 
 export async function generateAiReview(
   payload: GenerateReviewRequest,
   signal?: AbortSignal
 ): Promise<GenerateReviewResponse> {
+  const timeoutController = new AbortController();
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    timeoutController.abort();
+  }, 28000);
+
+  const onCallerAbort = () => timeoutController.abort();
+  if (signal) {
+    if (signal.aborted) {
+      clearTimeout(timeoutId);
+      throw new DOMException('Aborted', 'AbortError');
+    }
+    signal.addEventListener('abort', onCallerAbort, { once: true });
+  }
+
   try {
     const res = await fetch('/api/generate-review', {
       method: 'POST',
@@ -755,37 +809,36 @@ export async function generateAiReview(
         Accept: 'application/json',
       },
       body: JSON.stringify(payload),
-      signal,
+      signal: timeoutController.signal,
     });
 
     const rawText = await res.text();
 
     if (!res.ok) {
-      let fallbackError = `Request failed (${res.status}). Please try again.`;
-      if (res.status === 405) {
-        fallbackError = 'Review generation API method not allowed (405).';
-      } else if (res.status === 504) {
-        fallbackError = 'Review generation timed out. Please tap Try Again.';
-      }
-      let serverError = fallbackError;
+      let parsedErrorCode: string | undefined;
+      let extracted = '';
 
       if (rawText && rawText.trim()) {
         try {
           const parsed = JSON.parse(rawText);
-          serverError = extractErrorMessage(
-            parsed && typeof parsed === 'object'
-              ? (parsed as Record<string, unknown>).error ?? (parsed as Record<string, unknown>).message ?? parsed
-              : parsed,
-            fallbackError
-          );
+          if (parsed && typeof parsed === 'object') {
+            const p = parsed as Record<string, unknown>;
+            if (typeof p.errorCode === 'string') parsedErrorCode = p.errorCode;
+            extracted = extractErrorMessage(p.error ?? p.message ?? p, '');
+          } else {
+            extracted = extractErrorMessage(parsed, '');
+          }
         } catch {
-          serverError = fallbackError;
+          extracted = '';
         }
       }
+
+      const serverError = getFriendlyReviewHttpError(res.status, extracted, parsedErrorCode);
       return {
         success: false,
         message: serverError,
         error: serverError,
+        ...(parsedErrorCode ? { errorCode: parsedErrorCode } : {}),
       };
     }
 
@@ -795,6 +848,7 @@ export async function generateAiReview(
         success: false,
         message: emptyMsg,
         error: emptyMsg,
+        errorCode: 'EMPTY_RESPONSE',
       };
     }
 
@@ -807,21 +861,38 @@ export async function generateAiReview(
         success: false,
         message: invalidMsg,
         error: invalidMsg,
+        errorCode: 'INVALID_RESPONSE',
       };
     }
   } catch (err: any) {
-    if (err?.name === 'AbortError') {
+    if (timedOut) {
+      const timeoutMsg = 'Review generation took too long to respond. Please check your connection and tap Try Again.';
+      return {
+        success: false,
+        message: timeoutMsg,
+        error: timeoutMsg,
+        errorCode: 'TIMEOUT',
+      };
+    }
+    if (err?.name === 'AbortError' || signal?.aborted) {
       throw err;
     }
-    const netMsg = extractErrorMessage(
-      err,
-      'Network request failed. Please check your connection and try again.'
-    );
+    const rawNet = extractErrorMessage(err, '');
+    const isGenericFetch = !rawNet || /failed to fetch|load failed|networkerror/i.test(rawNet);
+    const netMsg = isGenericFetch
+      ? 'Unable to reach the review service. Please check your internet connection and tap Try Again.'
+      : rawNet;
     return {
       success: false,
       message: netMsg,
       error: netMsg,
+      errorCode: 'NETWORK_ERROR',
     };
+  } finally {
+    clearTimeout(timeoutId);
+    if (signal) {
+      signal.removeEventListener('abort', onCallerAbort);
+    }
   }
 }
 

@@ -85,7 +85,8 @@ async function run() {
       res504.success === false &&
         typeof res504.error === 'string' &&
         typeof res504.message === 'string' &&
-        res504.error === 'Function timed out',
+        res504.error.toLowerCase().includes('timed out') &&
+        !res504.error.includes('[object Object]'),
       `error=${JSON.stringify(res504.error)}`
     );
 

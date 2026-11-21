@@ -72,6 +72,7 @@ export interface GenerateReviewRequest {
   businessName: string;
   rating: number;
   tags: string[];
+  keywords?: string[];
   notes?: string;
   category?: string;
   businessDescription?: string;
@@ -88,6 +89,7 @@ export interface GenerateReviewResponse {
   reviewText?: string;
   message?: string;
   error?: string;
+  errorCode?: string;
 }
 
 export type AdPlacement = 'below_biz_info' | 'between_sections' | 'below_draft' | 'footer' | 'disabled';

@@ -1041,55 +1041,80 @@ app.post('/api/generate-review', async (req: Request, res: Response) => {
     const enrichedPayload = { ...req.body };
 
     if (cardId) {
-      const { card: targetCard } = await fetchAuthoritativeCardServer(String(cardId));
-      if (targetCard) {
-        if (targetCard.status === 'disabled') {
-          return res.status(403).json({
-            success: false,
-            error: 'This QR stand is currently disabled. Please contact the business for assistance.',
-            message: 'This QR stand is currently disabled. Please contact the business for assistance.',
-          });
-        }
+      try {
+        const { card: targetCard } = await fetchAuthoritativeCardServer(String(cardId));
+        if (targetCard) {
+          if (targetCard.status === 'disabled') {
+            return res.status(403).json({
+              success: false,
+              error: 'This QR stand is currently disabled. Please contact the business for assistance.',
+              message: 'This QR stand is currently disabled. Please contact the business for assistance.',
+              errorCode: 'CARD_DISABLED',
+            });
+          }
 
-        const subCheck = isSubscriptionAccessible(targetCard);
-        if (!subCheck.accessible) {
-          return res.status(403).json({
-            success: false,
-            error: subCheck.customerMessage || 'This QR subscription is not active.',
-            message: subCheck.customerMessage || 'This QR subscription is not active.',
-            subscriptionStatus: subCheck.status,
-          });
-        }
+          const subCheck = isSubscriptionAccessible(targetCard);
+          if (!subCheck.accessible) {
+            return res.status(403).json({
+              success: false,
+              error: subCheck.customerMessage || 'This QR subscription is not active.',
+              message: subCheck.customerMessage || 'This QR subscription is not active.',
+              subscriptionStatus: subCheck.status,
+              errorCode: 'SUBSCRIPTION_INACTIVE',
+            });
+          }
 
-        if (targetCard.aiReviewEnabled === false) {
-          return res.status(403).json({
-            success: false,
-            error: 'AI Review Assistant is disabled for this card configuration.',
-            message: 'AI Review Assistant is disabled for this card configuration.',
-          });
-        }
+          if (targetCard.aiReviewEnabled === false) {
+            return res.status(403).json({
+              success: false,
+              error: 'AI Review Assistant is disabled for this card configuration.',
+              message: 'AI Review Assistant is disabled for this card configuration.',
+              errorCode: 'AI_DISABLED',
+            });
+          }
 
-        // Authoritative business details from Firestore override untrusted client values when present
-        if (targetCard.businessName) {
-          enrichedPayload.businessName = targetCard.businessName;
+          // Authoritative business details from Firestore override untrusted client values when present
+          if (targetCard.businessName) {
+            enrichedPayload.businessName = targetCard.businessName;
+          }
+          if (targetCard.category) {
+            enrichedPayload.category = targetCard.category;
+          }
+          if (!enrichedPayload.businessDescription) {
+            enrichedPayload.businessDescription =
+              targetCard.businessDescription || targetCard.promptStarter || undefined;
+          }
         }
-        if (targetCard.category) {
-          enrichedPayload.category = targetCard.category;
-        }
-        if (!enrichedPayload.businessDescription) {
-          enrichedPayload.businessDescription =
-            targetCard.businessDescription || targetCard.promptStarter || undefined;
-        }
+      } catch (lookupErr: any) {
+        console.warn(
+          `[Server] Non-fatal card enrichment notice for ${cardId}:`,
+          lookupErr?.message || lookupErr
+        );
       }
     }
 
     const result = await generateReviewWithGemini(enrichedPayload);
     if (!result.success) {
-      const statusCode = result.error?.includes('disabled')
-        ? 403
-        : result.error?.includes('Select your preferred')
-          ? 400
-          : 502;
+      let statusCode = 502;
+      if (
+        result.errorCode === 'MISSING_OPTIONS' ||
+        result.errorCode === 'INVALID_ARGUMENT' ||
+        result.error?.includes('Select your preferred')
+      ) {
+        statusCode = 400;
+      } else if (result.error?.includes('disabled')) {
+        statusCode = 403;
+      } else if (result.errorCode === 'RESOURCE_EXHAUSTED') {
+        statusCode = 429;
+      } else if (
+        result.errorCode === 'API_KEY_MISSING' ||
+        result.errorCode === 'API_KEY_INVALID' ||
+        result.errorCode === 'PERMISSION_DENIED'
+      ) {
+        statusCode = 503;
+      } else if (result.errorCode === 'TIMEOUT') {
+        statusCode = 504;
+      }
       return res.status(statusCode).json(result);
     }
 
@@ -1098,8 +1123,9 @@ app.post('/api/generate-review', async (req: Request, res: Response) => {
     console.error('Error generating review:', error?.message || error);
     return res.status(502).json({
       success: false,
-      error: 'Unable to reach AI review service right now. Please try again in a moment.',
-      message: 'Unable to reach AI review service right now. Please try again in a moment.',
+      error: 'The AI review service is temporarily unavailable. Please tap Try Again in a moment.',
+      message: 'The AI review service is temporarily unavailable. Please tap Try Again in a moment.',
+      errorCode: 'SERVER_ERROR',
     });
   }
 });

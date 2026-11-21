@@ -175,12 +175,21 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
   const [copied, setCopied] = useState<boolean>(false);
   const [redirected, setRedirected] = useState<boolean>(false);
 
-  // Concurrency & race-condition control for AI review generation
+  // Concurrency, debounce & race-condition control for AI review generation
   const abortControllerRef = useRef<AbortController | null>(null);
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const requestIdRef = useRef<number>(0);
+
+  const clearPendingDebounce = () => {
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+  };
 
   useEffect(() => {
     return () => {
+      clearPendingDebounce();
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
@@ -250,6 +259,7 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
 
   useEffect(() => {
     if (prevCardKeyRef.current !== null && prevCardKeyRef.current !== currentCardKey) {
+      clearPendingDebounce();
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
         abortControllerRef.current = null;
@@ -271,8 +281,13 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
 
   // Sync selected tags if card's custom keywords list changes in customizer
   useEffect(() => {
-    if (card?.customKeywords && card.customKeywords.length > 0) {
-      setSelectedTags((prev) => prev.filter((t) => card.customKeywords!.includes(t)));
+    if (Array.isArray(card?.customKeywords) && card.customKeywords.length > 0) {
+      const normalizedSet = new Set(
+        card.customKeywords
+          .map((kw) => (typeof kw === 'string' ? kw.trim() : extractReviewText(kw)))
+          .filter(Boolean)
+      );
+      setSelectedTags((prev) => prev.filter((t) => normalizedSet.has(t)));
     }
   }, [card?.customKeywords]);
 
@@ -299,6 +314,8 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
     explicitRating?: number,
     explicitTags?: string[]
   ) => {
+    clearPendingDebounce();
+
     const activeTone = explicitTone !== undefined ? explicitTone : tone;
     const activeLang = explicitLang !== undefined ? explicitLang : language;
     const activeRating = explicitRating !== undefined ? explicitRating : rating;
@@ -306,6 +323,16 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
 
     // Do not generate if required options (language and tone) are not selected
     if (!activeTone || !activeLang) return;
+
+    // Prevent duplicate explicit button clicks while the exact same request is already in flight
+    const isExplicitButtonClick =
+      explicitTone === undefined &&
+      explicitLang === undefined &&
+      explicitRating === undefined &&
+      explicitTags === undefined;
+    if (isExplicitButtonClick && isGenerating) {
+      return;
+    }
 
     // If AI Assistant Mode is OFF, card is disabled, or subscription is not accessible in production, do not generate reviews
     if (
@@ -384,6 +411,19 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
     }
   };
 
+  const scheduleDebouncedGenerate = (
+    nextTone: ReviewTone,
+    nextLang: ReviewLanguage,
+    nextRating: number,
+    nextTags: string[]
+  ) => {
+    clearPendingDebounce();
+    debounceTimerRef.current = setTimeout(() => {
+      debounceTimerRef.current = null;
+      handleGenerate(nextTone, nextLang, nextRating, nextTags);
+    }, 300);
+  };
+
   const handleLanguageChange = (newLang: ReviewLanguage) => {
     if (newLang === language) return;
     setLanguage(newLang);
@@ -405,7 +445,7 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
   const handleRatingChange = (newRating: number) => {
     setRating(newRating);
     if (language && tone) {
-      handleGenerate(tone, language, newRating, selectedTags);
+      scheduleDebouncedGenerate(tone, language, newRating, selectedTags);
     }
   };
 
@@ -415,7 +455,7 @@ export const CustomerReviewView: React.FC<CustomerReviewViewProps> = ({
       : [...selectedTags, tagId];
     setSelectedTags(updated);
     if (language && tone) {
-      handleGenerate(tone, language, rating, updated);
+      scheduleDebouncedGenerate(tone, language, rating, updated);
     }
   };
 
